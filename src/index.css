@@ -1,0 +1,1227 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================================================
+   BCH 360° Intelligence V.10 — Material Dashboard 3 PRO Theme
+   White Minimal — Clean · Elevated · Professional
+   ================================================================ */
+
+:root {
+    /* Material Design 3 Brand Tokens */
+    --md-primary: #7c3aed;
+    --md-primary-light: #a78bfa;
+    --md-primary-dark: #5b21b6;
+    --md-success: #10b981;
+    --md-danger: #f43f5e;
+    --md-warning: #f59e0b;
+    --md-info: #0ea5e9;
+
+    /* Surface / Background */
+    --md-bg: #f4f6fb;
+    --md-surface: #ffffff;
+    --md-surface-2: #f8f9fe;
+    --md-border: #e8eaf2;
+    --md-divider: #edf0f7;
+
+    /* Text */
+    --md-text-primary: #1a1f36;
+    --md-text-secondary: #6b7280;
+    --md-text-tertiary: #9ca3af;
+
+    /* Elevation (shadows) */
+    --md-shadow-sm: 0 1px 3px rgba(0, 0, 0, .06), 0 1px 2px rgba(0, 0, 0, .04);
+    --md-shadow-md: 0 4px 16px rgba(0, 0, 0, .07), 0 1px 4px rgba(0, 0, 0, .04);
+    --md-shadow-lg: 0 8px 32px rgba(0, 0, 0, .09), 0 2px 8px rgba(0, 0, 0, .05);
+    --md-shadow-xl: 0 20px 40px rgba(0, 0, 0, .10), 0 4px 12px rgba(0, 0, 0, .06);
+    --md-shadow-brand: 0 8px 24px rgba(124, 58, 237, .18);
+    /* Typography Scale */
+    --fs-2xs: 0.625rem;
+    /* 10px */
+    --fs-xs: 0.6875rem;
+    /* 11px */
+    --fs-sm: 0.75rem;
+    /* 12px */
+    --fs-base: 0.8125rem;
+    /* 13px — dashboard base */
+    --fs-md: 0.875rem;
+    /* 14px */
+    --fs-lg: 1rem;
+    /* 16px */
+    --fs-xl: 1.125rem;
+    /* 18px */
+    --fs-2xl: 1.375rem;
+    /* 22px */
+    --fs-3xl: 1.625rem;
+    /* 26px */
+}
+
+/* ================================================================
+   BASE
+   ================================================================ */
+@layer base {
+
+    *,
+    *::before,
+    *::after {
+        box-sizing: border-box;
+    }
+
+    html {
+        font-size: 14px;
+        /* 1rem = 14px base for dashboard */
+        scroll-behavior: smooth;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+        background: var(--md-bg);
+        color: var(--md-text-primary);
+        font-family: 'Inter', 'Noto Sans Thai', system-ui, sans-serif;
+        font-size: var(--fs-base);
+        /* 13px */
+        line-height: 1.65;
+        letter-spacing: 0.005em;
+        min-height: 100vh;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+        font-family: 'Inter', 'Noto Sans Thai', system-ui, sans-serif;
+        line-height: 1.25;
+        font-weight: 700;
+        color: var(--md-text-primary);
+        letter-spacing: -0.02em;
+    }
+
+    /* Mono elements */
+    code,
+    pre,
+    .font-mono {
+        font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+    }
+
+    ::selection {
+        background: rgba(124, 58, 237, 0.15);
+        color: var(--md-primary);
+    }
+}
+
+/* ================================================================
+   COMPONENT LAYER
+   ================================================================ */
+@layer components {
+
+    /* ----- Card ------------------------------------------------- */
+    .glass-card {
+        background: var(--md-surface);
+        border-radius: 1rem;
+        border: 1px solid var(--md-border);
+        box-shadow: var(--md-shadow-md);
+        padding: 1.25rem;
+        transition: box-shadow 0.25s ease, transform 0.25s ease;
+    }
+
+    .ai-glow-card {
+        @apply glass-card relative overflow-hidden;
+        transition: box-shadow 0.25s ease, transform 0.25s ease;
+    }
+
+    .ai-glow-card:hover {
+        box-shadow: var(--md-shadow-lg);
+        transform: translateY(-2px);
+    }
+
+    /* ----- KPI Card Icon Badge ---------------------------------- */
+    .md-icon-badge {
+        @apply flex items-center justify-center rounded-2xl;
+        width: 3rem;
+        height: 3rem;
+        box-shadow: var(--md-shadow-brand);
+    }
+
+    /* ----- Stat strip ------------------------------------------ */
+    .stat-chip {
+        @apply inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full;
+    }
+
+    /* ----- Tab Navigation --------------------------------------- */
+    .md-tab-wrap {
+        background: var(--md-surface);
+        border: 1px solid var(--md-border);
+        box-shadow: var(--md-shadow-sm);
+        border-radius: 0.875rem;
+        padding: 0.25rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .tab-button {
+        @apply px-4 py-2 rounded-xl transition-all duration-200 flex items-center gap-2 relative whitespace-nowrap;
+        font-size: var(--fs-sm);
+        /* 12px */
+        font-weight: 600;
+        color: var(--md-text-secondary);
+    }
+
+    .tab-button:hover:not(.active) {
+        background: var(--md-surface-2);
+        color: var(--md-text-primary);
+    }
+
+    .tab-button.active {
+        background: var(--md-primary);
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(124, 58, 237, .28);
+    }
+
+    /* ----- Expanded Tab Item (App.jsx inline-style buttons) ---- */
+    .md-tab-item:hover:not([data-active="true"]) {
+        background: var(--md-surface-2) !important;
+    }
+
+    .md-tab-item:focus-visible {
+        outline: 2px solid var(--md-primary);
+        outline-offset: 2px;
+    }
+
+    .md-tab-item:active {
+        transform: scale(0.97);
+    }
+
+    /* Responsive tab sizing */
+    @media (max-width: 639px) {
+        .md-tab-item {
+            min-width: 7rem !important;
+            padding: 0.5rem 0.75rem !important;
+        }
+    }
+
+    @media (min-width: 1920px) {
+        .md-tab-item {
+            padding: 0.875rem 1.75rem !important;
+        }
+    }
+
+    @media (min-width: 2560px) {
+        .md-tab-item {
+            padding: 1rem 2rem !important;
+        }
+    }
+
+    /* ----- Badge ------------------------------------------------ */
+    .badge {
+        @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full uppercase;
+        font-size: var(--fs-2xs);
+        /* 10px */
+        font-weight: 700;
+        letter-spacing: 0.06em;
+    }
+
+    .badge-critical {
+        background: rgba(244, 63, 94, .10);
+        color: #e11d48;
+    }
+
+    .badge-high {
+        background: rgba(245, 158, 11, .10);
+        color: #b45309;
+    }
+
+    .badge-moderate {
+        background: rgba(124, 58, 237, .10);
+        color: #6d28d9;
+    }
+
+    .badge-low {
+        background: rgba(16, 185, 129, .10);
+        color: #047857;
+    }
+
+    /* ----- Data Table ------------------------------------------ */
+    .data-table {
+        @apply w-full;
+        font-size: var(--fs-sm);
+    }
+
+    .data-table thead {
+        @apply sticky top-0 z-10;
+    }
+
+    .data-table th {
+        background: var(--md-surface-2);
+        @apply px-4 py-2.5 text-left uppercase;
+        font-size: var(--fs-2xs);
+        /* 10px */
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: var(--md-text-tertiary);
+        border-bottom: 1px solid var(--md-divider);
+    }
+
+    .data-table td {
+        @apply px-4 py-2.5;
+        font-size: var(--fs-xs);
+        /* 11px */
+        color: var(--md-text-primary);
+        border-bottom: 1px solid var(--md-divider);
+    }
+
+    .data-table tbody tr:hover {
+        background: rgba(124, 58, 237, .03);
+    }
+
+    /* ----- Live indicator --------------------------------------- */
+    .live-dot {
+        @apply relative inline-flex h-2.5 w-2.5;
+    }
+
+    .live-dot::before {
+        content: '';
+        @apply absolute inline-flex h-full w-full rounded-full opacity-75 bg-green-500;
+        animation: ping 1.5s cubic-bezier(0, 0, .2, 1) infinite;
+    }
+
+    .live-dot::after {
+        content: '';
+        @apply relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500;
+    }
+
+    /* ----- Alert pulse ----------------------------------------- */
+    .alert-pulse {
+        animation: alertPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes alertPulse {
+
+        0%,
+        100% {
+            box-shadow: 0 0 0 0 rgba(244, 63, 94, .3);
+        }
+
+        50% {
+            box-shadow: 0 0 0 8px rgba(244, 63, 94, 0);
+        }
+    }
+
+    /* ----- Gradient text --------------------------------------- */
+    .gradient-text {
+        @apply bg-clip-text text-transparent;
+        background-image: linear-gradient(135deg, #7c3aed 0%, #0ea5e9 50%, #10b981 100%);
+        background-size: 200% auto;
+        animation: shimmer 4s linear infinite;
+    }
+
+    @keyframes shimmer {
+        0% {
+            background-position: 0% center;
+        }
+
+        100% {
+            background-position: 200% center;
+        }
+    }
+
+    /* ----- Chart container ------------------------------------- */
+    .chart-container {
+        background: var(--md-surface);
+        border: 1px solid var(--md-border);
+        border-radius: 1rem;
+        box-shadow: var(--md-shadow-sm);
+        padding: 1rem;
+    }
+
+    /* ----- Skeleton -------------------------------------------- */
+    .skeleton {
+        background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
+        background-size: 200% 100%;
+        animation: skeleton-loading 1.4s ease infinite;
+        border-radius: 0.5rem;
+    }
+
+    @keyframes skeleton-loading {
+        0% {
+            background-position: 200% 0;
+        }
+
+        100% {
+            background-position: -200% 0;
+        }
+    }
+
+    /* ----- AI status ------------------------------------------- */
+    .ai-status-pulse {
+        @apply relative flex h-3 w-3;
+    }
+
+    .ai-status-pulse::after {
+        content: '';
+        @apply absolute inline-flex h-full w-full rounded-full bg-current opacity-20;
+        animation: ping 1.5s cubic-bezier(0, 0, .2, 1) infinite;
+    }
+
+    /* ----- Animate live pulse ---------------------------------- */
+    .animate-live-pulse {
+        animation: live-pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes live-pulse {
+
+        0%,
+        100% {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        50% {
+            opacity: .45;
+            transform: scale(.75);
+        }
+    }
+
+    /* ----- Scroll helpers -------------------------------------- */
+    .scrollbar-hide {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+
+    .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+    }
+
+    /* ----- Custom scrollbar (light) ---------------------------- */
+    ::-webkit-scrollbar {
+        width: 5px;
+        height: 5px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 99px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+    }
+
+    /* ----- Pulse slow ------------------------------------------ */
+    @keyframes pulse-slow {
+
+        0%,
+        100% {
+            opacity: 1;
+        }
+
+        50% {
+            opacity: .75;
+        }
+    }
+
+    .animate-pulse-slow {
+        animation: pulse-slow 2.5s ease-in-out infinite;
+    }
+
+    /* ----- News ticker ----------------------------------------- */
+    @keyframes news-ticker {
+        0% {
+            transform: translateX(100%);
+        }
+
+        100% {
+            transform: translateX(-400%);
+        }
+    }
+
+    .animate-news-ticker {
+        animation: news-ticker 28s linear infinite;
+    }
+}
+
+/* ================================================================
+   RECHARTS OVERRIDES — Light / Material Theme
+   ================================================================ */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+    stroke: rgba(203, 213, 225, 0.45) !important;
+}
+
+/* All chart tooltip backgrounds → white */
+.recharts-default-tooltip,
+.recharts-tooltip-wrapper>* {
+    background: #ffffff !important;
+    border: 1px solid #e8eaf2 !important;
+    border-radius: 12px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .10) !important;
+    color: #1a1f36 !important;
+    font-family: 'Inter', 'Noto Sans Thai', system-ui, sans-serif !important;
+    font-size: 12px !important;
+}
+
+.recharts-tooltip-label {
+    color: #6b7280 !important;
+    font-weight: 700 !important;
+    font-size: 10px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: 4px !important;
+}
+
+.recharts-tooltip-item {
+    color: #1a1f36 !important;
+    font-weight: 600 !important;
+    font-size: 12px !important;
+}
+
+/* Axis ticks → match light palette */
+.recharts-xAxis .recharts-text,
+.recharts-yAxis .recharts-text {
+    fill: #9ca3af !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    font-family: 'Inter', system-ui, sans-serif !important;
+}
+
+.recharts-legend-item-text {
+    color: #6b7280 !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+}
+
+/* ================================================================
+   ARGON → MATERIAL COLOR BRIDGE
+   These overrides remap all legacy Argon dark hardcoded classes
+   so component files work without individual changes.
+   ================================================================ */
+
+/* ---- Text color remaps ---- */
+
+/* text-white inside cards → dark text */
+.glass-card .text-white,
+.ai-glow-card .text-white,
+.chart-container .text-white {
+    color: var(--md-text-primary) !important;
+}
+
+/* Argon muted text (#8392ab) → Material secondary */
+.glass-card [class*="text-[#8392ab]"],
+.ai-glow-card [class*="text-[#8392ab]"],
+.chart-container [class*="text-[#8392ab]"] {
+    color: var(--md-text-secondary) !important;
+}
+
+/* surface-* text → Material text tokens */
+.text-surface-300 {
+    color: var(--md-text-primary) !important;
+}
+
+.text-surface-400 {
+    color: var(--md-text-secondary) !important;
+}
+
+.text-surface-500 {
+    color: var(--md-text-tertiary) !important;
+}
+
+.text-surface-200 {
+    color: var(--md-text-primary) !important;
+}
+
+.text-surface-600 {
+    color: var(--md-text-tertiary) !important;
+}
+
+/* Accent colors stay the same (blue→primary, green, red, yellow) */
+.text-blue-400 {
+    color: #7c3aed !important;
+}
+
+.text-green-400 {
+    color: #10b981 !important;
+}
+
+.text-red-400 {
+    color: #f43f5e !important;
+}
+
+/* ---- Background remaps ---- */
+
+/* Argon card bg → white */
+[class*="bg-[#1b284f]"] {
+    background-color: var(--md-surface) !important;
+}
+
+[class*="bg-[#111c44]"] {
+    background-color: var(--md-surface-2) !important;
+}
+
+[class*="bg-[#2c375c]"] {
+    background-color: var(--md-border) !important;
+}
+
+[class*="bg-\\[\\#1b284f\\]"] {
+    background: var(--md-surface) !important;
+}
+
+/* Argon surface bg → MD surface */
+.bg-surface-800 {
+    background-color: #f1f5f9 !important;
+}
+
+.bg-surface-700 {
+    background-color: #e2e8f0 !important;
+}
+
+.bg-surface-900 {
+    background-color: #f8f9fe !important;
+}
+
+.bg-surface-950 {
+    background-color: #f4f6fb !important;
+}
+
+/* ---- Border remaps ---- */
+[class*="border-[#2c375c]"] {
+    border-color: var(--md-border) !important;
+}
+
+.border-surface-800 {
+    border-color: #e2e8f0 !important;
+}
+
+.border-surface-700 {
+    border-color: #cbd5e1 !important;
+}
+
+/* ---- Inline Argon color overrides inside Patient rows / tables ---- */
+/* OPD patient list rows */
+[class*="border-[#2c375c]"] {
+    border-color: var(--md-divider) !important;
+}
+
+[class*="hover\\:bg-\\[\\#2c375c\\]"]:hover {
+    background-color: rgba(124, 58, 237, .03) !important;
+}
+
+/* ---- Section headers (h3 in glass-cards) ---- */
+.glass-card h3,
+.chart-container h3 {
+    color: var(--md-text-primary) !important;
+    font-size: var(--fs-md) !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.01em !important;
+}
+
+.glass-card h4,
+.chart-container h4 {
+    color: var(--md-text-secondary) !important;
+    font-size: var(--fs-xs) !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase;
+}
+
+/* ---- AI Forecast / Alert banners (border-l-4 cards) ---- */
+.glass-card.border-l-4,
+.ai-glow-card.border-l-4 {
+    background: var(--md-surface-2) !important;
+}
+
+/* Remove scanline on light theme */
+.scanline {
+    display: none !important;
+}
+
+.data-stream {
+    display: none !important;
+}
+
+/* ---- Chip/pill text overrides in tables ---- */
+[class*="bg-surface-700"] span,
+[class*="bg-surface-800"] span {
+    color: var(--md-text-secondary) !important;
+}
+
+/* ---- Section badge chips (pill tags in table cells) ---- */
+.glass-card [class*="bg-surface-700"] {
+    background: #f1f5f9 !important;
+}
+
+.glass-card [class*="bg-surface-800"] {
+    background: #e8eaf2 !important;
+}
+
+.glass-card [class*="text-surface-300"] {
+    color: var(--md-text-primary) !important;
+}
+
+/* ================================================================
+   RESPONSIVE TYPOGRAPHY SYSTEM
+   Scale: mobile→tablet→laptop→FHD→QHD→4K
+   ================================================================ */
+
+/* --- Mobile first: ≤639px --- */
+@media (max-width: 639px) {
+    :root {
+        font-size: 13px;
+        --fs-2xs: 0.6154rem;
+        /* ~8px  */
+        --fs-xs: 0.6923rem;
+        /* ~9px  */
+        --fs-sm: 0.7692rem;
+        /* ~10px */
+        --fs-base: 0.8462rem;
+        /* ~11px */
+        --fs-md: 0.9231rem;
+        /* ~12px */
+        --fs-lg: 1.0769rem;
+        /* ~14px */
+        --fs-xl: 1.2308rem;
+        /* ~16px */
+        --fs-2xl: 1.5385rem;
+        /* ~20px */
+        --fs-3xl: 1.8462rem;
+        /* ~24px */
+    }
+
+    .glass-card {
+        padding: 0.875rem;
+        border-radius: 0.75rem;
+    }
+}
+
+/* --- Tablet: 640px–1023px --- */
+@media (min-width: 640px) and (max-width: 1023px) {
+    :root {
+        font-size: 14px;
+        --fs-2xs: 0.625rem;
+        /* 8.75px  */
+        --fs-xs: 0.6875rem;
+        /* 9.625px */
+        --fs-sm: 0.75rem;
+        /* 10.5px  */
+        --fs-base: 0.8125rem;
+        /* 11.375px*/
+        --fs-md: 0.875rem;
+        /* 12.25px */
+        --fs-lg: 1rem;
+        /* 14px    */
+        --fs-xl: 1.125rem;
+        /* 15.75px */
+        --fs-2xl: 1.375rem;
+        /* 19.25px */
+        --fs-3xl: 1.625rem;
+        /* 22.75px */
+    }
+
+    .glass-card {
+        padding: 1rem;
+        border-radius: 0.875rem;
+    }
+
+    .chart-container {
+        padding: 0.875rem;
+    }
+}
+
+/* --- Laptop / FHD: 1024px–1919px --- */
+@media (min-width: 1024px) and (max-width: 1919px) {
+    :root {
+        font-size: 14px;
+        --fs-2xs: 0.625rem;
+        /* 8.75px  */
+        --fs-xs: 0.6875rem;
+        /* 9.625px */
+        --fs-sm: 0.75rem;
+        /* 10.5px  */
+        --fs-base: 0.8125rem;
+        /* 11.375px*/
+        --fs-md: 0.875rem;
+        /* 12.25px */
+        --fs-lg: 1rem;
+        /* 14px    */
+        --fs-xl: 1.143rem;
+        /* 16px    */
+        --fs-2xl: 1.429rem;
+        /* 20px    */
+        --fs-3xl: 1.714rem;
+        /* 24px    */
+    }
+}
+
+/* --- Large / QHD: 1920px–2559px --- */
+@media (min-width: 1920px) and (max-width: 2559px) {
+    :root {
+        font-size: 15px;
+        --fs-2xs: 0.667rem;
+        /* 10px */
+        --fs-xs: 0.733rem;
+        /* 11px */
+        --fs-sm: 0.8rem;
+        /* 12px */
+        --fs-base: 0.867rem;
+        /* 13px */
+        --fs-md: 0.933rem;
+        /* 14px */
+        --fs-lg: 1.067rem;
+        /* 16px */
+        --fs-xl: 1.2rem;
+        /* 18px */
+        --fs-2xl: 1.467rem;
+        /* 22px */
+        --fs-3xl: 1.733rem;
+        /* 26px */
+    }
+
+    .glass-card {
+        padding: 1.375rem;
+    }
+
+    .chart-container {
+        min-height: 320px;
+        padding: 1.25rem;
+    }
+
+    .data-table th,
+    .data-table td {
+        font-size: var(--fs-sm) !important;
+        padding: 0.625rem 1.25rem !important;
+    }
+
+    .tab-button {
+        font-size: var(--fs-md) !important;
+        padding: 0.625rem 1.5rem !important;
+    }
+
+    .glass-card h3 {
+        font-size: var(--fs-lg) !important;
+    }
+}
+
+/* --- 4K: 2560px+ --- */
+@media (min-width: 2560px) {
+    :root {
+        font-size: 16px;
+        --fs-2xs: 0.625rem;
+        /* 10px */
+        --fs-xs: 0.6875rem;
+        /* 11px */
+        --fs-sm: 0.75rem;
+        /* 12px */
+        --fs-base: 0.875rem;
+        /* 14px */
+        --fs-md: 1rem;
+        /* 16px */
+        --fs-lg: 1.125rem;
+        /* 18px */
+        --fs-xl: 1.25rem;
+        /* 20px */
+        --fs-2xl: 1.5rem;
+        /* 24px */
+        --fs-3xl: 1.875rem;
+        /* 30px */
+    }
+
+    .glass-card {
+        padding: 1.5rem;
+    }
+
+    .chart-container {
+        min-height: 400px;
+        padding: 1.5rem;
+    }
+
+    .data-table th,
+    .data-table td {
+        font-size: var(--fs-md) !important;
+        padding: 0.75rem 1.5rem !important;
+    }
+
+    .tab-button {
+        font-size: var(--fs-lg) !important;
+        padding: 0.75rem 1.75rem !important;
+    }
+}
+
+/* --- Touch / coarse pointer --- */
+@media (pointer: coarse) {
+    .tab-button {
+        min-height: 44px;
+    }
+
+    button {
+        min-height: 40px;
+    }
+
+    .data-table td,
+    .data-table th {
+        padding: 9px 8px;
+    }
+}
+
+/* ================================================================
+   DEEP ANALYSIS PANELS — Responsive Font Scaling
+   Override hardcoded px sizes in all Tab analysis panels
+   ================================================================ */
+
+/* All inline analysis text inside glass-cards: scale with viewport */
+.glass-card p,
+.glass-card span {
+    /* Ensure text reflows smoothly */
+    word-break: break-word;
+    overflow-wrap: break-word;
+}
+
+/* Analysis section inline font overrides — these target the
+   hardcoded fontSize:'10px'/'11px'/'12px'/'13px' in JSX.
+   We use attribute selectors on parent containers. */
+
+/* Urgency banner */
+.glass-card [style*="fontSize: '36px'"],
+.glass-card [style*="fontSize:'36px'"] {
+    font-size: var(--fs-3xl) !important;
+}
+
+.glass-card [style*="fontSize: '26px'"],
+.glass-card [style*="fontSize:'26px'"] {
+    font-size: var(--fs-2xl) !important;
+}
+
+/* Override hardcoded '32' in SVG gauges via CSS class (won't affect SVG text) */
+/* Analysis card: ensure readable on small screens */
+@media (max-width: 639px) {
+
+    /* Stack 2-col grids to 1-col on mobile */
+    .glass-card [style*="gridTemplateColumns: '1fr 1fr'"],
+    .glass-card [style*="gridTemplateColumns: '220px 1fr'"],
+    .glass-card [style*="grid-template-columns: 220px 1fr"],
+    .glass-card [style*="grid-template-columns: 1fr 1fr"],
+    .glass-card [style*="grid-template-columns: 1fr 1fr 1fr"] {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Make SVG gauges smaller on mobile */
+    .glass-card svg[width="180"] {
+        width: 140px !important;
+        height: auto !important;
+    }
+}
+
+@media (min-width: 640px) and (max-width: 1023px) {
+
+    /* 3-col charts → 2-col on tablet */
+    .glass-card [style*="grid-template-columns: 1fr 1fr 1fr"] {
+        grid-template-columns: 1fr 1fr !important;
+    }
+}
+
+/* ================================================================
+   ALERT / URGENCY ANIMATIONS — Eye-catching Styles
+   ================================================================ */
+
+/* Critical alert banner: pulsing glow border */
+.alert-critical {
+    animation: critical-glow 2s ease-in-out infinite;
+    border: 2px solid rgba(244, 63, 94, .4) !important;
+}
+
+@keyframes critical-glow {
+
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(244, 63, 94, .25),
+            0 4px 16px rgba(244, 63, 94, .1);
+    }
+
+    50% {
+        box-shadow: 0 0 0 6px rgba(244, 63, 94, 0),
+            0 4px 24px rgba(244, 63, 94, .2);
+    }
+}
+
+/* Warning alert: amber pulse */
+.alert-warning {
+    animation: warning-glow 2.5s ease-in-out infinite;
+    border: 2px solid rgba(245, 158, 11, .35) !important;
+}
+
+@keyframes warning-glow {
+
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, .2),
+            0 4px 16px rgba(245, 158, 11, .08);
+    }
+
+    50% {
+        box-shadow: 0 0 0 5px rgba(245, 158, 11, 0),
+            0 4px 20px rgba(245, 158, 11, .15);
+    }
+}
+
+/* Urgency score number: scale pulse */
+.urgency-score-pulse {
+    animation: urgency-pulse 2s ease-in-out infinite;
+}
+
+@keyframes urgency-pulse {
+
+    0%,
+    100% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.08);
+    }
+}
+
+/* Severity badge: subtle attention */
+.severity-badge-critical {
+    animation: badge-blink 1.5s ease-in-out infinite;
+}
+
+@keyframes badge-blink {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: .7;
+    }
+}
+
+/* Factor risk alert: red pulsing glow */
+.factor-alert-pulse {
+    animation: factor-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes factor-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        box-shadow: 0 0 6px rgba(244, 63, 94, .15);
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: .82;
+        box-shadow: 0 0 14px rgba(244, 63, 94, .35), 0 0 4px rgba(244, 63, 94, .2);
+        transform: scale(1.03);
+    }
+}
+
+/* Gradient animated border for urgency section */
+.urgency-gradient-border {
+    position: relative;
+    overflow: hidden;
+}
+
+.urgency-gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    background: linear-gradient(90deg, #10b981, #f59e0b, #f43f5e, #f59e0b, #10b981);
+    background-size: 300% 100%;
+    animation: gradient-shift 4s linear infinite;
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
+}
+
+@keyframes gradient-shift {
+    0% {
+        background-position: 0% center;
+    }
+
+    100% {
+        background-position: 300% center;
+    }
+}
+
+/* Bottleneck chain arrow animation */
+.chain-arrow {
+    animation: arrow-flow 1.5s ease-in-out infinite;
+    display: inline-block;
+}
+
+@keyframes arrow-flow {
+
+    0%,
+    100% {
+        transform: translateX(0);
+        opacity: 1;
+    }
+
+    50% {
+        transform: translateX(3px);
+        opacity: .6;
+    }
+}
+
+/* ================================================================
+   PERFORMANCE OPTIMIZATIONS
+   ================================================================ */
+
+/* Contain paint for heavy cards — reduces repaint area */
+.glass-card {
+    contain: layout style;
+}
+
+/* GPU-accelerated animations */
+.animate-fade-in,
+.skeleton,
+.alert-critical,
+.alert-warning {
+    will-change: opacity, transform;
+}
+
+/* Faster fade-in */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fade-in {
+    animation: fadeIn .35s ease-out both;
+}
+
+/* Lazy chart render: don't layout until visible */
+.chart-container,
+.recharts-wrapper {
+    contain: layout;
+}
+
+/* Reduce reflow from responsive grid changes */
+.glass-card [style*="display: grid"] {
+    contain: layout;
+}
+
+/* Smooth scrolling tables */
+.data-table {
+    contain: layout style;
+}
+
+.data-table tbody {
+    will-change: scroll-position;
+}
+
+/* ================================================================
+   RESPONSIVE DEEP-ANALYSIS INLINE FONT OVERRIDES
+   React renders fontSize:'10px' → style="font-size: 10px" in DOM
+   ================================================================ */
+
+/* Mobile: make analysis text readable */
+@media (max-width: 639px) {
+
+    .glass-card [style*="font-size: 11.5px"],
+    .glass-card [style*="font-size: 11px"] {
+        font-size: var(--fs-sm) !important;
+    }
+
+    .glass-card [style*="font-size: 10px"] {
+        font-size: var(--fs-xs) !important;
+    }
+
+    .glass-card [style*="font-size: 9px"] {
+        font-size: var(--fs-2xs) !important;
+    }
+
+    .glass-card [style*="font-size: 13px"] {
+        font-size: var(--fs-base) !important;
+    }
+
+    .glass-card [style*="font-size: 12px"] {
+        font-size: var(--fs-sm) !important;
+    }
+
+    .glass-card [style*="font-size: 36px"] {
+        font-size: clamp(24px, 5vw, 36px) !important;
+    }
+
+    .glass-card [style*="font-size: 26px"] {
+        font-size: clamp(18px, 4vw, 26px) !important;
+    }
+
+    .glass-card [style*="font-size: 32px"] {
+        font-size: clamp(22px, 5vw, 32px) !important;
+    }
+
+    .glass-card [style*="font-size: 18px"] {
+        font-size: 16px !important;
+    }
+}
+
+/* QHD+: scale up analysis text */
+@media (min-width: 1920px) {
+
+    .glass-card [style*="font-size: 11.5px"],
+    .glass-card [style*="font-size: 11px"] {
+        font-size: var(--fs-sm) !important;
+    }
+
+    .glass-card [style*="font-size: 10px"] {
+        font-size: var(--fs-xs) !important;
+    }
+
+    .glass-card [style*="font-size: 13px"] {
+        font-size: var(--fs-md) !important;
+    }
+
+    .glass-card [style*="font-size: 12px"] {
+        font-size: var(--fs-sm) !important;
+    }
+
+    .glass-card [style*="font-size: 9px"] {
+        font-size: var(--fs-2xs) !important;
+    }
+}
+
+/* 4K: further scale */
+@media (min-width: 2560px) {
+
+    .glass-card [style*="font-size: 11.5px"],
+    .glass-card [style*="font-size: 11px"] {
+        font-size: var(--fs-base) !important;
+    }
+
+    .glass-card [style*="font-size: 10px"] {
+        font-size: var(--fs-sm) !important;
+    }
+
+    .glass-card [style*="font-size: 13px"] {
+        font-size: var(--fs-lg) !important;
+    }
+
+    .glass-card [style*="font-size: 12px"] {
+        font-size: var(--fs-base) !important;
+    }
+
+    .glass-card [style*="font-size: 9px"] {
+        font-size: var(--fs-xs) !important;
+    }
+}
