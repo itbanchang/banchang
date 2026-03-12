@@ -23,9 +23,177 @@ export default function ThaiMedTab() {
     }, [fetchData]);
 
     const today = ttmToday || {};
+    const isPastServiceTime = useMemo(() => {
+        const now = new Date();
+        return now.getHours() > 20 || (now.getHours() === 20 && now.getMinutes() >= 30);
+    }, []);
+
+    // ━━━━━━ 🧠 AI Strategic & Operational Intelligence ━━━━━━
+    const aiIntelligence = useMemo(() => {
+        if (!ttmToday) return {
+            forecast: { nextPeak: '—', intensity: 'Low', status: 'Stable' },
+            staffing: { status: 'Optimal', recommendation: 'Maintain current staffing', color: '#10b981' },
+            hourlyChart: []
+        };
+
+        const currentHour = new Date().getHours();
+        const predictions = ttmToday.hourly_prediction || [];
+        const nextHourPeak = predictions.find(f => f.hour === (currentHour + 1))?.count || 0;
+
+        // Staffing Logic
+        let staffingStatus = 'Optimal';
+        let staffingRec = 'กำลังพลเพียงพอต่อโหลดปัจจุบัน';
+        let staffingColor = '#10b981';
+
+        const currentLoad = ttmToday.waiting || 0;
+        if (currentLoad > 10 || nextHourPeak > 5) {
+            staffingStatus = 'Overstrained';
+            staffingRec = `🚨 ต้องการทีมนวด/ประคบเพิ่ม ${Math.ceil((nextHourPeak + currentLoad) / 3)} ท่าน เพื่อรองรับโหลดในชั่วโมงถัดไป`;
+            staffingColor = '#f43f5e';
+        } else if (currentLoad > 5) {
+            staffingStatus = 'Tight';
+            staffingRec = '⚠️ ควรเฝ้าระวังและเตรียมพร้อมรับเคส Walk-in ใน 30 นาทีถัดไป';
+            staffingColor = '#f59e0b';
+        }
+
+        const hourlyChart = (ttmToday.hourly || []).map((h, i) => ({
+            ...h,
+            prediction: predictions[i]?.count || 0
+        })).filter(h => h.hour >= 7 && h.hour <= 20);
+
+        return {
+            forecast: {
+                nextPeak: nextHourPeak > 0 ? `${currentHour + 1}:00` : '—',
+                intensity: nextHourPeak > 5 ? 'High' : 'Normal',
+                status: currentLoad > 5 ? 'Congested' : 'Clear'
+            },
+            staffing: { status: staffingStatus, recommendation: staffingRec, color: staffingColor },
+            hourlyChart
+        };
+    }, [ttmToday]);
+
 
     return (
         <div className="space-y-4 animate-fade-in pb-8">
+            {/* ━━━━━━ 🧠 Revenue Intelligence Hub ━━━━━━ */}
+            {!loading.ttmRevenueFiscal && state.ttmRevenueFiscal && (() => {
+                const fd = state.ttmRevenueFiscal;
+                const years = fd?.fiscal_years || [];
+                if (years.length < 2) return null;
+
+                const latestYear = years[years.length - 1];
+                const prevYear = years[years.length - 2];
+                const totalRev = latestYear.total_revenue || 0;
+                const prevRev = prevYear.total_revenue || 0;
+
+                const compRevLatest = latestYear.comparable_revenue ?? totalRev;
+                const compRevPrev = prevYear.comparable_revenue ?? prevRev;
+
+                const yoyGrowth = compRevPrev > 0 ? ((compRevLatest - compRevPrev) / compRevPrev) * 100 : 0;
+                const avgRevPerVisit = latestYear.avg_revenue_per_visit || 0;
+
+                let growthStatus = '';
+                let recommendations = [];
+
+                if (yoyGrowth >= 5) {
+                    growthStatus = '🟢 แนวโน้มการเติบโตดีเยี่ยม โอกาสขยาย Service Line';
+                    recommendations = [
+                        { tag: 'High-Value Clinics', text: 'ขยายบริการคลินิกเฉพาะทางที่มี Margin สูง เช่น นวดจัดกระดูก, ประคบสมุนไพรสูตรรักษาโรคเฉพาะทาง' },
+                        { tag: 'Premium Services', text: 'พิจารณาเพิ่มบริการ Fast Track หรือ Premium Clinic สำหรับผู้ป่วยที่ต้องการความรวดเร็วและพร้อมจ่ายเพิ่ม' },
+                        { tag: 'Health Packages', text: 'จัดทำแพ็กเกจตรวจสุขภาพเจาะลึก (Comprehensive Checkup) ควบคู่กับการรักษาผู้ป่วยนอกเพื่อเพิ่มรายได้' }
+                    ];
+                } else if (yoyGrowth >= 0) {
+                    growthStatus = '🟡 การเติบโตทรงตัว เน้นเพิ่ม Revenue per Visit';
+                    recommendations = [
+                        { tag: 'Diagnostic Upsell', text: 'เสนอโปรแกรมเพิ่มเติม เช่น อบสมุนไพร หรือ ยาหม้อ ให้ผู้ป่วยพิจารณาในเคสที่ต้องการการบรรเทาพิเศษ' },
+                        { tag: 'Recall Optimization', text: 'ปรับปรุงระบบนัดหมายล่วงหน้า (Chronic Care Recall) ด้วย SMS/LINE อัตโนมัติ เพื่อล๊อคฐานผู้ป่วยโรคเรื้อรัง' },
+                        { tag: 'Cross-Consultation', text: 'เพิ่มการส่งต่อจากแผนกอื่น (เช่น กายภาพบำบัด) มายังแพทย์แผนไทยในเครือข่ายเดียวกัน' }
+                    ];
+                } else {
+                    growthStatus = '🔴 รายได้หดตัว ต้องการแผนกระตุ้นและลดรอยรั่วทันที';
+                    recommendations = [
+                        { tag: 'Revenue Leakage', text: 'ระบบการเรียกเก็บเงินมีรอยรั่วเร่งด่วน — ตรวจสอบรายการวัสดุและสมุนไพรเบิกฉุกเฉิน หรือ Missing Charges' },
+                        { tag: 'Throughput Time', text: 'คอขวดทำให้รับคิวได้น้อยลง — จัด Fast Track ช่วยเร่งระบายคนไข้กลุ่มที่ต้องการนวดเดี่ยว' },
+                        { tag: 'Patient Acquisition', text: 'โปรโมทคอร์สแพทย์แผนไทยผ่าน Tele-medicine / Social Media หาลูกค้าใหม่' }
+                    ];
+                }
+
+                let revPerVisitInsight = '';
+                if (avgRevPerVisit < 500) {
+                    revPerVisitInsight = `⚠️ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} สะท้อนกลุ่มผู้ป่วยที่มาทำการรักษาพื้นฐาน (นวดอย่างเดียว) — เสนอให้จัดเป็น Package คู่กับการอบ/ประคบ`;
+                } else if (avgRevPerVisit > 1000) {
+                    revPerVisitInsight = `✅ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} แสดงถึงศักยภาพของการสร้างรายได้ร่วมกับหัตถการพิเศษ — ควรพิจารณาทำระบบ VIP Membership`;
+                } else {
+                    revPerVisitInsight = `📊 Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} อยู่ในเกณฑ์มาตรฐาน — สามารถพิจารณาแพ็กเกจเสริมระดับ Moderate เพื่ออัปยอดบิล`;
+                }
+
+                return (
+                    <div style={{ marginTop: '0.5rem', marginBottom: '1.25rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                            <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #10b981, #059669)', borderRadius: '99px' }} />
+                            <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                                🧠 Revenue Intelligence Hub
+                            </span>
+                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                EXECUTIVE ADVISORY
+                            </span>
+                        </div>
+
+                        <div className="glass-card" style={{ padding: '1.5rem', background: 'linear-gradient(135deg, rgba(16,185,129,.05) 0%, rgba(5,150,105,.02) 100%)', border: '1px solid rgba(16,185,129,.2)' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.25rem' }}>
+                                {/* Status Bar */}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '12px', borderBottom: '1px solid rgba(203,213,225,.2)' }}>
+                                    <div>
+                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            AI Revenue Growth Diagnosis
+                                        </p>
+                                        <p style={{ margin: '4px 0 0', fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--md-text-primary)' }}>
+                                            {growthStatus}
+                                        </p>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>YoY Growth</p>
+                                        <p style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e', letterSpacing: '-0.02em' }}>
+                                            {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth.toFixed(1)}%
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Insight & Actions */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '1.5rem', alignItems: 'start' }}>
+                                    {/* Left: Deep Insight */}
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                            <span style={{ fontSize: '16px' }}>👁️</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Financial Deep Insight</span>
+                                        </div>
+                                        <p style={{ fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500, background: 'var(--md-surface-2)', padding: '10px 12px', borderRadius: '8px', margin: 0, border: '1px solid var(--md-border)' }}>
+                                            {revPerVisitInsight}
+                                        </p>
+                                    </div>
+
+                                    {/* Right: CFO Actions */}
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                            <span style={{ fontSize: '16px' }}>🎯</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Recommended Actions for Director</span>
+                                        </div>
+                                        <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11.5px', color: 'var(--md-text-secondary)', fontWeight: 500, lineHeight: 1.5 }}>
+                                            {recommendations.map((rec, i) => (
+                                                <li key={i}>
+                                                    <strong style={{ color: '#10b981' }}>{rec.tag}: </strong>
+                                                    {rec.text}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
             {/* ━━━ Hero KPI Strip — Professional Design ━━━ */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))', gap: '12px' }}>
 
@@ -48,7 +216,7 @@ export default function ThaiMedTab() {
                     ) : (() => {
                         const total = today.total ?? 0;
                         const completed = today.completed ?? 0;
-                        const waiting = today.waiting ?? 0;
+                        const waiting = isPastServiceTime ? 0 : (today.waiting ?? 0);
                         const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
                         return (
@@ -57,9 +225,14 @@ export default function ThaiMedTab() {
                                     <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#10b981', margin: 0 }}>
                                         🌿 แพทย์แผนไทยวันนี้
                                     </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
-                                        Real-time
-                                    </span>
+                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                        <span style={{ fontSize: '10px', color: '#10b981', fontWeight: 700, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                            เวลาให้บริการ 07.00-20.30 น.
+                                        </span>
+                                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                            Real-time
+                                        </span>
+                                    </div>
                                 </div>
 
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
@@ -90,7 +263,7 @@ export default function ThaiMedTab() {
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
                                         <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed} ({pct}%)</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f59e0b' }}>รอรับบริการ {waiting}</span>
+                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f59e0b' }}>รอรักษาสะสม {waiting} คน</span>
                                     </div>
                                     <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(245,158,11,.12)', display: 'flex' }}>
                                         <div style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
@@ -102,6 +275,33 @@ export default function ThaiMedTab() {
                     })()}
                 </div>
 
+                {/* AI Load Predictor & Staffing Alert */}
+                <div style={{
+                    padding: '1rem 1.25rem', borderRadius: '14px',
+                    background: `linear-gradient(135deg, ${aiIntelligence.staffing.color}15 0%, transparent 100%)`,
+                    border: `1.5px solid ${aiIntelligence.staffing.color}30`,
+                    display: 'flex', flexDirection: 'column', gap: '8px', position: 'relative'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '10px', fontWeight: 800, color: aiIntelligence.staffing.color, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                            🤖 AI Load Predictor
+                        </span>
+                        <div className="pulse" style={{ width: '8px', height: '8px', borderRadius: '50%', background: aiIntelligence.staffing.color }} />
+                    </div>
+                    <div>
+                        <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: 'var(--md-text-primary)', letterSpacing: '-0.02em' }}>
+                            {aiIntelligence.staffing.status}
+                        </p>
+                        <p style={{ margin: '2px 0 0', fontSize: '11px', color: aiIntelligence.staffing.color, fontWeight: 700, lineHeight: 1.4 }}>
+                            {aiIntelligence.staffing.recommendation}
+                        </p>
+                    </div>
+                    <div style={{ marginTop: 'auto', borderTop: '1px solid rgba(0,0,0,0.05)', paddingTop: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Next Peak: {aiIntelligence.forecast.nextPeak}</span>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: aiIntelligence.staffing.color }}>Intensity: {aiIntelligence.forecast.intensity}</span>
+                    </div>
+                </div>
+
                 {/* ── Mini KPI Cards ── */}
                 {[
                     {
@@ -111,8 +311,8 @@ export default function ThaiMedTab() {
                         loading: loading.ttmToday,
                     },
                     {
-                        title: 'รอรับบริการ', value: today.waiting ?? 0, icon: '⏳', unit: 'ราย',
-                        grad: (today.waiting ?? 0) > 10 ? ['#f43f5e', '#dc2626'] : ['#f59e0b', '#d97706'],
+                        title: 'รอรับบริการ', value: isPastServiceTime ? 0 : (today.waiting ?? 0), icon: '⏳', unit: 'ราย',
+                        grad: (isPastServiceTime ? 0 : (today.waiting ?? 0)) > 10 ? ['#f43f5e', '#dc2626'] : ['#f59e0b', '#d97706'],
                         glow: 'rgba(245,158,11,.2)',
                         loading: loading.ttmToday,
                     },
@@ -306,22 +506,28 @@ export default function ThaiMedTab() {
                                         <path d={`M 18,90 A ${r},${r} 0 0,1 162,90`} fill="none" stroke={tpiColor} strokeWidth="14" strokeLinecap="round"
                                             strokeDasharray={`${dashLen} ${circumference}`} style={{ transition: 'stroke-dasharray 1s ease' }} />
                                         <text x="90" y="78" textAnchor="middle" fontSize="32" fontWeight="900" fill={tpiColor} fontFamily="'Outfit',sans-serif">{tpi}</text>
-                                        <text x="90" y="96" textAnchor="middle" fontSize="11" fontWeight="700" fill="#6b7280" fontFamily="sans-serif">TPI Score</text>
+                                        <text x="90" y="96" textAnchor="middle" fontSize="11" fontWeight="700" fill="#6b7280" fontFamily="sans-serif">SQI / TPI Score</text>
                                     </svg>
                                     <div style={{ textAlign: 'center' }}>
                                         <div style={{ fontSize: '26px', fontWeight: 900, color: tpiColor }}>{tpiGrade}</div>
                                         <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: tpiColor }}>
-                                            {tpi >= 80 ? 'ประสิทธิภาพสูง' : tpi >= 60 ? 'ระดับมาตรฐาน' : 'ต้องปรับปรุง'}
+                                            {tpi >= 80 ? 'ประสิทธิภาพสูง (Optimal)' : tpi >= 60 ? 'ระดับมาตรฐาน (Fair)' : 'ต้องปรับปรุง (Critical)'}
                                         </div>
-                                        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>Thai Medicine Performance Index</div>
+                                        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>Service Quality Index (AI Composite)</div>
                                     </div>
                                     <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>TPI Components</p>
-                                        {tpiRadar.map((c, i) => {
+                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>AI Component Breakdown</p>
+                                        {(Object.entries(a.sqi_components || {})).map(([key, c], i) => {
                                             const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
+                                            const labelMap = {
+                                                sla_compliance: 'SLA Pass',
+                                                process_completion: 'Completion',
+                                                wait_stability: 'Stability',
+                                                service_yield: 'Yield'
+                                            };
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
+                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{labelMap[key] || key}</span>
                                                     <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
@@ -382,21 +588,17 @@ export default function ThaiMedTab() {
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', borderTop: '1px solid var(--md-border)', paddingTop: '1rem' }}>
                                 {/* Hourly Pattern */}
                                 <div>
-                                    <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>🕐 Hourly Load (30 วัน)</p>
+                                    <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>🕐 Load vs Prediction (Today)</p>
                                     <ResponsiveContainer width="100%" height={130}>
-                                        <BarChart data={(a.hourly_pattern || []).filter(h => h.avg > 0)} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                                        <ComposedChart data={aiIntelligence.hourlyChart} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
                                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
                                             <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 8, fontWeight: 700 }} axisLine={false} tickLine={false}
                                                 tickFormatter={l => l.replace(':00', '')} />
                                             <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={20} />
-                                            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
-                                                formatter={(v) => [`${v} ราย/วัน`, 'เฉลี่ย']} />
-                                            <Bar dataKey="avg" radius={[3, 3, 0, 0]} barSize={8}>
-                                                {(a.hourly_pattern || []).filter(h => h.avg > 0).map((d, i) => (
-                                                    <Cell key={i} fill={d.hour === a.peak_hour?.hour ? '#f43f5e' : '#10b981'} />
-                                                ))}
-                                            </Bar>
-                                        </BarChart>
+                                            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }} />
+                                            <Bar dataKey="count" fill="#10b981" radius={[3, 3, 0, 0]} barSize={8} name="Actual Load" />
+                                            <Line type="monotone" dataKey="prediction" stroke="#f59e0b" strokeWidth={2} dot={false} strokeDasharray="5 5" name="AI Prediction" />
+                                        </ComposedChart>
                                     </ResponsiveContainer>
                                 </div>
 
@@ -466,6 +668,7 @@ export default function ThaiMedTab() {
             {/* ━━━━━━ 🔥 Deep Root-Cause Analysis Panel — Thai Medicine ━━━━━━ */}
             {!loading.ttmAnalytics && ttmAnalytics && (() => {
                 const a = ttmAnalytics || {};
+
                 const tpi = a.tpi ?? 0;
                 const avgWait = a.avg_wait_time ?? 0;
                 const sdWait = a.sd_wait_time ?? 0;
@@ -662,8 +865,9 @@ export default function ThaiMedTab() {
                     });
                     const latestYear = years[years.length - 1];
                     const prevYear = years.length >= 2 ? years[years.length - 2] : null;
-                    const yoyGrowth = prevYear && prevYear.total_revenue > 0
-                        ? Math.round(((latestYear.total_revenue - prevYear.total_revenue) / prevYear.total_revenue) * 1000) / 10 : 0;
+                    const compMonths = latestYear.comparable_months || 12;
+                    const yoyGrowth = prevYear && (prevYear.comparable_revenue ?? prevYear.total_revenue) > 0
+                        ? Math.round(((latestYear.comparable_revenue ?? latestYear.total_revenue) - (prevYear.comparable_revenue ?? prevYear.total_revenue)) / (prevYear.comparable_revenue ?? prevYear.total_revenue) * 1000) / 10 : 0;
                     return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${years.length}, 1fr)`, gap: '10px' }}>
@@ -683,7 +887,7 @@ export default function ThaiMedTab() {
                                             {isLatest && prevYear && (
                                                 <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>{yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%</span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label}</span>
+                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
                                                 </div>
                                             )}
                                         </div>

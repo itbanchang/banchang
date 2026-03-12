@@ -1,9 +1,14 @@
 // ============================================================
 // BCH 360° Intelligence V.10 - RBAC Middleware
 // ============================================================
+import 'dotenv/config';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'bch360-intelligence-secret-key-2026';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.error('❌ FATAL: JWT_SECRET ไม่ได้ตั้งค่าใน .env — กรุณาเพิ่ม JWT_SECRET ก่อนเริ่มระบบ');
+    process.exit(1);
+}
 
 const ROLE_PERMISSIONS = {
     director: { modules: ['finance', 'ipd', 'opd', 'clinical', 'admin', 'audit'], description: 'ผู้อำนวยการ' },

@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
 // ── Config ──
-const PROD_PORT = process.env.PROD_PORT || 3000;
+const PROD_PORT = process.env.PROD_PORT || 4000;
 const DEBOUNCE_MS = 1500;       // Wait 1.5s after last change before action
 const BUILD_DEBOUNCE_MS = 3000; // Wait 3s for build (batch multiple saves)
 
@@ -84,40 +84,79 @@ function trackDeploy(type) {
 }
 
 // ── Start Server ──
+let isRestarting = false;
 function startServer() {
+    if (isRestarting) return;
+
     if (serverProcess) {
+        isRestarting = true;
         log('🔄', `${C.yellow}Restarting server...${C.reset}`);
+
+        let spawnedNew = false;
+        const spawnNew = () => {
+            if (spawnedNew) return;
+            spawnedNew = true;
+            isRestarting = false;
+
+            serverProcess = spawn('node', ['server/server.js'], {
+                cwd: ROOT,
+                stdio: 'inherit',
+                env: {
+                    ...process.env,
+                    NODE_ENV: 'production',
+                    PORT: String(PROD_PORT),
+                },
+            });
+
+            serverProcess.on('exit', (code, signal) => {
+                if (signal !== 'SIGTERM' && signal !== 'SIGKILL') {
+                    log('💀', `${C.red}Server crashed (code: ${code}). Restarting in 2s...${C.reset}`);
+                    setTimeout(startServer, 2000);
+                }
+            });
+
+            serverProcess.on('error', (err) => {
+                log('❌', `${C.red}Server spawn error: ${err.message}${C.reset}`);
+            });
+
+            trackDeploy('server-restart');
+        };
+
+        serverProcess.removeAllListeners('exit');
+        serverProcess.on('exit', spawnNew);
         serverProcess.kill('SIGTERM');
+
         // Force kill after 3s if not dead
         setTimeout(() => {
             if (serverProcess && !serverProcess.killed) {
                 serverProcess.kill('SIGKILL');
+                spawnNew();
             }
         }, 3000);
+    } else {
+        serverProcess = spawn('node', ['server/server.js'], {
+            cwd: ROOT,
+            stdio: 'inherit',
+            env: {
+                ...process.env,
+                NODE_ENV: 'production',
+                PORT: String(PROD_PORT),
+            },
+        });
+
+        serverProcess.on('exit', (code, signal) => {
+            if (signal !== 'SIGTERM' && signal !== 'SIGKILL') {
+                log('💀', `${C.red}Server crashed (code: ${code}). Restarting in 2s...${C.reset}`);
+                setTimeout(startServer, 2000);
+            }
+        });
+
+        serverProcess.on('error', (err) => {
+            log('❌', `${C.red}Server spawn error: ${err.message}${C.reset}`);
+        });
+
+        trackDeploy('server-restart');
     }
-
-    serverProcess = spawn('node', ['server/server.js'], {
-        cwd: ROOT,
-        stdio: 'inherit',
-        env: {
-            ...process.env,
-            NODE_ENV: 'production',
-            PORT: String(PROD_PORT),
-        },
-    });
-
-    serverProcess.on('exit', (code, signal) => {
-        if (signal !== 'SIGTERM' && signal !== 'SIGKILL') {
-            log('💀', `${C.red}Server crashed (code: ${code}). Restarting in 2s...${C.reset}`);
-            setTimeout(startServer, 2000);
-        }
-    });
-
-    serverProcess.on('error', (err) => {
-        log('❌', `${C.red}Server spawn error: ${err.message}${C.reset}`);
-    });
-
-    trackDeploy('server-restart');
 }
 
 // ── Build Frontend ──
@@ -210,7 +249,7 @@ ${C.cyan}${C.bold}╔═══════════════════�
 ║     src/    → auto vite build → dist/ updated             ║
 ║     server/ → auto server restart                         ║
 ║                                                           ║
-║  💡 Dev Server: npm run dev (port 3001)                   ║
+║  💡 Dev Server: npm run dev (port 4001)                   ║
 ║  💡 This Prod:  port ${PROD_PORT} (auto-deploy on change)        ║
 ╚════════════════════════════════════════════════════════════╝${C.reset}
 `);

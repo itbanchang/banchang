@@ -152,6 +152,74 @@ export default function ClinicalTab() {
 
     return (
         <div className="space-y-4 animate-fade-in pb-8">
+            {/* ━━ AI Clinical Safety Intelligence Hub ━━ */}
+            <div className="glass-card" style={{ padding: '1.25rem', border: '1px solid rgba(244,63,94,.25)', background: 'linear-gradient(135deg, rgba(244,63,94,.08), rgba(99,102,241,.04))' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem' }}>
+                    <div style={{ width: '4px', height: '20px', background: 'linear-gradient(180deg, #f43f5e, #dc2626)', borderRadius: '99px' }} />
+                    <div>
+                        <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            🧠 Clinical Intelligence Hub <span style={{ fontSize: '10px', background: 'rgba(244,63,94,.15)', color: '#f43f5e', padding: '1px 6px', borderRadius: '4px' }}>AI NEWS2 ACTIVE</span>
+                        </h3>
+                        <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>Real-time Surveillance for Patient Deterioration & Clinical Risk Management</p>
+                    </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
+                    {/* EWS Status */}
+                    <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #f43f5e' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase' }}>📡 Early Warning Status</span>
+                            <span style={{ fontSize: '12px' }}>📊</span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
+                            {ewsSummary?.critical > 0
+                                ? `🚨 ALERT: พบผู้ป่วยระดับ CRITICAL ${ewsSummary.critical} ราย (NEWS2 ≥ 7)`
+                                : ewsSummary?.high > 0
+                                    ? `⚠️ พบผู้ป่วยความเสี่ยงสูง ${ewsSummary.high} ราย — เฝ้าระวังสัญญาณชีพ`
+                                    : '✅ Clinical Status: Stable — ไม่พบผู้ป่วยที่มีความเสี่ยงสูงในขณะนี้'}
+                        </p>
+                        <p style={{ margin: '6px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
+                            {ewsSummary?.critical > 0
+                                ? '💡 Policy: ทีม Rapid Response (RRT) ต้องเข้า Review สถานการณผู้ป่วยระดับ Critical ทันที'
+                                : '💡 Recommendation: ตรวจสอบความสมบูรณ์ของการบันทึก Vital Signs ให้ครบถ้วนตามระยะเวลา'}
+                        </p>
+                    </div>
+
+                    {/* Sepsis & Infection Risk */}
+                    <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #f59e0b' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase' }}>🦠 Sepsis & Infection Risk</span>
+                            <span style={{ fontSize: '12px' }}>🌡️</span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
+                            {clinicalAnalytics?.sepsis?.sirs_positive > 0
+                                ? `🔍 ตรวจพบ SIRS+ ${clinicalAnalytics.sepsis.sirs_positive} ราย — ตรวจคัดกรอง Sepsis STAT`
+                                : '✅ ไม่พบแนวโน้ม Sepsis/Infection ที่มีนัยสำคัญ'}
+                        </p>
+                        <p style={{ margin: '6px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
+                            {clinicalAnalytics?.sepsis?.sirs_positive > 0
+                                ? `💡 Action: เจาะ Blood Culture และ Lactate ก่อนให้ Antibiotic ตาม Hour-1 Bundle`
+                                : '💡 คงมาตรการเฝ้าระวังผู้ป่วยที่มีไข้สูงอย่างใกล้ชิด'}
+                        </p>
+                    </div>
+
+                    {/* Safety Index */}
+                    <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #10b981' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>🎯 Clinical Safety Index (CSI)</span>
+                            <span style={{ fontSize: '12px' }}>📈</span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
+                            CSI Score อยู่ที่ {clinicalAnalytics?.csi || 0}/100 — {clinicalAnalytics?.csi >= 80 ? 'อยู่ในระดับปลอดภัยสูง' : 'ควรเฝ้าระวังจุดบอดข้อมูล'}
+                        </p>
+                        <p style={{ margin: '6px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
+                            {clinicalAnalytics?.no_vitals_pct > 25
+                                ? `⚠️ พบ Blind Spot: มีผู้ป่วย ${clinicalAnalytics.no_vitals_pct}% ยังไม่มีข้อมูล Vitals ที่เป็นปัจจุบัน`
+                                : '✅ ความสมบูรณ์ของข้อมูลทางคลินิกอยู่ในเกณฑ์ดีเยี่ยม'}
+                        </p>
+                    </div>
+                </div>
+            </div>
             {/* AI EWS Alert Banner */}
             {(ewsSummary?.critical > 0 || ewsSummary?.high > 0) && (
                 <div className="glass-card shadow-lg p-4 border-l-4 border-[#f43f5e] rounded-2xl" style={{ background: 'linear-gradient(90deg, rgba(244,63,94,.08) 0%, transparent 100%)' }}>
@@ -481,7 +549,7 @@ export default function ClinicalTab() {
                                                         {/* Problem */}
                                                         {k.problem && (
                                                             <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์</p>
+                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
                                                             </div>
                                                         )}

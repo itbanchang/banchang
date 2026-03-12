@@ -19,7 +19,7 @@ router.get('/bed-occupancy', cacheMiddleware(60), async (req, res) => {
             occupancy_rate: w.total_beds > 0 ? Math.round((w.occupied / w.total_beds) * 100) : 0
         }));
         const tb = 120; // จำนวนเตียงจริงของโรงพยาบาล
-        const oc = wards.reduce((s, w) => s + w.occupied, 0);
+        const oc = wards.filter(w => w.id !== '06').reduce((s, w) => s + w.occupied, 0);
         res.json({
             data_source: 'HOSxP XE', wards,
             summary: {
@@ -93,7 +93,7 @@ router.get('/wards', cacheMiddleware(300), async (req, res) => {
 // ---- Advanced Analytics (cached 10 min) ----
 router.get('/analytics', cacheMiddleware(600), async (req, res) => {
     try {
-        const { dbQuery, dbQueryOne } = await import('../db/mysql.js');
+        const { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } = await import('../db/mysql.js');
         const totalBeds = 120;
 
         // ━━ ALL 13 queries run in PARALLEL — no extra latency ━━
@@ -103,7 +103,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
         ] = await Promise.all([
 
             // 1. Bed Turnover Rate — จำนวน discharge ใน 30 วัน / จำนวนเตียง
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdTurnover30d', 30, `
                 SELECT COUNT(*) as discharged_30d
                 FROM ipt
                 WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
@@ -111,7 +111,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             `),
 
             // 2. ALOS Variance — actual vs DRG benchmark (rw-based proxy: 1 RW ≈ 4 วัน)
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdALOSVariance', 60, `
                 SELECT
                     ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) as actual_alos,
                     ROUND(AVG(a.rw * 4), 1)                       as benchmark_alos,
@@ -124,7 +124,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             `),
 
             // 3. Revenue per Bed-Day (30 วัน)
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdRevPerBedDay30d', 60, `
                 SELECT
                     SUM(a.income)                                                  as total_revenue,
                     SUM(DATEDIFF(i.dchdate, i.regdate))                           as total_bed_days,
@@ -169,7 +169,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             // ━━━━━━━━━━ NEW PROFESSIONAL KPIs ━━━━━━━━━━
 
             // 7. Readmission Rate (30-day) — HA/JCI Quality Indicator
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdReadmitRate30d', 60, `
                 SELECT
                     COUNT(DISTINCT i2.an) as readmit_count,
                     COUNT(DISTINCT i1.an) as total_discharges,
@@ -185,7 +185,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             `).catch(() => null),
 
             // 8. Case Mix Index (CMI) — ระดับความซับซ้อน
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdCMI30d', 60, `
                 SELECT
                     ROUND(AVG(a.rw), 3) as cmi,
                     ROUND(STDDEV(a.rw), 3) as cmi_stddev,
@@ -246,7 +246,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             `).catch(() => null),
 
             // 12. Revenue per Discharge
-            dbQueryOne(`
+            dbQueryOneHeavy('ipdRevPerDisch30d', 60, `
                 SELECT
                     COUNT(*) as total_dch,
                     SUM(a.income) as total_revenue,
@@ -261,7 +261,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             `).catch(() => null),
 
             // 13. Day-of-Week Admission Heatmap
-            dbQuery(`
+            dbQueryHeavy('ipdDowHeatmap', 120, `
                 SELECT
                     DAYOFWEEK(regdate) as dow,
                     COUNT(*) as total,
@@ -413,6 +413,30 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                 readmit: readmitScore,
             },
             admission_trend: (admTrend || []),
+            // ━━ AI Insights Hub (Executive Level) ━━
+            ai_insights: {
+                operational: {
+                    title: 'Bed Demand & Efficiency',
+                    score: turnoverScore,
+                    status: turnoverRate > 3.0 ? 'optimal' : 'low_throughput',
+                    analysis: `อัตราการหมุนเวียนเตียง (Turnover) อยู่ที่ ${turnoverRate} รอบ/30วัน (${discharged} ราย) ถือว่า${turnoverRate > 3.0 ? 'สูงและมีประสิทธิภาพ' : 'ต้องเร่งการหมุนเวียน'}`,
+                    recommendation: turnoverRate > 3.0 ? '✅ รักษาระดับ Throughput และเน้นคุณภาพการจำหน่าย' : '💡 เร่งนัดตรวจ Discharge Planning ตั้งแต่วันแรก เพื่อลด LOS และเพิ่มพื้นที่รับผู้ป่วยไหม่'
+                },
+                clinical_quality: {
+                    title: 'Clinical Quality Intelligence',
+                    score: Math.round(100 - readmitRate * 5),
+                    status: readmitRate > 10 ? 'critical' : 'stable',
+                    analysis: `อัตรา Readmit 30 วัน อยู่ที่ ${readmitRate}% และ Mortality Rate ${Number(mortalityData?.mortality_rate || 0)}%`,
+                    recommendation: readmitRate > 10 ? '🚨 วิกฤต: Readmit สูงเกินเกณฑ์! ต้อง Audit แผนการรักษาก่อนจำหน่าย ด่วน' : '✅ คุณภาพการรักษามั่นคง มุ่งเน้นการทำ Patient Education หลังจำหน่าย'
+                },
+                financial: {
+                    title: 'Revenue Efficiency Alert',
+                    score: alosScore,
+                    status: alosVariancePct > 10 ? 'leakage' : 'optimal',
+                    analysis: `ค่ารักษาเฉลี่ยต่อจำหน่าย ฿${(revPerDisch?.rev_per_discharge || 0).toLocaleString()} แต่อัตรา LOS Variance สะท้อนความล่าช้า ${alosVariancePct}%`,
+                    recommendation: alosVariancePct > 10 ? '💰 Leakage Detected: LOS ยาวส่งผลให้ Margin ลดลง! ต้องควบคุม Bed-Day Cost' : '✅ รายได้ต่อเตียงสัมพันธ์กับความซับซ้อนของโรค (CMI) อย่างเหมาะสม'
+                }
+            }
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -509,11 +533,74 @@ router.get('/revenue-fiscal', cacheMiddleware(3600), async (req, res) => {
             };
         });
 
+        // ---- Comparable Revenue: fair YoY comparison ----
+        const latest = result[result.length - 1];
+        const comparableIdx = latest.months.map((m, i) => m.has_data ? i : -1).filter(i => i >= 0);
+        const comparableMonthCount = comparableIdx.length;
+        for (const fy of result) {
+            let compRev = 0, compCases = 0;
+            for (const i of comparableIdx) {
+                compRev += fy.months[i]?.revenue || 0;
+                compCases += fy.months[i]?.cases || 0;
+            }
+            fy.comparable_revenue = compRev;
+            fy.comparable_visits = compCases;
+            fy.comparable_months = comparableMonthCount;
+        }
+
         res.json({
             data_source: 'HOSxP XE · an_stat',
             fiscal_years: result,
             timestamp: new Date().toISOString(),
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---- IPD Drill-Down (cached 1 min) ----
+router.get('/drilldown', cacheMiddleware(60), async (req, res) => {
+    const { type } = req.query;
+    try {
+        if (type === 'beds') {
+            const [wardRows, activeAdm] = await Promise.all([
+                hosxp.getBedOccupancy(),
+                hosxp.getActiveAdmissions()
+            ]);
+
+            return res.json({
+                wards: (wardRows || []).map(w => ({
+                    name: w.name,
+                    total: w.total_beds,
+                    occupied: w.occupied,
+                    rate: w.total_beds > 0 ? Math.round((w.occupied / w.total_beds) * 100) : 0
+                })),
+                activePatients: (activeAdm || []).slice(0, 15).map(a => ({
+                    an: a.an,
+                    name: a.name,
+                    ward: a.ward,
+                    stay: a.stay_days,
+                    rx: a.dx_name
+                }))
+            });
+        }
+        if (type === 'readmit') {
+            const data = await hosxp.getIPDReadmissionDetails();
+            return res.json({ patients: data || [] });
+        }
+        if (type === 'alos') {
+            const data = await hosxp.getIPDALOSVarianceDetails();
+            return res.json({ patients: data || [] });
+        }
+        if (type === 'cmi') {
+            const data = await hosxp.getIPDCMIDetails();
+            return res.json({ drgs: data || [] });
+        }
+        if (type === 'mortality') {
+            const data = await hosxp.getIPDMortalityDetails();
+            return res.json({ patients: data || [] });
+        }
+        res.status(400).json({ error: 'Unsupported drill-down type' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

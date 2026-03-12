@@ -31,9 +31,19 @@ const initialState = {
     erWaitTimeForecast: null,
     erBottlenecks: null,
     erSurge: null,
+    medRecToday: null,
+    medRecAnalytics: null,
     loading: {},
     errors: {},
-    user: { role: 'admin', full_name: 'Dashboard' }
+    lastUpdated: null,
+    user: { role: 'admin', full_name: 'Dashboard' },
+    drillDown: {
+        isOpen: false,
+        kpiId: null,
+        title: '',
+        data: null,
+        loading: false
+    }
 };
 
 function reducer(state, action) {
@@ -78,6 +88,39 @@ function reducer(state, action) {
             return { ...state, emergencyAlerts: [action.payload, ...state.emergencyAlerts].slice(0, 20) };
         case 'DISMISS_ALERT':
             return { ...state, emergencyAlerts: state.emergencyAlerts.filter((_, i) => i !== action.payload) };
+        case 'SET_LAST_UPDATED':
+            return { ...state, lastUpdated: action.payload };
+        case 'OPEN_DRILL_DOWN':
+            return {
+                ...state,
+                drillDown: {
+                    ...state.drillDown,
+                    isOpen: true,
+                    kpiId: action.kpiId,
+                    title: action.title,
+                    data: null,
+                    loading: true
+                }
+            };
+        case 'CLOSE_DRILL_DOWN':
+            return {
+                ...state,
+                drillDown: {
+                    ...state.drillDown,
+                    isOpen: false,
+                    kpiId: null,
+                    data: null
+                }
+            };
+        case 'SET_DRILL_DOWN_DATA':
+            return {
+                ...state,
+                drillDown: {
+                    ...state.drillDown,
+                    data: action.payload,
+                    loading: false
+                }
+            };
         default:
             return state;
     }
@@ -117,8 +160,17 @@ export function DashboardProvider({ children }) {
                 return res.json();
             })
             .then(data => {
+                const cached = dataCacheRef.current[key];
+                // ⚡ Frontend Optimization: Prevent React re-renders if data is identical
+                if (cached && JSON.stringify(cached.data) === JSON.stringify(data)) {
+                    cached.t = Date.now(); // Extend cache TTL
+                    dispatch({ type: 'SET_LOADING', key, payload: false });
+                    return data;
+                }
+
                 dispatch({ type: 'SET_DATA', key, payload: data });
                 dataCacheRef.current[key] = { data, t: Date.now() };
+                dispatch({ type: 'SET_LAST_UPDATED', payload: Date.now() });
                 return data;
             })
             .catch(err => {
@@ -152,8 +204,29 @@ export function DashboardProvider({ children }) {
         dispatch({ type: 'DISMISS_ALERT', payload: index });
     }, []);
 
+    const openDrillDown = useCallback(async (kpiId, title, endpoint) => {
+        dispatch({ type: 'OPEN_DRILL_DOWN', kpiId, title });
+        if (endpoint) {
+            try {
+                const res = await fetch(endpoint);
+                const data = await res.json();
+                dispatch({ type: 'SET_DRILL_DOWN_DATA', payload: data });
+            } catch (err) {
+                console.error('Drill-down fetch error:', err);
+                dispatch({ type: 'SET_DRILL_DOWN_DATA', payload: { error: err.message } });
+            }
+        }
+    }, []);
+
+    const closeDrillDown = useCallback(() => {
+        dispatch({ type: 'CLOSE_DRILL_DOWN' });
+    }, []);
+
     return (
-        <DashboardContext.Provider value={{ state, dispatch, setTab, fetchData, fetchParallel, addAlert, dismissAlert }}>
+        <DashboardContext.Provider value={{
+            state, dispatch, setTab, fetchData, fetchParallel,
+            addAlert, dismissAlert, openDrillDown, closeDrillDown
+        }}>
             {children}
         </DashboardContext.Provider>
     );

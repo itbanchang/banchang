@@ -1,0 +1,623 @@
+import { Router } from 'express';
+import { cached } from '../cache/staleCache.js';
+import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
+import { getRevenueFiscal } from '../helpers/fiscal.js';
+import { getOPDFlowPrediction } from '../ai/opdFlowPredictor.js';
+import { getWaitTimeOptimizer } from '../ai/waitTimeOptimizer.js';
+
+const router = Router();
+
+router.get('/today', cached('opdToday', 30000, async () => {
+  const start = Date.now();
+
+  // Run ALL queries in parallel for maximum speed
+  const [summary, breakdown, hourly, patients, analytics, yesterdayHourly, avgHourly7d, medianData, p90Data, revisitData, revenueData, level4Data, yesterdaySummary] = await Promise.all([
+    dbQueryOne(`
+      SELECT COUNT(*) as total,
+        SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN st.service7 IS NULL AND r.bill_time IS NULL THEN 1 ELSE 0 END) as still_here,
+        AVG(CASE WHEN st.service1 IS NOT NULL AND st.service1 > o.vsttime
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', o.vsttime), CONCAT(o.vstdate, ' ', st.service1)) END) as avg_wait_to_screen,
+        AVG(CASE WHEN st.service2 IS NOT NULL AND st.service2 > st.service1
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', st.service1), CONCAT(o.vstdate, ' ', st.service2)) END) as avg_screen_to_doctor,
+        AVG(CASE WHEN st.service7 IS NOT NULL AND st.service7 > st.service2
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', st.service2), CONCAT(o.vstdate, ' ', st.service7)) END) as avg_doctor_to_pharmacy,
+        AVG(CASE WHEN r.bill_time IS NOT NULL AND r.bill_time > st.service7
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', st.service7), CONCAT(o.vstdate, ' ', r.bill_time)) END) as avg_pharmacy_to_finance,
+        (SELECT COUNT(*) FROM holiday WHERE holiday_date = CURDATE()) as is_holiday_db
+      FROM ovst o 
+      LEFT JOIN service_time st ON o.vn = st.vn
+      LEFT JOIN rcpt_print r ON o.vn = r.vn
+      WHERE o.vstdate = CURDATE()
+    `),
+
+    // แยก เพศ + ผู้ป่วยใหม่/เก่า + KPI ประสิทธิภาพ
+    // ovstost: 1=ผู้ป่วยใหม่ (new), อื่น=เก่า (revisit)
+    // p.sex: 1 or 'ช'=ชาย, 2 or 'ญ'=หญิง
+    dbQueryOne(`
+      SELECT
+        SUM(CASE WHEN p.sex IN ('1','ช','ช ','ชาย') THEN 1 ELSE 0 END) as male,
+        SUM(CASE WHEN p.sex IN ('2','ญ','ญ ','หญิง') THEN 1 ELSE 0 END) as female,
+        SUM(CASE WHEN o.ovstost IN ('1','2') THEN 1 ELSE 0 END) as new_patient,
+        SUM(CASE WHEN o.ovstost NOT IN ('1','2') OR o.ovstost IS NULL THEN 1 ELSE 0 END) as revisit_patient,
+
+        -- SLA: % ที่รอไม่เกิน 60 นาที (เฉพาะที่มีข้อมูล service_time)
+        ROUND(
+          100.0 * SUM(CASE
+            WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime) <= 3600
+              AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime) THEN 1
+            WHEN r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(o.vsttime) <= 3600
+              AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(o.vsttime) THEN 1
+            ELSE 0 END)
+          / NULLIF(SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END), 0)
+        , 1) as sla_pct,
+
+        -- รอนานสุด (นาที) วันนี้
+        MAX(CASE
+          WHEN r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(o.vsttime)
+            THEN ROUND((TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(o.vsttime)) / 60)
+          WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime)
+            THEN ROUND((TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime)) / 60)
+          ELSE NULL END) as max_wait,
+
+        -- จำนวนที่ยังรอแพทย์หรือกำลังตรวจ (bottleneck)
+        SUM(CASE
+          WHEN st.service2 IS NULL AND st.service7 IS NULL AND r.bill_time IS NULL THEN 1
+          ELSE 0 END) as waiting_doctor,
+
+        -- Peak hour วันนี้
+        (SELECT HOUR(vsttime) FROM ovst
+          WHERE vstdate = CURDATE() GROUP BY HOUR(vsttime)
+          ORDER BY COUNT(*) DESC LIMIT 1) as peak_hour
+
+      FROM ovst o
+      INNER JOIN patient p ON o.hn = p.hn
+      LEFT JOIN service_time st ON o.vn = st.vn
+      LEFT JOIN rcpt_print r ON o.vn = r.vn
+      WHERE o.vstdate = CURDATE()
+    `),
+
+    dbQuery(`
+      SELECT HOUR(vsttime) as hr, COUNT(*) as cnt
+      FROM ovst WHERE vstdate = CURDATE() AND vsttime IS NOT NULL
+      GROUP BY HOUR(vsttime) ORDER BY hr
+    `),
+
+    dbQuery(`
+      SELECT o.vn, o.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
+        TIMESTAMPDIFF(YEAR,p.birthday,NOW()) as age, p.sex,
+        o.vsttime, o.oqueue, o.cur_dep, o.ovstost,
+        c.name as clinic_name,
+        st.service1 as cur_dep_time,
+        st.service2 as doctor_time,
+        st.service7 as outtime,
+        r.bill_time as finance_time,
+        CASE
+          WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 'กลับบ้าน'
+          WHEN st.service2 IS NOT NULL THEN 'รอรับยา'
+          WHEN st.service1 IS NOT NULL THEN 'กำลังตรวจ'
+          ELSE 'รอคัดกรอง'
+        END as current_status,
+        CASE
+          WHEN r.bill_time IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',r.bill_time))
+          WHEN st.service7 IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service7))
+          WHEN st.service2 IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service2))
+          ELSE TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), NOW())
+        END as total_minutes
+      FROM ovst o
+      INNER JOIN patient p ON o.hn = p.hn
+      LEFT JOIN clinic c ON o.cur_dep = c.clinic
+      LEFT JOIN service_time st ON o.vn = st.vn
+      LEFT JOIN rcpt_print r ON o.vn = r.vn
+      WHERE o.vstdate = CURDATE()
+      ORDER BY o.vsttime DESC LIMIT 200
+    `),
+
+    // —— Advanced Analytics (parallel — no extra latency) ——
+    dbQueryOne(`
+      SELECT
+        ROUND(STDDEV(CASE
+          WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime)
+            THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime)) / 60
+          WHEN r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(o.vsttime)
+            THEN (TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(o.vsttime)) / 60
+          ELSE NULL END), 1) as wait_stddev,
+        SUM(CASE WHEN st.vn IS NULL THEN 1 ELSE 0 END) as dropout_count,
+        ROUND(
+          100.0 * AVG(CASE
+            WHEN st.service2 IS NOT NULL AND st.service1 IS NOT NULL
+              AND TIME_TO_SEC(st.service2) > TIME_TO_SEC(st.service1)
+            THEN (TIME_TO_SEC(st.service2) - TIME_TO_SEC(st.service1)) / 60 END)
+          / NULLIF(AVG(CASE
+            WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime)
+            THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime)) / 60 END), 0)
+        , 1) as doctor_yield_pct,
+        ROUND(100.0 * SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*), 0), 1) as completion_rate
+      FROM ovst o
+      LEFT JOIN service_time st ON o.vn = st.vn
+      LEFT JOIN rcpt_print r ON o.vn = r.vn
+      WHERE o.vstdate = CURDATE()
+    `),
+
+    // Yesterday hourly (cache 30 mins)
+    dbQueryHeavy('opdYesterdayHourly', 30, `
+      SELECT HOUR(vsttime) as hr, COUNT(*) as cnt
+      FROM ovst WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND vsttime IS NOT NULL
+      GROUP BY HOUR(vsttime) ORDER BY hr
+    `).catch(() => []),
+
+    // 7-day average hourly (cache 60 mins)
+    dbQueryHeavy('opdAvgHourly7d', 60, `
+      SELECT HOUR(vsttime) as hr,
+        ROUND(COUNT(*) / GREATEST(DATEDIFF(CURDATE(), MIN(vstdate)), 1), 0) as avg_cnt,
+        COUNT(*) as total_cnt,
+        COUNT(DISTINCT vstdate) as num_days
+      FROM ovst
+      WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        AND vstdate < CURDATE()
+        AND vsttime IS NOT NULL
+      GROUP BY HOUR(vsttime) ORDER BY hr
+    `).catch(err => { console.error('⚠️ AI Hourly prediction query failed:', err.message); return []; }),
+
+    // —— NEW: Advanced Professional KPIs (Level 3) ——
+    // P50 Median + P90 Wait + Revisit 7d + Revenue per Visit + First-Contact Resolution
+    dbQueryOne(`
+      SELECT
+        ROUND((SELECT AVG(t.wait_min) FROM (
+          SELECT (TIME_TO_SEC(COALESCE(st2.service7, r2.bill_time)) - TIME_TO_SEC(o2.vsttime)) / 60 as wait_min
+          FROM ovst o2
+          LEFT JOIN service_time st2 ON o2.vn = st2.vn
+          LEFT JOIN rcpt_print r2 ON o2.vn = r2.vn
+          WHERE o2.vstdate = CURDATE()
+            AND (st2.service7 IS NOT NULL OR r2.bill_time IS NOT NULL)
+            AND TIME_TO_SEC(COALESCE(st2.service7, r2.bill_time)) > TIME_TO_SEC(o2.vsttime)
+          ORDER BY wait_min
+          LIMIT 2 OFFSET (
+            SELECT FLOOR(COUNT(*)/2) FROM ovst ox
+            LEFT JOIN service_time stx ON ox.vn = stx.vn
+            LEFT JOIN rcpt_print rx ON ox.vn = rx.vn
+            WHERE ox.vstdate = CURDATE() AND (stx.service7 IS NOT NULL OR rx.bill_time IS NOT NULL)
+          )
+        ) t), 0) as median_wait
+      FROM DUAL
+    `).catch(() => ({ median_wait: null })),
+
+    // P90 percentile wait
+    dbQueryOne(`
+      SELECT ROUND(
+        (SELECT MAX(t.wait_min) FROM (
+          SELECT (TIME_TO_SEC(COALESCE(st2.service7, r2.bill_time)) - TIME_TO_SEC(o2.vsttime)) / 60 as wait_min
+          FROM ovst o2
+          LEFT JOIN service_time st2 ON o2.vn = st2.vn
+          LEFT JOIN rcpt_print r2 ON o2.vn = r2.vn
+          WHERE o2.vstdate = CURDATE()
+            AND (st2.service7 IS NOT NULL OR r2.bill_time IS NOT NULL)
+            AND TIME_TO_SEC(COALESCE(st2.service7, r2.bill_time)) > TIME_TO_SEC(o2.vsttime)
+          ORDER BY wait_min ASC
+          LIMIT CEIL(0.9 * (
+            SELECT COUNT(*) FROM ovst ox
+            LEFT JOIN service_time stx ON ox.vn = stx.vn
+            LEFT JOIN rcpt_print rx ON ox.vn = rx.vn
+            WHERE ox.vstdate = CURDATE() AND (stx.service7 IS NOT NULL OR rx.bill_time IS NOT NULL)
+          ))
+        ) t)
+      , 0) as p90_wait
+      FROM DUAL
+    `).catch(() => ({ p90_wait: null })),
+
+    // Revisit within 7 days
+    dbQueryOne(`
+      SELECT
+        COUNT(DISTINCT o2.hn) as revisit_7d_count,
+        ROUND(100.0 * COUNT(DISTINCT o2.hn) / NULLIF((SELECT COUNT(DISTINCT hn) FROM ovst WHERE vstdate = CURDATE()), 0), 1) as revisit_7d_pct
+      FROM ovst o2
+      WHERE o2.vstdate = CURDATE()
+        AND EXISTS (
+          SELECT 1 FROM ovst o3
+          WHERE o3.hn = o2.hn
+            AND o3.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            AND o3.vstdate < CURDATE()
+        )
+    `).catch(() => ({ revisit_7d_count: 0, revisit_7d_pct: 0 })),
+
+    // Mean revenue per visit
+    dbQueryOne(`
+      SELECT
+        ROUND(AVG(t.total_charge), 0) as avg_revenue_per_visit,
+        ROUND(SUM(t.total_charge), 0) as total_opd_revenue
+      FROM (
+        SELECT o.vn, SUM(oi.qty * oi.unitprice) as total_charge
+        FROM ovst o
+        INNER JOIN opitemrece oi ON o.vn = oi.vn
+        WHERE o.vstdate = CURDATE()
+        GROUP BY o.vn
+      ) t
+    `).catch(() => ({ avg_revenue_per_visit: 0, total_opd_revenue: 0 })),
+
+    // —— Level 4: Operational Intelligence ——
+    dbQueryOne(`
+      SELECT
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) >= 60 THEN 1 ELSE 0 END) as elderly_count,
+        ROUND(100.0 * SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) >= 60 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as elderly_pct,
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 15 THEN 1 ELSE 0 END) as child_count,
+        ROUND(100.0 * SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 15 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as child_pct,
+        SUM(CASE WHEN HOUR(o.vsttime) < 12 THEN 1 ELSE 0 END) as morning_count,
+        SUM(CASE WHEN HOUR(o.vsttime) >= 12 THEN 1 ELSE 0 END) as afternoon_count,
+        ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
+          THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 0) as avg_time_to_first_service,
+        COUNT(DISTINCT o.cur_dep) as active_clinics,
+        ROUND(AVG(TIMESTAMPDIFF(YEAR, p.birthday, CURDATE())), 1) as avg_age
+      FROM ovst o
+      INNER JOIN patient p ON o.hn = p.hn
+      LEFT JOIN service_time st ON o.vn = st.vn
+      WHERE o.vstdate = CURDATE()
+    `).catch(() => ({})),
+
+    // Yesterday summary for comparison (cache 30 mins)
+    dbQueryOneHeavy('opdYesterdaySummary', 30, `
+      SELECT COUNT(*) as yesterday_total,
+        SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END) as yesterday_completed,
+        ROUND(AVG(CASE WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime)
+          THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime)) / 60
+          WHEN r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(o.vsttime)
+          THEN (TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(o.vsttime)) / 60
+          ELSE NULL END), 0) as yesterday_avg_wait
+      FROM ovst o
+      LEFT JOIN service_time st ON o.vn = st.vn
+      LEFT JOIN rcpt_print r ON o.vn = r.vn
+      WHERE o.vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+    `).catch(() => ({})),
+  ]);
+
+  const s = summary || {};
+  const b = breakdown || {};
+
+  // Throughput calculation: visits / hours_open (respecting closing time)
+  const currentHour = new Date().getHours();
+  const isHoliday = Boolean(s.is_holiday_db || [0, 6].includes(new Date().getDay()));
+  const closingHour = isHoliday ? 12 : 20; // 12:00 vs 20:30 (approx 20)
+  const hoursOpen = Math.min(closingHour, Math.max(7, currentHour)) - 7 + 1;
+  const throughput = Math.round(Number(s.completed || 0) / Math.max(1, hoursOpen));
+
+  console.log(`⏱️ OPD Today: ${Date.now() - start}ms`);
+  return {
+    data_source: 'HOSxP XE',
+    today_total: s.total || 0,
+    completed: s.completed || 0,
+    still_here: s.still_here || 0,
+    is_holiday: Boolean(s.is_holiday_db || [0, 6].includes(new Date().getDay())),
+    op_hours: Boolean(s.is_holiday_db || [0, 6].includes(new Date().getDay())) ? "07:00 - 12:00" : "07:00 - 20:30",
+    // เพศ
+    male: Number(b.male || 0),
+    female: Number(b.female || 0),
+    // ใหม่/เก่า
+    new_patient: Number(b.new_patient || 0),
+    revisit_patient: Number(b.revisit_patient || 0),
+    // —— KPI ประสิทธิภาพ (Level 1) ——
+    sla_pct: Number(b.sla_pct || 0),
+    max_wait: Number(b.max_wait || 0),
+    waiting_doctor: Number(b.waiting_doctor || 0),
+    peak_hour: Number(b.peak_hour ?? -1),
+    throughput,
+    avg_total_minutes: Math.round(
+      Number(s.avg_wait_to_screen || 0) +
+      Number(s.avg_screen_to_doctor || 0) +
+      Number(s.avg_doctor_to_pharmacy || 0) +
+      Number(s.avg_pharmacy_to_finance || 0)
+    ),
+    wait_steps: {
+      registration_to_screening: Math.round(s.avg_wait_to_screen || 0),
+      screening_to_doctor: Math.round(s.avg_screen_to_doctor || 0),
+      doctor_to_pharmacy: Math.round(s.avg_doctor_to_pharmacy || 0),
+      pharmacy_to_finance: Math.round(s.avg_pharmacy_to_finance || 0),
+    },
+    // —— Advanced Analytics (Level 2) ——
+    wait_stddev: Number(analytics?.wait_stddev || 0),   // σ ความผันผวน
+    dropout_count: Number(analytics?.dropout_count || 0),   // ออกก่อนรับบริการ
+    dropout_pct: Number(s.total) > 0
+      ? Math.round((Number(analytics?.dropout_count || 0) / Number(s.total)) * 100 * 10) / 10
+      : 0,
+    doctor_yield_pct: Number(analytics?.doctor_yield_pct || 0),  // % เวลาจริงกับแพทย์
+    completion_rate: Number(analytics?.completion_rate || 0),  // % ครบทุกขั้นตอน
+    // Capacity Utilization: visits / (ทฤษฎี max = throughput × hours_open × 1.5)
+    capacity_utilization: Math.min(100, Math.round(
+      (Number(s.total || 0) / Math.max(1, throughput * hoursOpen * 1.5)) * 100
+    )),
+    // —— Professional KPIs (Level 3) ——
+    median_wait: Number(medianData?.median_wait || 0),
+    p90_wait: Number(p90Data?.p90_wait || 0),
+    revisit_7d_count: Number(revisitData?.revisit_7d_count || 0),
+    revisit_7d_pct: Number(revisitData?.revisit_7d_pct || 0),
+    avg_revenue_per_visit: Number(revenueData?.avg_revenue_per_visit || 0),
+    total_opd_revenue: Number(revenueData?.total_opd_revenue || 0),
+    // Patient Throughput Efficiency (PTE): completed / still_here  ratio
+    pte_ratio: Number(s.still_here || 0) > 0 ? Math.round((Number(s.completed || 0) / Number(s.still_here || 1)) * 100) / 100 : Number(s.completed || 0) > 0 ? 99 : 0,
+    // —— Level 4: Operational Intelligence ——
+    elderly_count: Number(level4Data?.elderly_count || 0),
+    elderly_pct: Number(level4Data?.elderly_pct || 0),
+    child_count: Number(level4Data?.child_count || 0),
+    child_pct: Number(level4Data?.child_pct || 0),
+    morning_count: Number(level4Data?.morning_count || 0),
+    afternoon_count: Number(level4Data?.afternoon_count || 0),
+    morning_afternoon_ratio: Number(level4Data?.afternoon_count || 0) > 0
+      ? Math.round((Number(level4Data?.morning_count || 0) / Number(level4Data?.afternoon_count || 1)) * 100) / 100
+      : 0,
+    avg_time_to_first_service: Number(level4Data?.avg_time_to_first_service || 0),
+    active_clinics: Number(level4Data?.active_clinics || 0),
+    avg_age: Number(level4Data?.avg_age || 0),
+    revenue_per_hour: hoursOpen > 0 ? Math.round(Number(revenueData?.total_opd_revenue || 0) / hoursOpen) : 0,
+    // —— Level 5: Yesterday Comparison ——
+    yesterday_total: Number(yesterdaySummary?.yesterday_total || 0),
+    yesterday_completed: Number(yesterdaySummary?.yesterday_completed || 0),
+    yesterday_avg_wait: Number(yesterdaySummary?.yesterday_avg_wait || 0),
+    today_vs_yesterday_pct: Number(yesterdaySummary?.yesterday_total || 0) > 0
+      ? Math.round(((Number(s.total || 0) - Number(yesterdaySummary?.yesterday_total || 0)) / Number(yesterdaySummary?.yesterday_total || 1)) * 100)
+      : 0,
+    // Service Quality Index (SQI) — Composite 0-100
+    // Weight: SLA 40% + Completion 30% + Stability (σ<30=100%) 20% + Yield 10%
+    ...(() => {
+      const sqiSla = Math.round(Number(b.sla_pct ?? 0));
+      const sqiComplete = Math.round(Number(analytics?.completion_rate ?? 0));
+      const sqiStability = Math.round(Math.max(0, 100 - Number(analytics?.wait_stddev ?? 30)));
+      const sqiYield = Math.round(Math.min(100, Number(analytics?.doctor_yield_pct ?? 0)));
+      const sqiScore = Math.round(sqiSla * 0.40 + sqiComplete * 0.30 + sqiStability * 0.20 + sqiYield * 0.10);
+      console.log(`📊 SQI Debug: SLA=${sqiSla} Completion=${sqiComplete} Stability=${sqiStability} Yield=${sqiYield} → SQI=${sqiScore}`);
+      return {
+        sqi: sqiScore,
+        sqi_components: {
+          sla_compliance: { score: sqiSla, weight: 40, label: 'SLA Compliance', desc: '% visit ที่รอไม่เกินมาตรฐาน' },
+          process_completion: { score: sqiComplete, weight: 30, label: 'Process Completion', desc: '% ที่ผ่านครบทุกขั้นตอน' },
+          wait_stability: { score: sqiStability, weight: 20, label: 'Wait Stability', desc: 'ความสม่ำเสมอ (σ ต่ำ = ดี)' },
+          doctor_yield: { score: sqiYield, weight: 10, label: 'Doctor Yield', desc: '% เวลาจริงกับแพทย์' },
+        },
+      };
+    })(),
+
+    hourly: Array.from({ length: 24 }, (_, h) => ({
+      hour: h, label: `${String(h).padStart(2, '0')}:00`,
+      count: (hourly || []).find(x => x.hr === h)?.cnt || 0
+    })),
+    hourly_yesterday: Array.from({ length: 24 }, (_, h) => ({
+      hour: h, label: `${String(h).padStart(2, '0')}:00`,
+      count: (yesterdayHourly || []).find(x => x.hr === h)?.cnt || 0
+    })),
+    hourly_prediction: Array.from({ length: 24 }, (_, h) => {
+      const avg = Number((avgHourly7d || []).find(x => x.hr === h)?.avg_cnt || 0);
+      const sd = Number((avgHourly7d || []).find(x => x.hr === h)?.sd_cnt || 0);
+      // AI prediction: weighted avg + small trend adjustment (grow 2% if positive trend)
+      const todayVal = (hourly || []).find(x => x.hr === h)?.cnt || 0;
+      const predicted = avg > 0 ? Math.round(avg * 1.02 + (todayVal > avg ? (todayVal - avg) * 0.1 : 0)) : 0;
+      return { hour: h, label: `${String(h).padStart(2, '0')}:00`, count: predicted, confidence: Math.max(0, Math.round(100 - sd * 5)) };
+    }),
+    patients: (patients || []).map(pt => ({
+      ...pt,
+      wait_registration: pt.vsttime && pt.cur_dep_time && pt.cur_dep_time > pt.vsttime ? timeDiffMin(pt.vsttime, pt.cur_dep_time) : null,
+      wait_screening: pt.cur_dep_time && pt.doctor_time && pt.doctor_time > pt.cur_dep_time ? timeDiffMin(pt.cur_dep_time, pt.doctor_time) : null,
+      wait_doctor: pt.doctor_time && pt.outtime && pt.outtime > pt.doctor_time ? timeDiffMin(pt.doctor_time, pt.outtime) : null,
+      wait_pharmacy: pt.outtime && pt.finance_time && pt.finance_time > pt.outtime ? timeDiffMin(pt.outtime, pt.finance_time) : null
+    }))
+  };
+}));
+
+
+// Wait times by clinic
+router.get('/by-clinic', cached('opdClinic', 60000, async () => {
+  const clinics = await dbQuery(`
+    SELECT c.name as clinic, COUNT(*) as visits,
+      AVG(CASE WHEN st.service7 IS NOT NULL AND st.service7 > o.vsttime
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service7)) END) as avg_total,
+      AVG(CASE WHEN st.service1 IS NOT NULL AND st.service1 > o.vsttime
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service1)) END) as avg_wait,
+      SUM(CASE WHEN st.service7 IS NULL AND r.bill_time IS NULL THEN 1 ELSE 0 END) as still_waiting
+    FROM ovst o 
+    LEFT JOIN clinic c ON o.cur_dep = c.clinic
+    LEFT JOIN service_time st ON o.vn = st.vn
+    LEFT JOIN rcpt_print r ON o.vn = r.vn
+    WHERE o.vstdate = CURDATE() AND c.name IS NOT NULL
+    GROUP BY c.clinic, c.name HAVING visits >= 2
+    ORDER BY visits DESC LIMIT 20
+  `);
+  return {
+    data_source: 'HOSxP XE',
+    clinics: (clinics || []).map(c => ({
+      ...c,
+      avg_total: Math.round(c.avg_total || 0),
+      avg_wait: Math.round(c.avg_wait || 0)
+    }))
+  };
+}));
+
+// Wait time trends (past 7 days)
+router.get('/wait-trend', cached('opdTrend', 120000, async () => {
+  const trend = await dbQueryHeavy('opdWaitTrend7d', 30, `
+    SELECT o.vstdate as date, COUNT(*) as visits,
+      AVG(CASE WHEN st.service7 IS NOT NULL AND st.service7 > o.vsttime
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service7)) END) as avg_total,
+      AVG(CASE WHEN st.service1 IS NOT NULL AND st.service1 > o.vsttime
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime), CONCAT(o.vstdate,' ',st.service1)) END) as avg_wait
+    FROM ovst o
+    LEFT JOIN service_time st ON o.vn = st.vn
+    WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+    GROUP BY o.vstdate ORDER BY o.vstdate
+  `);
+  return {
+    data_source: 'HOSxP XE',
+    trend: (trend || []).map(d => ({ ...d, avg_total: Math.round(d.avg_total || 0), avg_wait: Math.round(d.avg_wait || 0) }))
+  };
+}));
+
+function timeDiffMin(a, b) {
+  if (!a || !b) return null;
+  const toMin = t => { const p = String(t).split(':'); return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0); };
+  const diff = toMin(b) - toMin(a);
+  return diff > 0 ? diff : null;
+}
+
+// OPD Monthly Trend — ปีงบประมาณ (ต.ค.–ก.ย.)
+// ⚡ OPTIMIZED: 2 parallel queries + TIME_TO_SEC + 1hr cache
+router.get('/monthly-fiscal', cached('opdMonthlyFiscal', 3600000, async () => {
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+
+  const fiscalStartYear = currentMonth >= 10 ? currentYear : currentYear - 1;
+  const fiscalStart = `${fiscalStartYear}-10-01`;
+  const fiscalEnd = `${fiscalStartYear + 1}-09-30`;
+  const fiscalBE = fiscalStartYear + 543 + 1;
+
+  // วิ่ง 2 queries พร้อมกัน:
+  // Q1: นับรายเดือน — ไม่ JOIN เลย เร็วมาก
+  // Q2: คำนวณเวลารอ — JOIN service_time อย่างเดียว + TIME_TO_SEC แทน CONCAT
+  const [visitRows, waitRows] = await Promise.all([
+
+    dbQuery(`
+      SELECT
+        YEAR(vstdate)  AS year_num,
+        MONTH(vstdate) AS month_num,
+        COUNT(*)       AS total_visits
+      FROM ovst
+      WHERE vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE())
+      GROUP BY YEAR(vstdate), MONTH(vstdate)
+    `),
+
+    dbQuery(`
+      SELECT
+        YEAR(o.vstdate)  AS year_num,
+        MONTH(o.vstdate) AS month_num,
+        AVG(CASE
+          WHEN st.service1 IS NOT NULL
+            AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
+          THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60
+        END) AS avg_reg_to_screen,
+        AVG(CASE
+          WHEN st.service2 IS NOT NULL AND st.service1 IS NOT NULL
+            AND TIME_TO_SEC(st.service2) > TIME_TO_SEC(st.service1)
+          THEN (TIME_TO_SEC(st.service2) - TIME_TO_SEC(st.service1)) / 60
+        END) AS avg_screen_to_doc,
+        AVG(CASE
+          WHEN st.service7 IS NOT NULL AND st.service2 IS NOT NULL
+            AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service2)
+          THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service2)) / 60
+        END) AS avg_doc_to_rx
+      FROM ovst o
+      STRAIGHT_JOIN service_time st ON st.vn = o.vn
+      WHERE o.vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE())
+        AND st.service1 IS NOT NULL
+      GROUP BY YEAR(o.vstdate), MONTH(o.vstdate)
+    `)
+
+  ]);
+
+  const MONTH_TH = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  const fiscalMonths = [];
+
+  for (let i = 0; i < 12; i++) {
+    const mNum = ((9 + i) % 12) + 1;
+    const yNum = mNum >= 10 ? fiscalStartYear : fiscalStartYear + 1;
+
+    const vRow = (visitRows || []).find(r => Number(r.month_num) === mNum && Number(r.year_num) === yNum);
+    const wRow = (waitRows || []).find(r => Number(r.month_num) === mNum && Number(r.year_num) === yNum);
+
+    const reg = Math.round(Number(wRow?.avg_reg_to_screen || 0));
+    const screen = Math.round(Number(wRow?.avg_screen_to_doc || 0));
+    const doc = Math.round(Number(wRow?.avg_doc_to_rx || 0));
+    const total = reg + screen + doc;
+
+    fiscalMonths.push({
+      month: MONTH_TH[mNum],
+      month_num: mNum,
+      year_num: yNum,
+      total_visits: Number(vRow?.total_visits || 0),
+      avg_total: total,
+      avg_reg: reg,
+      avg_screen: screen,
+      avg_doc: doc,
+      avg_rx: 0,
+      has_data: Number(vRow?.total_visits || 0) > 0,
+    });
+  }
+
+  const withData = fiscalMonths.filter(m => m.has_data && m.avg_total > 0);
+  const benchmark = withData.length
+    ? Math.round(withData.reduce((s, m) => s + m.avg_total, 0) / withData.length)
+    : 0;
+
+  return {
+    data_source: 'HOSxP XE',
+    fiscal_year_be: fiscalBE,
+    fiscal_start: fiscalStart,
+    fiscal_end: fiscalEnd,
+    benchmark_avg: benchmark,
+    months: fiscalMonths,
+  };
+}));
+
+// —— OPD Estimated Revenue — Fiscal Year (3 ปีย้อนหลัง) ——
+router.get('/revenue-fiscal', cached('opdRevenueFiscal', 3600000, () => getRevenueFiscal(null, 'HOSxP XE · vn_stat')));
+
+// ============================================================
+// 🚑 ER Operations — Live from HOSxP XE (moved to er.js)
+// ============================================================
+
+// ============================================================
+// 🤖 AI #14 — OPD Patient Flow Predictor
+// ============================================================
+router.get('/ai/flow-prediction', cached('opdFlowPrediction', 60000, async () => {
+  return await getOPDFlowPrediction();
+}));
+
+// ============================================================
+// 🤖 AI #16 — OPD Wait Time Optimizer
+// ============================================================
+router.get('/ai/wait-optimizer', cached('opdWaitOptimizer', 45000, async () => {
+  return await getWaitTimeOptimizer();
+}));
+
+// ---- OPD Drill-Down (cached 30s for live data) ----
+router.get('/drilldown', cached('opdDrillDown', 30000, async (req) => {
+  const { type } = req.query;
+
+  if (type === 'wait') {
+    const [stats, topWaiters] = await Promise.all([
+      dbQueryOne(`
+                SELECT 
+                    SUM(CASE WHEN (TIME_TO_SEC(COALESCE(st.service7, r.bill_time)) - TIME_TO_SEC(o.vsttime))/60 <= 30 THEN 1 ELSE 0 END) as under30,
+                    SUM(CASE WHEN (TIME_TO_SEC(COALESCE(st.service7, r.bill_time)) - TIME_TO_SEC(o.vsttime))/60 BETWEEN 31 AND 60 THEN 1 ELSE 0 END) as to60,
+                    SUM(CASE WHEN (TIME_TO_SEC(COALESCE(st.service7, r.bill_time)) - TIME_TO_SEC(o.vsttime))/60 BETWEEN 61 AND 90 THEN 1 ELSE 0 END) as to90,
+                    SUM(CASE WHEN (TIME_TO_SEC(COALESCE(st.service7, r.bill_time)) - TIME_TO_SEC(o.vsttime))/60 > 90 THEN 1 ELSE 0 END) as over90
+                FROM ovst o
+                LEFT JOIN service_time st ON o.vn = st.vn
+                LEFT JOIN rcpt_print r ON o.vn = r.vn
+                WHERE o.vstdate = CURDATE() AND (st.service7 IS NOT NULL OR r.bill_time IS NOT NULL)
+            `),
+      dbQuery(`
+                SELECT o.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name, c.name as clinic,
+                    CASE 
+                        WHEN r.bill_time IS NOT NULL THEN 'Finance'
+                        WHEN st.service7 IS NOT NULL THEN 'Pharmacy'
+                        WHEN st.service2 IS NOT NULL THEN 'Doctor'
+                        WHEN st.service1 IS NOT NULL THEN 'Screening'
+                        ELSE 'Reception'
+                    END as status,
+                    TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', o.vsttime), NOW()) as minutes
+                FROM ovst o
+                INNER JOIN patient p ON o.hn = p.hn
+                LEFT JOIN clinic c ON o.cur_dep = c.clinic
+                LEFT JOIN service_time st ON o.vn = st.vn
+                LEFT JOIN rcpt_print r ON o.vn = r.vn
+                WHERE o.vstdate = CURDATE() AND (st.service7 IS NULL AND r.bill_time IS NULL)
+                ORDER BY minutes DESC LIMIT 15
+            `)
+    ]);
+
+    return {
+      stats: stats || { under30: 0, to60: 0, to90: 0, over90: 0 },
+      topWaiters: topWaiters || []
+    };
+  }
+
+  return { error: 'Unsupported drill-down type' };
+}));
+
+export default router;

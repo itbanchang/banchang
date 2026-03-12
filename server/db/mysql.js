@@ -183,8 +183,13 @@ export async function dbQuery(sql, params = []) {
         connection = await p.getConnection();
         connectionId = connection.threadId;
 
-        // Set MySQL session timeout as additional safety net
-        await connection.query('SET SESSION MAX_EXECUTION_TIME = 10000');
+        // Set session timeout as additional safety net
+        // MariaDB uses max_statement_time (seconds), MySQL uses MAX_EXECUTION_TIME (ms)
+        try {
+            await connection.query('SET SESSION max_statement_time = 10');
+        } catch {
+            // Silently ignore — KILL timer is the primary protection
+        }
 
         // Schedule KILL if query exceeds 10 seconds
         killTimer = setTimeout(async () => {
@@ -237,15 +242,26 @@ export async function dbQuery(sql, params = []) {
             throw new Error(`⏱️ QUERY_TIMEOUT: SQL exceeded 10s limit and was killed to protect Slave1`);
         }
 
-        // Circuit Breaker: track failures
-        CIRCUIT_BREAKER.failureCount++;
-        CIRCUIT_BREAKER.lastFailure = Date.now();
+        // Circuit Breaker: only track CONNECTION failures, not SQL errors
+        // SQL errors (Unknown column, syntax, etc.) are app bugs — not DB health issues
+        const isConnectionError = !err.message.includes('Unknown column')
+            && !err.message.includes('doesn\'t exist')
+            && !err.message.includes('syntax')
+            && !err.message.includes('You have an error in your SQL')
+            && err.code !== 'ER_BAD_FIELD_ERROR'
+            && err.code !== 'ER_NO_SUCH_TABLE'
+            && err.code !== 'ER_PARSE_ERROR';
 
-        if (CIRCUIT_BREAKER.failureCount >= CIRCUIT_BREAKER.threshold) {
-            CIRCUIT_BREAKER.state = 'OPEN';
-            CIRCUIT_BREAKER.circuit_opened++;
-            QUERY_METRICS.circuit_opened++;
-            console.error(`\n🔴 Circuit Breaker: OPEN — ${CIRCUIT_BREAKER.failureCount} consecutive failures. Pausing for ${CIRCUIT_BREAKER.resetTimeMs / 1000}s`);
+        if (isConnectionError) {
+            CIRCUIT_BREAKER.failureCount++;
+            CIRCUIT_BREAKER.lastFailure = Date.now();
+
+            if (CIRCUIT_BREAKER.failureCount >= CIRCUIT_BREAKER.threshold) {
+                CIRCUIT_BREAKER.state = 'OPEN';
+                CIRCUIT_BREAKER.circuit_opened++;
+                QUERY_METRICS.circuit_opened++;
+                console.error(`\n🔴 Circuit Breaker: OPEN — ${CIRCUIT_BREAKER.failureCount} consecutive failures. Pausing for ${CIRCUIT_BREAKER.resetTimeMs / 1000}s`);
+            }
         }
 
         throw err;

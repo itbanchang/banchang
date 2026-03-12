@@ -2,15 +2,21 @@
 // BCH 360° Intelligence V.10 — Main App
 // Material Dashboard 3 PRO — White Minimal Theme
 // ============================================================
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useDashboard } from './context/DashboardContext.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import KPICard from './components/KPICard.jsx';
 import AlertBanner from './components/AlertBanner.jsx';
-import AIAssistant from './components/AIAssistant.jsx';
-import DailyBriefing from './components/DailyBriefing.jsx';
+import DataFreshnessBar from './components/shared/DataFreshnessBar.jsx';
+const AIAssistant = React.lazy(() => import('./components/AIAssistant.jsx'));
+import Clock from './components/Clock.jsx';
+import DrillDownModal from './components/shared/DrillDownModal.jsx';
 
 const FinanceTab = React.lazy(() => import('./components/FinanceTab.jsx'));
+// Preload the component in background
+const preloadFinanceTab = () => {
+    import('./components/FinanceTab.jsx');
+};
 const OPDTab = React.lazy(() => import('./components/OPDTab.jsx'));
 const IPDTab = React.lazy(() => import('./components/IPDTab.jsx'));
 const ERTab = React.lazy(() => import('./components/ERTab.jsx'));
@@ -18,6 +24,7 @@ const DentalTab = React.lazy(() => import('./components/DentalTab.jsx'));
 const ThaiMedTab = React.lazy(() => import('./components/ThaiMedTab.jsx'));
 const PhysTherapyTab = React.lazy(() => import('./components/PhysTherapyTab.jsx'));
 const NCDTab = React.lazy(() => import('./components/NCDTab.jsx'));
+const MedRecTab = React.lazy(() => import('./components/MedRecTab.jsx'));
 
 const TABS = [
     { id: 'finance', label: 'ศูนย์จัดเก็บรายได้', icon: '💰', desc: 'รายได้ · ค่าใช้จ่าย · AI Forecast' },
@@ -28,6 +35,7 @@ const TABS = [
     { id: 'thaimed', label: 'แพทย์แผนไทย', icon: '🌿', desc: 'นวด · สมุนไพร · TPI Analytics' },
     { id: 'phystherapy', label: 'กายภาพบำบัด', icon: '🏋️', desc: 'Rehab · PT · PPI Analytics' },
     { id: 'ncd', label: 'NCD', icon: '🫀', desc: 'DM · HT · CKD · NCI Analytics' },
+    { id: 'medrec', label: 'Medical Record Audit', icon: '📇', desc: 'Audit · Coding Quality Analytics' },
 ];
 
 /* ----- Utility: คำนวณ trend % เทียบกับค่าก่อนหน้า ----------- */
@@ -48,7 +56,7 @@ function LoadingSpinner() {
     );
 }
 
-/* ----- Error Boundary ----------------------------------------- */
+/* ----- Error Boundary (Enhanced: shows tab name + retry) ------- */
 class ErrorBoundary extends React.Component {
     constructor(props) {
         super(props);
@@ -58,7 +66,7 @@ class ErrorBoundary extends React.Component {
         return { hasError: true, error };
     }
     componentDidCatch(error, info) {
-        console.error('Tab Error:', error, info);
+        console.error(`[ErrorBoundary] ${this.props.tabName || 'Unknown'} crashed:`, error, info);
     }
     render() {
         if (this.state.hasError) {
@@ -66,10 +74,13 @@ class ErrorBoundary extends React.Component {
                 <div className="glass-card" style={{ padding: '3rem', textAlign: 'center', margin: '2rem 0' }}>
                     <div style={{ fontSize: '48px', marginBottom: '1rem' }}>⚠️</div>
                     <h3 style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--md-text-primary)', marginBottom: '0.5rem' }}>
-                        เกิดข้อผิดพลาดในการแสดงผล
+                        เกิดข้อผิดพลาดในการแสดงผล{this.props.tabName ? ` — ${this.props.tabName}` : ''}
                     </h3>
-                    <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--md-text-secondary)', marginBottom: '1.5rem' }}>
+                    <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--md-text-secondary)', marginBottom: '0.5rem' }}>
                         {this.state.error?.message || 'Unknown error'}
+                    </p>
+                    <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', marginBottom: '1.5rem', fontFamily: "'JetBrains Mono', monospace" }}>
+                        💡 ลองกดปุ่มด้านล่างเพื่อรีเซ็ต หรือเปลี่ยน Tab แล้วกลับมาใหม่
                     </p>
                     <button
                         onClick={() => this.setState({ hasError: false, error: null })}
@@ -78,7 +89,7 @@ class ErrorBoundary extends React.Component {
                             padding: '0.625rem 2rem', borderRadius: '0.75rem',
                             fontWeight: 700, fontSize: 'var(--fs-sm)',
                             border: 'none', cursor: 'pointer',
-                            boxShadow: '0 4px 12px rgba(124,58,237,.3)',
+                            boxShadow: '0 4px 12px rgba(15,118,110,.3)',
                         }}
                     >
                         🔄 ลองใหม่อีกครั้ง
@@ -91,35 +102,32 @@ class ErrorBoundary extends React.Component {
 }
 
 /* ----- Mini KPI chip in header -------------------------------- */
-function MiniKPI({ label, value, color, icon }) {
-    return (
-        <div className="flex items-center gap-2.5">
-            <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-base shadow-md"
-                style={{ background: `${color}15`, color }}
-            >
-                {icon}
-            </div>
-            <div className="flex flex-col leading-none">
-                <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400">{label}</span>
-                <span className="text-[13px] font-bold text-gray-800 mt-0.5">{value}</span>
-            </div>
-        </div>
-    );
-}
 
-/* ----- Vertical divider --------------------------------------- */
-function HDivider() {
-    return <div className="hidden xl:block w-px h-6 bg-gray-200" />;
-}
 
 /* ============================================================== */
 export default function App() {
     const { state, setTab, fetchData } = useDashboard();
     const { activeTab, dashboardSummary } = state;
-    const [currentTime, setCurrentTime] = useState(new Date());
     const [systemStatus, setSystemStatus] = useState(null);
     const [aiHub, setAiHub] = useState(null);
+
+    // ── Dark Mode ──
+    const [darkMode, setDarkMode] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return localStorage.getItem('bch-dark-mode') === 'true';
+        }
+        return false;
+    });
+
+    useEffect(() => {
+        const html = document.documentElement;
+        if (darkMode) {
+            html.classList.add('dark');
+        } else {
+            html.classList.remove('dark');
+        }
+        localStorage.setItem('bch-dark-mode', darkMode);
+    }, [darkMode]);
 
     useWebSocket();
 
@@ -132,16 +140,22 @@ export default function App() {
             fetchData('dashboardSummary', '/api/dashboard/summary');
             fetch('/api/ai/hub').then(r => r.json()).then(setAiHub).catch(() => { });
         }, 30000);
+
+        // ⚡ Preload FinanceTab after brief delay to avoid blocking LCP/TBT
+        setTimeout(preloadFinanceTab, 100);
+
         return () => clearInterval(interval);
     }, [fetchData]);
 
-    useEffect(() => {
-        const ticker = setInterval(() => setCurrentTime(new Date()), 1000);
-        return () => clearInterval(ticker);
-    }, []);
-
     const summary = dashboardSummary;
     const isLive = systemStatus?.mysql_connected;
+
+    // ── Force Refresh handler (for DataFreshnessBar) ──
+    const handleForceRefresh = useCallback(() => {
+        fetchData('dashboardSummary', '/api/dashboard/summary');
+        fetch('/api/system/status').then(r => r.json()).then(setSystemStatus).catch(() => { });
+        fetch('/api/ai/hub').then(r => r.json()).then(setAiHub).catch(() => { });
+    }, [fetchData]);
 
     return (
         <div className="min-h-screen" style={{ background: 'var(--md-bg)' }}>
@@ -152,9 +166,9 @@ export default function App() {
             <header
                 className="sticky top-0 z-50 backdrop-blur-md border-b"
                 style={{
-                    background: 'rgba(255,255,255,0.92)',
+                    background: darkMode ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.92)',
                     borderColor: 'var(--md-border)',
-                    boxShadow: '0 1px 0 var(--md-divider), 0 2px 8px rgba(0,0,0,.04)',
+                    boxShadow: darkMode ? '0 1px 0 rgba(255,255,255,0.05), 0 2px 8px rgba(0,0,0,.2)' : '0 1px 0 var(--md-divider), 0 2px 8px rgba(0,0,0,.04)',
                 }}
             >
                 <div className="max-w-[1700px] xl:max-w-[2100px] 2xl:max-w-[2800px] mx-auto px-5 py-2.5">
@@ -166,7 +180,7 @@ export default function App() {
                             <div className="relative">
                                 <div
                                     className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-base font-black shadow-md"
-                                    style={{ background: 'linear-gradient(135deg,#7c3aed,#6d28d9)' }}
+                                    style={{ background: 'linear-gradient(135deg,#0f766e,#059669)' }}
                                 >
                                     B
                                 </div>
@@ -179,47 +193,54 @@ export default function App() {
 
                             {/* Name */}
                             <div>
-                                <h1 className="text-[15px] font-black tracking-tight leading-none flex items-center gap-1.5"
+                                <h1 className="text-[17px] font-black tracking-tight leading-none flex items-center gap-1.5"
                                     style={{ color: 'var(--md-text-primary)' }}>
                                     BCH
                                     <span style={{ color: 'var(--md-primary)' }}>360°</span>
-                                    <span className="text-gray-400 font-normal text-xs tracking-wider">Intelligence</span>
+                                    <span className="text-gray-400 font-normal text-[13px] tracking-wider">Intelligence</span>
                                 </h1>
-                                <div className="flex items-center gap-1.5 mt-0.5">
+                                <div className="flex items-center gap-1.5 mt-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                    <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
                                         {isLive ? 'System Online' : 'Connecting…'}
                                     </p>
                                 </div>
                             </div>
                         </div>
 
-                        {/* Mini KPIs */}
-                        <div className="hidden xl:flex items-center gap-5">
-                            {summary && (
-                                <>
-                                    <MiniKPI label="Revenue" value={`฿${((summary.finance?.total_revenue || 0) / 1e6).toFixed(1)}M`} color="#7c3aed" icon="📈" />
-                                    <HDivider />
-                                    <MiniKPI label="Bed Occ." value={`${summary.beds?.occupancy_rate || 0}%`} color="#10b981" icon="🛏️" />
-                                    <HDivider />
-                                    <MiniKPI label="Risk Cases" value={aiHub?.ews?.critical || summary.clinical?.critical_patients || 0} color="#f43f5e" icon="🚨" />
-                                </>
-                            )}
+                        {/* ── Data Freshness Bar ── */}
+                        <div className="hidden md:flex">
+                            <DataFreshnessBar onForceRefresh={handleForceRefresh} />
                         </div>
 
                         {/* Right: clock + avatar */}
                         <div className="flex items-center gap-3">
                             <div className="text-right hidden sm:block">
                                 <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">Global Scan</p>
-                                <p className="text-xs font-mono font-bold text-gray-700 mt-0.5">
-                                    {currentTime.toLocaleTimeString('th-TH')}
-                                </p>
+                                <Clock />
                             </div>
+
+                            {/* Dark Mode Toggle */}
+                            <button
+                                id="dark-mode-toggle"
+                                onClick={() => setDarkMode(prev => !prev)}
+                                title={darkMode ? 'เปลี่ยนเป็น Light Mode' : 'เปลี่ยนเป็น Dark Mode'}
+                                style={{
+                                    width: '36px', height: '36px', borderRadius: '10px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: darkMode ? 'rgba(45,212,191,0.15)' : 'rgba(15,23,42,0.06)',
+                                    border: `1px solid ${darkMode ? 'rgba(45,212,191,0.3)' : 'rgba(0,0,0,0.06)'}`,
+                                    cursor: 'pointer', transition: 'all 0.3s ease',
+                                    fontSize: '16px',
+                                }}
+                            >
+                                {darkMode ? '☀️' : '🌙'}
+                            </button>
 
                             {/* Avatar */}
                             <div
                                 className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-xs font-black shadow-sm"
-                                style={{ background: 'linear-gradient(135deg,#7c3aed,#0ea5e9)' }}
+                                style={{ background: 'linear-gradient(135deg,#0f766e,#0284c7)' }}
                             >
                                 {(state.user?.full_name || 'Admin').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
                             </div>
@@ -244,11 +265,15 @@ export default function App() {
                         trend={summary?.finance?.trend_revenue}
                         trendLabel="vs เดือนก่อน"
                         loading={!summary}
+                        drillDownId="finance_revenue"
+                        drillDownEndpoint="/api/finance/drilldown?type=revenue"
                     />
                     <KPICard
                         title="อัตราครองเตียง" value={summary?.beds?.occupancy_rate}
                         format="percent" icon="🛏️" color="green"
                         loading={!summary}
+                        drillDownId="ipd_beds"
+                        drillDownEndpoint="/api/ipd/drilldown?type=beds"
                     />
                 </div>
 
@@ -256,17 +281,16 @@ export default function App() {
                     TAB NAVIGATION — Material Expanded Tabs
                 =================================================== */}
                 <div
-                    className="mb-5 overflow-x-auto scrollbar-hide sticky z-40"
+                    className="mb-5 sticky z-40"
                     style={{ top: '64px' }}
                 >
-                    {/* Tab pill wrapper — full-width on large screens */}
+                    {/* Tab pill wrapper — flex-wrap to prevent items from being hidden */}
                     <div
-                        className="flex items-center gap-1.5 p-1.5 rounded-2xl w-full"
+                        className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-2xl w-full"
                         style={{
                             background: 'var(--md-surface)',
                             border: '1px solid var(--md-border)',
                             boxShadow: 'var(--md-shadow-sm)',
-                            minWidth: 'max-content',
                         }}
                     >
                         {TABS.map(tab => (
@@ -277,7 +301,7 @@ export default function App() {
                                 className="md-tab-item"
                                 data-active={activeTab === tab.id}
                                 style={{
-                                    flex: '1 1 0',
+                                    flex: '1 1 auto',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
@@ -291,23 +315,23 @@ export default function App() {
                                         ? 'var(--md-primary)'
                                         : 'transparent',
                                     boxShadow: activeTab === tab.id
-                                        ? '0 4px 14px rgba(124,58,237,.28)'
+                                        ? '0 4px 14px rgba(15, 118, 110, .28)'
                                         : 'none',
-                                    minWidth: '9rem',
+                                    minWidth: '150px',
                                 }}
                             >
                                 {/* Icon */}
-                                <span style={{ fontSize: '1.25rem', lineHeight: 1, flexShrink: 0 }}>
+                                <span style={{ fontSize: '1.5rem', lineHeight: 1, flexShrink: 0 }}>
                                     {tab.icon}
                                 </span>
 
                                 {/* Label stack */}
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '3px' }}>
                                     <span style={{
-                                        fontSize: 'var(--fs-sm)',     /* 12px */
-                                        fontWeight: 700,
+                                        fontSize: 'var(--fs-base)',     /* 15px */
+                                        fontWeight: 800,
                                         textTransform: 'uppercase',
-                                        letterSpacing: '0.06em',
+                                        letterSpacing: '0.04em',
                                         lineHeight: 1,
                                         color: activeTab === tab.id ? '#fff' : 'var(--md-text-primary)',
                                         whiteSpace: 'nowrap',
@@ -315,11 +339,11 @@ export default function App() {
                                         {tab.label}
                                     </span>
                                     <span style={{
-                                        fontSize: 'var(--fs-2xs)',    /* 10px */
-                                        fontWeight: 500,
+                                        fontSize: '11px',    /* 11px */
+                                        fontWeight: 600,
                                         letterSpacing: '0.04em',
                                         lineHeight: 1,
-                                        opacity: activeTab === tab.id ? 0.75 : 0.55,
+                                        opacity: activeTab === tab.id ? 0.85 : 0.65,
                                         color: activeTab === tab.id ? '#fff' : 'var(--md-text-secondary)',
                                         whiteSpace: 'nowrap',
                                     }}>
@@ -343,9 +367,9 @@ export default function App() {
                 </div>
 
                 {/* Tab Content */}
-                <ErrorBoundary>
+                <ErrorBoundary key={activeTab} tabName={TABS.find(t => t.id === activeTab)?.label || activeTab}>
                     <Suspense fallback={<LoadingSpinner />}>
-                        <div className="min-h-[600px] mb-10">
+                        <div className="min-h-[600px] mb-10 animate-fade-in" style={{ animationDuration: '0.5s' }}>
                             {activeTab === 'finance' && <FinanceTab />}
                             {activeTab === 'opd' && <OPDTab />}
                             {activeTab === 'ipd' && <IPDTab />}
@@ -354,13 +378,18 @@ export default function App() {
                             {activeTab === 'thaimed' && <ThaiMedTab />}
                             {activeTab === 'phystherapy' && <PhysTherapyTab />}
                             {activeTab === 'ncd' && <NCDTab />}
+                            {activeTab === 'medrec' && <MedRecTab />}
                         </div>
                     </Suspense>
                 </ErrorBoundary>
 
-                {/* AI Assistant & Flash Briefing */}
-                <AIAssistant />
-                <DailyBriefing />
+                {/* AI Assistant */}
+                <Suspense fallback={null}>
+                    <AIAssistant />
+                </Suspense>
+
+                {/* Drill Down Modal */}
+                <DrillDownModal />
             </main>
 
             {/* ===================================================
@@ -378,7 +407,7 @@ export default function App() {
                                 flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold text-gray-400">
                     <div className="flex items-center gap-2 flex-wrap">
                         <span style={{ color: 'var(--md-text-tertiary)', fontWeight: 600 }}>© 2026</span>
-                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(124,58,237,.08)', padding: '2px 6px', borderRadius: '4px', color: '#7c3aed' }}>AI PROJECT</span>
+                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(15, 118, 110, .08)', padding: '2px 6px', borderRadius: '4px', color: '#0f766e' }}>AI PROJECT</span>
                         <span className="font-bold" style={{ color: 'var(--md-primary)', letterSpacing: '-0.01em' }}>BCH 360° Intelligence</span>
                         <span style={{ color: 'var(--md-text-tertiary)' }}>v10.4.0</span>
                         <span className="text-gray-300">·</span>

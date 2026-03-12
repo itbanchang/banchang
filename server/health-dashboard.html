@@ -177,6 +177,13 @@
     .dot.red { background: var(--red); box-shadow: 0 0 8px var(--red-glow); }
     .dot.yellow { background: var(--yellow); }
 
+    /* Buttons */
+    .btn { background: var(--blue); color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: #2563eb; transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-green { background: var(--green); }
+    .btn-green:hover { background: #16a34a; }
+
     /* Footer */
     .footer { text-align: center; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
     .footer a { color: var(--blue); text-decoration: none; }
@@ -292,9 +299,14 @@
     <div class="grid grid-2">
       <!-- Deploy Info -->
       <div class="card">
-        <div class="card-header">
-          <div class="card-icon" style="background:rgba(249,115,22,0.12);">🚀</div>
-          <div class="card-title">Deploy Info</div>
+        <div class="card-header" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="card-icon" style="background:rgba(249,115,22,0.12);">🚀</div>
+            <div class="card-title">Deploy Info</div>
+          </div>
+          <button class="btn" id="btnUpdateCode" onclick="updateSystemCode()">
+            <span id="btnIcon">⚡</span> Update Code
+          </button>
         </div>
         <div id="deployDetail">
           <div class="info-row"><span class="info-label">Version</span><span class="info-value" id="deployVersion">--</span></div>
@@ -326,6 +338,36 @@
   </div>
 
   <script>
+    // System Update
+    async function updateSystemCode() {
+      const btn = document.getElementById('btnUpdateCode');
+      const icon = document.getElementById('btnIcon');
+      if (!confirm('ยืนยันประมวลผล Update Code และ Rebuild ระบบใหม่ทั้งหมดหรือไม่?')) return;
+      
+      btn.disabled = true;
+      icon.textContent = '⏳';
+      try {
+        const res = await fetch('/api/system/update', { method: 'POST' });
+        const data = await res.json();
+        if(res.ok) {
+          btn.className = 'btn btn-green';
+          icon.textContent = '✅';
+          alert('อัปเดตระบบสำเร็จ! Server จะทำการ Restart ภายในไม่กี่วินาที โปรดรอสักครู่...');
+        } else {
+          alert('อัปเดตล้มเหลว: ' + data.message);
+          icon.textContent = '❌';
+        }
+      } catch (e) {
+        alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+        icon.textContent = '❌';
+      }
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.className = 'btn';
+        icon.textContent = '⚡';
+      }, 5000);
+    }
+
     // Clock
     function updateClock() {
       document.getElementById('clock').textContent = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });

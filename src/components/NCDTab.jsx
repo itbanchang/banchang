@@ -20,6 +20,7 @@ export default function NCDTab() {
         fetchData('ncdToday', '/api/ncd/today');
         fetchData('ncdAnalytics', '/api/ncd/analytics');
         fetchData('ncdRevenueFiscal', '/api/ncd/revenue-fiscal');
+        fetchData('ncdRiskStratification', '/api/ncd/ai/risk-stratification');
     }, [fetchData]);
 
     const today = ncdToday || {};
@@ -469,6 +470,10 @@ export default function NCDTab() {
                 const totalVisits = a.total_visits ?? 0;
                 const avgRevenue = a.avg_revenue_per_visit ?? 0;
                 const peakHour = a.peak_hour?.label || '—';
+                const collRate = a.collection_rate ?? 0;
+                const claimSuccess = a.claim_success ?? 0;
+                const badDebtRatio = a.bad_debt_ratio ?? 0;
+                const daysAR = a.days_in_ar ?? 0;
 
                 const problems = [];
 
@@ -483,9 +488,20 @@ export default function NCDTab() {
                     });
                 }
 
+                if (collRate < 85) {
+                    problems.push({
+                        priority: 2, severity: collRate < 75 ? 'critical' : 'warning',
+                        title: `🔴 วิกฤต: Collection Rate NCD (${collRate}%) ต่ำกว่ามาตรฐาน (85%)`,
+                        rootCause: `ส่วนต่างระหว่างยอดเรียกเก็บและยอดรับเงิน NCD สูง ── สาเหตุ: (1) Denial สิทธิ์ UC/SSS จากการลงรหัส DM/HT complication ไม่ครบ (2) ยังไม่ทำ Reconciliation ยอดค้างสิทธิ์รัฐ (3) ขาดการติดตามส่วนต่าง Lab/ยา นอกสิทธิ์`,
+                        cascadeEffect: `Cash Flow NCD Clinic ตึงตัว ── รายได้ทางบัญชีสูงแต่เงินเข้าจริงไม่ถึง ── เพิ่มภาระการติดตามหนี้ (Account Receivable) ● Revenue Loss สะสม`,
+                        fixFirst: `🔧 Urgent Actions: (1) Audit เคส NCD ที่มี Denial สูงสุด (2) เร่ง Reconciliation ยอดค้างสิทธิ์ประกันสังคม NCD (3) ปรับปรุงกระบวนการ Pre-authorization สำหรับยา Specialty NCD`,
+                        color: collRate < 75 ? '#f43f5e' : '#f59e0b',
+                    });
+                }
+
                 if (completionRate < 90) {
                     problems.push({
-                        priority: 2, severity: completionRate < 80 ? 'critical' : 'warning',
+                        priority: 3, severity: completionRate < 80 ? 'critical' : 'warning',
                         title: `🟡 Completion Rate ต่ำ: ${completionRate}% — Dropout ${dropoutCount} ราย`,
                         rootCause: `${completionRate}% เท่านั้นที่ตรวจ NCD เสร็จ — ${dropoutCount} ราย Dropout ── สาเหตุ: (1) Wait time นาน → กลับก่อน (2) Lab+พบแพทย์+รับยา หลายจุด (3) ค่าใช้จ่ายสะสมสูง (4) ผู้ป่วยรู้สึกดี → คิดว่าไม่ต้องมา`,
                         cascadeEffect: `NCD Dropout → ขาดยา → BP/FBS Uncontrolled → Complication (Stroke ฿150k+, MI ฿200k+, Dialysis ฿500k+/ปี) → ต้นทุนพุ่ง ● Revenue loss ฿${(dropoutCount * avgRevenue).toLocaleString()}`,
@@ -494,9 +510,20 @@ export default function NCDTab() {
                     });
                 }
 
+                if (claimSuccess < 90) {
+                    problems.push({
+                        priority: 4, severity: 'warning',
+                        title: `⚠️ Claim Success Rate NCD เพียง ${claimSuccess}% (Target > 90%)`,
+                        rootCause: `การส่งเบิก e-Claim NCD ถูกปฏิเสธ ── สาเหตุ: (1) ICD-10 Complication ไม่สอดคล้องกับ Lab Evidence (2) Lab ผลออกไม่ทันเวลาส่งเบิก (3) ข้อมูลเวชระเบียน DM/HT ไม่สมบูรณ์`,
+                        cascadeEffect: `เสียสิทธิ์การเบิกจ่าย NCD Revenue ── เพิ่ม Workload ฝ่าย Coder ที่ต้อง Appeal ── ยอดเรียกเก็บค้างนาน (Days A/R ${daysAR}d)`,
+                        fixFirst: `🔧 Corrective Plan: (1) ใช้ AI Coder ช่วยตรวจสอบความสอดคล้อง Lab vs DX (2) อบรมการลงรหัส NCD Complication (3) Sync ผล Lab เข้า e-Claim อัตโนมัติ`,
+                        color: '#f59e0b',
+                    });
+                }
+
                 if (revisitRate > 10) {
                     problems.push({
-                        priority: 3, severity: revisitRate > 20 ? 'critical' : 'warning',
+                        priority: 5, severity: revisitRate > 20 ? 'critical' : 'warning',
                         title: `🟡 Revisit 7d สูง: ${revisitRate}% — Uncontrolled NCD Concern`,
                         rootCause: `${revisitRate}% กลับมาภายใน 7 วัน — ต้องแยก: (1) Planned (Lab follow-up, ปรับยา) vs (2) Unplanned (BP crisis, Hypoglycemia, Complication) ● Unplanned revisit สะท้อน Treatment quality`,
                         cascadeEffect: `Unplanned revisit → เพิ่ม Workload → Wait time เพิ่ม → NCD patients อื่นรอนาน → ขาดนัด → Uncontrolled เพิ่ม = วงจรลบ`,
@@ -505,13 +532,13 @@ export default function NCDTab() {
                     });
                 }
 
-                if (avgRevenue < 500 && totalVisits > 50) {
+                if (badDebtRatio > 5) {
                     problems.push({
-                        priority: 4, severity: 'warning',
-                        title: `🟠 Revenue/Visit ต่ำ: ฿${avgRevenue.toLocaleString()} — อาจ Under-billing Lab/ยา`,
-                        rootCause: `Rev/Visit ฿${avgRevenue.toLocaleString()} ← ต่ำสำหรับ NCD (ควร ≥฿500 รวม Lab+ยา) ── สาเหตุ: (1) ไม่ส่ง Lab ทุก visit (2) Under-billing Lab/Procedure (3) สิทธิ์ UC/SSS Rate ต่ำ (4) ยา NCD ราคาถูก ไม่มี Insulin/Specialty drugs`,
-                        cascadeEffect: `Low NCD revenue → Budget ไม่เพียงพอ → ไม่สามารถจัด Screening program → พบ Complication ช้า → ค่า IPD สูง`,
-                        fixFirst: `🔧 เพิ่ม Revenue: (1) Annual NCD screening packages (HbA1c+Lipid+Cr+Eye+Foot) (2) Complication screening billing ครบ (3) Chronic disease management fee (4) Verify Lab coding`,
+                        priority: 6, severity: 'warning',
+                        title: `🕵️ ความเสี่ยงหนี้สูญ: NCD Bad Debt Ratio ${badDebtRatio}%`,
+                        rootCause: `ผู้ป่วย NCD สิทธิ์ชำระเงินเองหรือส่วนต่าง มีการค้างชำระเพิ่มขึ้น ── สาเหตุ: (1) ไม่มีการประเมินราคายา NCD ล่วงหน้า (2) ระบบติดตามหนี้ขาดต่อเนื่องสำหรับผู้ป่วยเรื้อรัง`,
+                        cascadeEffect: `กระทบ Net Profit NCD Clinic ── ต้องตั้งสำรองหนี้สูญเพิ่มขึ้น (Allowances) ── Profit Margin ระยะยาวลดลง`,
+                        fixFirst: `🔧 Risk Mitigation: (1) แจ้งประมาณการค่ายา NCD ล่วงหน้า (2) นามเสนอระบบแบ่งจ่ายค่ายา Specialty (3) ทีม Tele-tracking ติดตามค้างจ่ายภายใน 14 วัน`,
                         color: '#f59e0b',
                     });
                 }
@@ -520,8 +547,8 @@ export default function NCDTab() {
                     problems.push({
                         priority: 0, severity: 'good',
                         title: '✅ NCD Clinic ทำงานได้ดี — ไม่พบปัญหาเร่งด่วน',
-                        rootCause: `NCI ${nci}/100 · Wait ${avgWait}min · Completion ${completionRate}% · Revisit ${revisitRate}% — ตัวชี้วัดอยู่ในเกณฑ์ดี`,
-                        cascadeEffect: `ไม่มีผลกระทบลูกโซ่ — NCD Clinic ทำงานได้มาตรฐาน`,
+                        rootCause: `NCI ${nci}/100 · Wait ${avgWait}min · Completion ${completionRate}% · Collection ${collRate}% — ตัวชี้วัดอยู่ในเกณฑ์ดี`,
+                        cascadeEffect: `ไม่มีผลกระทบลูกโซ่ — NCD Clinic มีประสิทธิภาพทั้ง Operational และ Financial`,
                         fixFirst: `🎯 Continuous Improvement: (1) ยกระดับ NCI ≥ ${Math.min(nci + 10, 100)} (2) เพิ่ม Complication screening (3) DM/HT control rate monitoring`,
                         color: '#10b981',
                     });
@@ -539,7 +566,7 @@ export default function NCDTab() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                             <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #f43f5e, #f59e0b)', borderRadius: '99px' }} />
                             <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>🔥 Deep Root-Cause Analysis</span>
-                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis NCD</span>
+                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis NCD + RCM</span>
                         </div>
                         <div className={`glass-card ${urgencyScore >= 7 ? 'alert-critical' : urgencyScore >= 4 ? 'alert-warning' : ''}`} style={{ padding: '1.5rem', border: `1.5px solid ${urgencyColor}25` }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '1.5rem', alignItems: 'center', padding: '1rem 1.25rem', borderRadius: '14px', background: `linear-gradient(135deg, ${urgencyColor}08, ${urgencyColor}03)`, border: `1px solid ${urgencyColor}20`, marginBottom: '1.25rem' }}>
@@ -598,14 +625,14 @@ export default function NCDTab() {
 
                             {problems.length > 1 && problems[0]?.severity !== 'good' && (
                                 <div style={{ marginTop: '16px', padding: '14px 16px', borderRadius: '12px', background: 'rgba(14,165,233,.04)', border: '1px solid rgba(14,165,233,.15)' }}>
-                                    <p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🗺️ แผนที่ความเชื่อมโยง — NCD Bottleneck Chain</p>
+                                    <p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🗺️ แผนที่ความเชื่อมโยง — NCD Bottleneck & RCM Chain</p>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                                         {[
                                             { label: `Wait ${avgWait}min`, color: '#f59e0b' },
-                                            { label: `Dropout ${dropoutCount}`, color: '#f43f5e' },
-                                            { label: `Completion ${completionRate}%`, color: '#0ea5e9' },
-                                            { label: `Revisit ${revisitRate}%`, color: '#e11d48' },
-                                            { label: `Rev ฿${avgRevenue}`, color: '#8b5cf6' },
+                                            { label: `Collection ${collRate}%`, color: '#f43f5e' },
+                                            { label: `Claim ${claimSuccess}%`, color: '#fb7185' },
+                                            { label: `Dropout ${dropoutCount}`, color: '#0ea5e9' },
+                                            { label: `AR ${daysAR}d`, color: '#8b5cf6' },
                                             { label: `NCI = ${nci}/100`, color: '#10b981' },
                                         ].map((item, i) => (
                                             <React.Fragment key={i}>
@@ -615,7 +642,7 @@ export default function NCDTab() {
                                         ))}
                                     </div>
                                     <p style={{ margin: '10px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500, fontStyle: 'italic' }}>
-                                        💡 <strong>สรุป:</strong> ปัญหา NCD เริ่มจาก <strong style={{ color: '#f59e0b' }}>Wait time สูง</strong> → ผู้ป่วยขาดนัด → Uncontrolled NCD → Complication (Stroke/MI/CKD) — <strong>แก้ ด่วนที่ 1 ก่อน</strong> (Pre-lab + Fast-track Stable + เพิ่มแพทย์) จะปรับปรุง KPI ทุกตัวพร้อมกัน
+                                        💡 <strong>สรุปวิเคราะห์:</strong> ปัญหา NCD ข้ามมิติจาก <strong style={{ color: '#f59e0b' }}>Wait time สูง</strong> (Operational) ส่งผลให้เกิด Dropout และกระทบ <strong style={{ color: '#f43f5e' }}>Collection Rate</strong> (Financial) ── <strong>แก้ "ด่วนที่ 1" (Wait time)</strong> เพื่อลด Dropout และ <strong>"ด่วนที่ 2" (Collection)</strong> เพื่อรักษา Cash Flow จะช่วยกู้คืนสุขภาพรายได้ NCD Clinic ได้ทันที
                                     </p>
                                 </div>
                             )}
@@ -623,6 +650,66 @@ export default function NCDTab() {
                     </>
                 );
             })()}
+
+            {/* ━━━ 🔥 AI Risk Stratification Engine (LIVE) ━━━ */}
+            {state.ncdRiskStratification && (
+                <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                        <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #f43f5e, #7c3aed)', borderRadius: '99px' }} />
+                        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                            🫀 AI Risk Stratification Engine
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>AI Powered</span>
+                    </div>
+                    <div className="glass-card" style={{ padding: '1.25rem 1.5rem', marginBottom: '1.5rem', borderTop: '4px solid #f43f5e' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
+                            <div style={{ padding: '12px', background: 'rgba(244,63,94,.05)', borderRadius: '12px', border: '1px solid rgba(244,63,94,.15)' }}>
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase' }}>Critical Risk</p>
+                                <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: '#f43f5e', lineHeight: 1 }}>{state.ncdRiskStratification.summary?.risk_distribution?.critical || 0}</p>
+                            </div>
+                            <div style={{ padding: '12px', background: 'rgba(245,158,11,.05)', borderRadius: '12px', border: '1px solid rgba(245,158,11,.15)' }}>
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase' }}>High Risk</p>
+                                <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: '#f59e0b', lineHeight: 1 }}>{state.ncdRiskStratification.summary?.risk_distribution?.high || 0}</p>
+                            </div>
+                            <div style={{ padding: '12px', background: 'rgba(14,165,233,.05)', borderRadius: '12px', border: '1px solid rgba(14,165,233,.15)' }}>
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase' }}>Moderate Risk</p>
+                                <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: '#0ea5e9', lineHeight: 1 }}>{state.ncdRiskStratification.summary?.risk_distribution?.moderate || 0}</p>
+                            </div>
+                            <div style={{ padding: '12px', background: 'rgba(16,185,129,.05)', borderRadius: '12px', border: '1px solid rgba(16,185,129,.15)' }}>
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>BP Control Rate</p>
+                                <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: '#10b981', lineHeight: 1 }}>{state.ncdRiskStratification.summary?.bp_control_rate}%</p>
+                            </div>
+                        </div>
+
+                        {/* Top risks & AI Recommendations */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
+                            <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                💡 AI Interventions (Highest Risk Patients)
+                            </p>
+                            {state.ncdRiskStratification.recommendations?.slice(0, 4).map((rec, i) => {
+                                const isCritical = rec.risk_level === 'critical';
+                                const rcColor = isCritical ? '#f43f5e' : '#f59e0b';
+                                return (
+                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', background: `${rcColor}05`, borderRadius: '10px', borderLeft: `3px solid ${rcColor}` }}>
+                                        <div style={{ minWidth: '40px' }}>
+                                            <span style={{ fontSize: '10px', fontWeight: 900, color: rcColor }}>HN {rec.hn}</span>
+                                        </div>
+                                        <div style={{ flex: 1 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{rec.action}</p>
+                                            <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>{rec.reason}</p>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <span style={{ fontSize: '9px', fontWeight: 800, background: `${rcColor}15`, color: rcColor, padding: '2px 8px', borderRadius: '99px' }}>
+                                                {rec.risk_level.toUpperCase()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </>
+            )}
 
             {/* ━━━ รายได้โดยประมาณ NCD — ปีงบประมาณ (3 ปีย้อนหลัง) ━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
@@ -651,8 +738,9 @@ export default function NCDTab() {
                     });
                     const latestYear = years[years.length - 1];
                     const prevYear = years.length >= 2 ? years[years.length - 2] : null;
-                    const yoyGrowth = prevYear && prevYear.total_revenue > 0
-                        ? Math.round(((latestYear.total_revenue - prevYear.total_revenue) / prevYear.total_revenue) * 1000) / 10 : 0;
+                    const compMonths = latestYear.comparable_months || 12;
+                    const yoyGrowth = prevYear && (prevYear.comparable_revenue ?? prevYear.total_revenue) > 0
+                        ? Math.round(((latestYear.comparable_revenue ?? latestYear.total_revenue) - (prevYear.comparable_revenue ?? prevYear.total_revenue)) / (prevYear.comparable_revenue ?? prevYear.total_revenue) * 1000) / 10 : 0;
                     return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${years.length}, 1fr)`, gap: '10px' }}>
@@ -672,7 +760,7 @@ export default function NCDTab() {
                                             {isLatest && prevYear && (
                                                 <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>{yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%</span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label}</span>
+                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
                                                 </div>
                                             )}
                                         </div>
@@ -705,6 +793,6 @@ export default function NCDTab() {
                     );
                 })()}
             </div>
-        </div>
+        </div >
     );
 }

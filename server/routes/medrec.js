@@ -1,0 +1,559 @@
+import { Router } from 'express';
+import { cached } from '../cache/staleCache.js';
+import { dbQuery, dbQueryOne } from '../db/mysql.js';
+import { getRevenueFiscal } from '../helpers/fiscal.js';
+
+const router = Router();
+const fiscalYearStart = "CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')";
+
+// Local memory cache for heavy queries (15-30 mins TTL) to reduce load on replicated DB nodes
+const H_CACHE = {};
+async function getHeavy(key, ttlMins, sql, isOne = false) {
+  const now = Date.now();
+  const ttl = ttlMins * 60000;
+  if (H_CACHE[key] && now - H_CACHE[key].t < ttl) return H_CACHE[key].d;
+  try {
+    const fn = isOne ? dbQueryOne : dbQuery;
+    const res = await fn(sql);
+    H_CACHE[key] = { d: res, t: now };
+    return res;
+  } catch (e) {
+    if (H_CACHE[key]) return H_CACHE[key].d;
+    return isOne ? null : [];
+  }
+}
+
+router.get('/today', cached('mrToday_v10', 60000, async () => {
+  const [summary, pttype, dep, hourly, audit, coders, pendingWards, clinicWait, ipdSummary, ipdCoders, ipdCodersDaily, ipdCodersFiscal, pendingRevenueRow, ipdCodersTrendFY, ipdMonthStatusFY] = await Promise.all([
+    dbQueryOne(`
+      SELECT COUNT(o.vn) as total_visits,
+        COUNT(DISTINCT o.hn) as unique_patients,
+        SUM(CASE WHEN p.firstday = CURDATE() THEN 1 ELSE 0 END) as new_patients,
+        SUM(CASE WHEN p.firstday != CURDATE() OR p.firstday IS NULL THEN 1 ELSE 0 END) as old_patients,
+        SUM(CASE WHEN p.sex IN ('1','ช','ชาย') THEN 1 ELSE 0 END) as male,
+        SUM(CASE WHEN p.sex IN ('2','ญ','หญิง') THEN 1 ELSE 0 END) as female,
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 15 THEN 1 ELSE 0 END) as children,
+        SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) >= 60 THEN 1 ELSE 0 END) as elderly,
+        ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
+            THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 1) as avg_reg_time,
+        ROUND(AVG(CASE WHEN st.service7 IS NOT NULL AND st.service2 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service2)
+            THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service2)) / 60 ELSE NULL END), 1) as avg_proc_time
+      FROM ovst o
+      INNER JOIN patient p ON o.hn = p.hn
+      INNER JOIN vn_stat v ON o.vn = v.vn
+      LEFT JOIN service_time st ON o.vn = st.vn
+      WHERE o.vstdate = CURDATE()
+    `).catch(() => null),
+    dbQuery(`
+      SELECT pt.name as pttype_name, COUNT(*) as cnt
+      FROM ovst o
+      LEFT JOIN pttype pt ON o.pttype = pt.pttype
+      WHERE o.vstdate = CURDATE()
+      GROUP BY o.pttype ORDER BY cnt DESC LIMIT 5
+    `).catch(() => []),
+    dbQuery(`
+      SELECT d.department as dep_name, COUNT(*) as cnt
+      FROM ovst o
+      LEFT JOIN kskdepartment d ON o.main_dep = d.depcode
+      WHERE o.vstdate = CURDATE()
+      GROUP BY o.main_dep ORDER BY cnt DESC LIMIT 5
+    `).catch(() => []),
+    dbQuery(`
+      SELECT HOUR(vsttime) as hour, COUNT(*) as count
+      FROM ovst WHERE vstdate = CURDATE() AND vsttime IS NOT NULL
+      GROUP BY HOUR(vsttime) ORDER BY hour
+    `).catch(() => []),
+    dbQueryOne(`
+      SELECT 
+        COUNT(o.vn) as audit_total,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn) THEN 1 ELSE 0 END) as audit_coded
+      FROM ovst o
+      WHERE o.vstdate = CURDATE()
+    `).catch(() => null),
+    dbQuery(`
+      SELECT 
+        COALESCE(u.name, d.staff) as coder_name, 
+        COUNT(DISTINCT d.vn) as coded_count 
+      FROM ovstdiag d
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE d.vstdate = CURDATE() AND d.staff IS NOT NULL AND d.staff != '' 
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY d.staff, u.name
+      ORDER BY coded_count DESC LIMIT 5
+    `).catch(() => []),
+    getHeavy('pendingWards', 10, `
+      SELECT 
+        w.name as ward_name, 
+        COUNT(i.an) as pending_count 
+      FROM ipt i 
+      INNER JOIN ward w ON i.ward = w.ward 
+      WHERE i.dchdate IS NOT NULL 
+        AND i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND NOT EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an)
+      GROUP BY w.ward, w.name 
+      ORDER BY pending_count DESC 
+      LIMIT 5
+    `),
+    dbQuery(`
+      SELECT c.name as clinic_name, 
+        ROUND(AVG(TIMESTAMPDIFF(MINUTE, o.vsttime, st.service2)), 0) as avg_wait
+      FROM ovst o
+      INNER JOIN clinic c ON o.main_dep = c.clinic
+      INNER JOIN service_time st ON o.vn = st.vn
+      WHERE o.vstdate = CURDATE() AND st.service2 IS NOT NULL
+      GROUP BY c.clinic, c.name
+      ORDER BY avg_wait DESC LIMIT 5
+    `).catch(() => []),
+    getHeavy('ipdSummary', 10, `
+      SELECT 
+        COUNT(i.an) as ipd_dch_30d,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
+        COUNT(CASE WHEN i.adjrw IS NOT NULL THEN i.an END) as ipd_drg_calculated_30d,
+        ROUND(SUM(i.adjrw), 2) as total_rw_30d,
+        ROUND(AVG(i.adjrw), 2) as avg_rw_30d,
+        ROUND(AVG(DATEDIFF(d_first.first_code, i.dchdate)), 1) as avg_coding_days
+      FROM ipt i
+      LEFT JOIN (
+        SELECT an, MIN(modify_datetime) as first_code 
+        FROM iptdiag WHERE modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) 
+        GROUP BY an
+      ) d_first ON d_first.an = i.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND i.dchdate <= CURDATE()
+    `, true),
+    dbQuery(`
+      SELECT 
+        COALESCE(u.name, d.staff) as coder_name, 
+        COUNT(DISTINCT d.an) as coded_count 
+      FROM iptdiag d
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE d.modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY d.staff, u.name
+      ORDER BY coded_count DESC LIMIT 5
+    `).catch(() => []),
+    dbQuery(`
+      SELECT 
+        DATE(d.modify_datetime) as record_date, 
+        COALESCE(u.name, d.staff) as coder_name, 
+        COUNT(DISTINCT d.an) as coded_count 
+      FROM iptdiag d
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY record_date, coder_name
+      ORDER BY record_date ASC
+    `).catch(() => []),
+    getHeavy('ipdCodersFiscal', 30, `
+      SELECT 
+        COALESCE(u.name, d.staff) as coder_name,
+        COUNT(DISTINCT CASE WHEN d.modify_datetime >= ${fiscalYearStart} THEN d.an END) as fiscal_total,
+        COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END) as current_month_total,
+        COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH) ,'%Y-%m-01') 
+                             AND d.modify_datetime < DATE_FORMAT(CURDATE() ,'%Y-%m-01') 
+                             AND DAY(d.modify_datetime) <= DAY(CURDATE()) THEN d.an END) as prev_month_total,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype IN ('2','3') THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as cc_rate,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as diag_per_case,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype = '1' THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as type1_per_case,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype = '2' THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as type2_per_case,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype = '3' THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as type3_per_case,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype = '4' THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as type4_per_case,
+        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype = '5' THEN 1 ELSE 0 END) / 
+              NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as type5_per_case
+      FROM iptdiag d
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE d.modify_datetime >= ${fiscalYearStart}
+        AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY d.staff, u.name
+      ORDER BY current_month_total DESC LIMIT 10
+    `),
+    getHeavy('pendingRevenue', 5, `
+      SELECT SUM(v.income) as pending_revenue
+      FROM ovst o
+      INNER JOIN vn_stat v ON o.vn = v.vn
+      WHERE o.vstdate = CURDATE()
+      AND NOT EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn)
+    `, true),
+    getHeavy('ipdCodersTrendFY', 30, `
+      SELECT 
+        DATE_FORMAT(d.modify_datetime, '%Y-%m') as month,
+        COALESCE(u.name, d.staff) as coder_name, 
+        COUNT(DISTINCT d.an) as coded_count 
+      FROM iptdiag d
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE d.modify_datetime >= ${fiscalYearStart}
+        AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY month, coder_name
+      ORDER BY month ASC, coded_count DESC
+    `),
+    getHeavy('ipdMonthStatusFY', 30, `
+      SELECT 
+        DATE_FORMAT(dchdate, '%Y-%m') as month,
+        COUNT(an) as total_dch,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as coded_count
+      FROM ipt i
+      WHERE dchdate >= ${fiscalYearStart}
+      GROUP BY month
+      ORDER BY month ASC
+    `)
+  ]);
+
+  const hArr = Array.from({ length: 24 }, (_, i) => ({
+    hour: i, label: `${String(i).padStart(2, '0')}:00`, count: 0
+  }));
+  (hourly || []).forEach(h => { if (hArr[h.hour]) hArr[h.hour].count = Number(h.count || 0); });
+
+  const auditTotal = Number(audit?.audit_total || 0);
+  const auditCoded = Number(audit?.audit_coded || 0);
+  const qualityScore = auditTotal > 0 ? Math.round((auditCoded / auditTotal) * 100) : 100;
+
+  const ipdAuditTotal = Number(ipdSummary?.ipd_dch_30d || 0);
+  const ipdAuditCoded = Number(ipdSummary?.ipd_coded_30d || 0);
+  const ipdDrgCalculated = Number(ipdSummary?.ipd_drg_calculated_30d || 0);
+  const ipdQualityScore = ipdAuditTotal > 0 ? Math.round((ipdAuditCoded / ipdAuditTotal) * 100) : 100;
+  const ipdDrgScore = ipdAuditTotal > 0 ? Math.round((ipdDrgCalculated / ipdAuditTotal) * 100) : 100;
+
+  return {
+    ...(summary || {}),
+    new_patients: Number(summary?.new_patients || 0),
+    old_patients: Number(summary?.old_patients || 0),
+    avg_reg_time: Number(summary?.avg_reg_time || 0),
+    avg_proc_time: Number(summary?.avg_proc_time || 0),
+    pending_revenue: Number(pendingRevenueRow?.pending_revenue || 0),
+    quality_score: qualityScore,
+    top_pttype: (pttype || []).map(p => ({ name: p.pttype_name || 'ไม่ระบุ', count: Number(p.cnt || 0) })),
+    top_departments: (dep || []).map(d => ({ name: d.dep_name || 'ไม่ระบุ', count: Number(d.cnt || 0) })),
+    hourly: hArr,
+    audit_total: auditTotal,
+    audit_coded: auditCoded,
+    pending_codes: Math.max(0, auditTotal - auditCoded),
+    coders: (coders || []).map(c => ({ name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
+
+    // IPD Data
+    ipd_audit_total: ipdAuditTotal,
+    ipd_audit_coded: ipdAuditCoded,
+    ipd_pending_codes: Math.max(0, ipdAuditTotal - ipdAuditCoded),
+    ipd_drg_calculated: ipdDrgCalculated,
+    ipd_quality_score: ipdQualityScore,
+    ipd_drg_score: ipdDrgScore,
+    ipd_total_rw: Number(ipdSummary?.total_rw_30d || 0),
+    ipd_avg_rw: Number(ipdSummary?.avg_rw_30d || 0),
+    ipd_avg_coding_days: Number(ipdSummary?.avg_coding_days || 0),
+    ipd_coders: (ipdCoders || []).map(c => ({ name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
+    pending_wards: (pendingWards || []).map(w => ({ ward: w.ward_name || 'ไม่ระบุ', count: Number(w.pending_count || 0) })),
+    ipd_coders_daily: (ipdCodersDaily || []).map(c => ({ date: c.record_date, name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
+    ipd_coders_fiscal: (ipdCodersFiscal || []).map(row => ({
+      name: row.coder_name || 'ไม่ระบุ',
+      fiscal_total: Number(row.fiscal_total || 0),
+      current_month_total: Number(row.current_month_total || 0),
+      prev_month_total: Number(row.prev_month_total || 0),
+      cc_rate: Number(row.cc_rate || 0),
+      diag_per_case: Number(row.diag_per_case || 0),
+      type1_per_case: Number(row.type1_per_case || 0),
+      type2_per_case: Number(row.type2_per_case || 0),
+      type3_per_case: Number(row.type3_per_case || 0),
+      type4_per_case: Number(row.type4_per_case || 0),
+      type5_per_case: Number(row.type5_per_case || 0)
+    })),
+
+    ipd_coders_trend_fy: (ipdCodersTrendFY || []).map(c => ({ month: c.month, name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
+    ipd_month_status_fy: (ipdMonthStatusFY || []).map(m => ({
+      month: m.month,
+      total: Number(m.total_dch || 0),
+      coded: Number(m.coded_count || 0),
+      pct: m.total_dch > 0 ? Math.round((m.coded_count / m.total_dch) * 100) : 0
+    })),
+    clinic_wait: (clinicWait || []).map(cw => ({ clinic: cw.clinic_name, wait: Number(cw.avg_wait || 0) })),
+    timestamp: new Date().toISOString()
+  };
+}));
+
+router.get('/analytics', cached('mrAnalytics', 120000, async () => {
+  const [summary, monthly, audit30, hourlyBenchmark] = await Promise.all([
+    dbQueryOne(`
+      SELECT COUNT(*) as total_visits,
+      COUNT(DISTINCT DATE(o.vstdate)) as days,
+      SUM(CASE WHEN p.firstday = o.vstdate THEN 1 ELSE 0 END) as new_patients,
+      SUM(CASE WHEN (SELECT 1 FROM ovstdiag WHERE vn = o.vn LIMIT 1) IS NULL THEN v.income ELSE 0 END) as revenue_loss_30d,
+      (SELECT SUM(CASE WHEN (SELECT 1 FROM iptdiag WHERE an = a.an LIMIT 1) IS NULL THEN a.income ELSE 0 END) 
+       FROM an_stat a WHERE a.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) as ipd_revenue_loss_30d
+      FROM ovst o 
+      INNER JOIN patient p ON o.hn = p.hn
+      INNER JOIN vn_stat v ON o.vn = v.vn
+      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    `).catch(() => null),
+    dbQuery(`
+      SELECT DATE_FORMAT(o.vstdate, '%Y-%m') as month,
+      COUNT(*) as total_visits,
+      SUM(CASE WHEN p.firstday = o.vstdate THEN 1 ELSE 0 END) as new_patients
+      FROM ovst o INNER JOIN patient p ON o.hn = p.hn
+      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+      GROUP BY DATE_FORMAT(o.vstdate, '%Y-%m') ORDER BY month
+    `).catch(() => []),
+    dbQueryOne(`
+      SELECT 
+        COUNT(DISTINCT o.vn) as audit_total,
+        COUNT(DISTINCT d.vn) as audit_coded
+      FROM ovst o
+      LEFT JOIN ovstdiag d ON o.vn = d.vn
+      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    `).catch(() => null),
+    dbQuery(`
+      SELECT HOUR(o.vsttime) as hr, COUNT(*) / COUNT(DISTINCT o.vstdate) as avg_visits
+      FROM ovst o
+      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      GROUP BY HOUR(o.vsttime)
+      ORDER BY hr
+    `).catch(() => [])
+  ]);
+
+  const MTH = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+  return {
+    total_visits: Number(summary?.total_visits || 0),
+    avg_daily_visits: summary?.days ? Math.round(Number(summary.total_visits) / Number(summary.days)) : 0,
+    new_patients: Number(summary?.new_patients || 0),
+    old_patients: Number(summary?.old_patients || 0),
+    revenue_loss_30d: Number(summary?.revenue_loss_30d || 0),
+    ipd_revenue_loss_30d: Number(summary?.ipd_revenue_loss_30d || 0),
+    audit_total: Number(audit30?.audit_total || 0),
+    audit_coded: Number(audit30?.audit_coded || 0),
+    pending_codes: Math.max(0, Number(audit30?.audit_total || 0) - Number(audit30?.audit_coded || 0)),
+    monthly: (monthly || []).map(m => ({
+      month: MTH[parseInt(m.month?.split('-')[1])] || m.month,
+      visits: Number(m.total_visits || 0),
+      new_patients: Number(m.new_patients || 0)
+    })),
+    hourly_benchmark: (hourlyBenchmark || []).map(h => ({ hr: h.hr, avg: Number(h.avg_visits || 0) })),
+    ai_insights: {
+      revenue_impact: {
+        total_pending: Number(summary?.revenue_loss_30d || 0) + Number(summary?.ipd_revenue_loss_30d || 0),
+        opd_pending: Number(summary?.revenue_loss_30d || 0),
+        ipd_pending: Number(summary?.ipd_revenue_loss_30d || 0),
+        status: (Number(summary?.revenue_loss_30d || 0) + Number(summary?.ipd_revenue_loss_30d || 0)) > 1000000 ? 'critical' : (Number(summary?.revenue_loss_30d || 0) + Number(summary?.ipd_revenue_loss_30d || 0)) > 500000 ? 'warning' : 'good',
+        recommendation: (Number(summary?.revenue_loss_30d || 0) + Number(summary?.ipd_revenue_loss_30d || 0)) > 500000 ? '🚨 เร่งสรุปชาร์ตค้างจ่ายเพื่อดึงกระแสเงินสด (Cash Flow)' : '✅ การสรุปชาร์ตอยู่ในเกณฑ์ดีเยี่ยม'
+      },
+      coding_productivity: {
+        score: audit30?.audit_total > 0 ? Math.round((audit30.audit_coded / audit30.audit_total) * 100) : 100,
+        pending_count: Math.max(0, Number(audit30?.audit_total || 0) - Number(audit30?.audit_coded || 0)),
+        status: (Number(audit30?.audit_total || 0) - Number(audit30?.audit_coded || 0)) > 500 ? 'critical' : 'stable'
+      },
+      operational_alert: (summary?.revenue_loss_30d || 0) > 1000000 ? 'พบ Revenue Leakage สูงผิดปกติจากการสรุปรหัสโรคที่ล่าช้า' : null
+    },
+    timestamp: new Date().toISOString()
+  };
+}));
+
+// ━━━━━━ DRG Optimization AI — Fiscal Year (Real Data) ━━━━━━
+router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () => {
+  const fiscalYearStart = `CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')`;
+
+  try {
+    // 1. PDx Optimization (Unspecified PDx)
+    const pdxCases = await dbQuery(`
+          SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
+                 d.icd10 as original_pdx, a.rw,
+                 GROUP_CONCAT(DISTINCT IF(lo.lab_items_name_ref IS NULL, NULL, CONCAT(lo.lab_items_name_ref, ' [', IFNULL(lo.lab_order_result, ''), ']')) SEPARATOR ', ') as abnormal_labs
+          FROM ipt i
+          INNER JOIN patient p ON i.hn = p.hn
+          INNER JOIN ward w ON i.ward = w.ward
+          INNER JOIN an_stat a ON i.an = a.an
+          INNER JOIN iptdiag d ON i.an = d.an AND d.diagtype = '1'
+          LEFT JOIN lab_head lh ON lh.hn = i.hn AND lh.order_date BETWEEN i.regdate AND i.dchdate
+          LEFT JOIN lab_order lo ON lo.lab_order_number = lh.lab_order_number 
+            AND lo.abnormal_result = 'Y' 
+            AND (lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%Cultur%' OR lo.lab_items_name_ref LIKE '%Hemo%' OR lo.lab_items_name_ref LIKE '%Stool%')
+          WHERE i.dchdate >= ${fiscalYearStart}
+            AND d.icd10 IN ('J189', 'K358', 'A419', 'I64', 'N201', 'A099', 'N390')
+          GROUP BY p.hn, i.an, name, ward, original_pdx, a.rw
+          ORDER BY i.dchdate DESC
+          LIMIT 30
+      `).catch(() => []);
+
+    // 2. LOS Alert (Short/Long Stay)
+    const losCases = await dbQuery(`
+          SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
+                 DATEDIFF(i.dchdate, i.regdate) as los, a.income, idr.rw, idr.adjrw, idr.wtlos
+          FROM ipt i
+          INNER JOIN patient p ON i.hn = p.hn
+          INNER JOIN ward w ON i.ward = w.ward
+          INNER JOIN an_stat a ON i.an = a.an
+          LEFT JOIN ipt_drg_result idr ON idr.an = i.an
+          WHERE i.dchdate >= ${fiscalYearStart}
+            AND (DATEDIFF(i.dchdate, i.regdate) <= 1 OR DATEDIFF(i.dchdate, i.regdate) >= 14)
+            AND i.dchdate <= CURDATE()
+          ORDER BY i.dchdate DESC
+          LIMIT 30
+      `).catch(() => []);
+
+    // 3. MCC/CC Missing (High severity but missing secondary dx)
+    const mccCases = await dbQuery(`
+          SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
+                 a.income, a.rw, GROUP_CONCAT(DISTINCT IF(lo.lab_items_name_ref IS NULL, NULL, CONCAT(lo.lab_items_name_ref, ' [', IFNULL(lo.lab_order_result, ''), ']')) SEPARATOR ', ') as abnormal_labs
+          FROM ipt i
+          INNER JOIN patient p ON i.hn = p.hn
+          INNER JOIN ward w ON i.ward = w.ward
+          INNER JOIN an_stat a ON i.an = a.an
+          LEFT JOIN lab_head lh ON lh.hn = i.hn AND lh.order_date BETWEEN i.regdate AND i.dchdate
+          LEFT JOIN lab_order lo ON lo.lab_order_number = lh.lab_order_number 
+            AND lo.abnormal_result = 'Y' 
+            AND (lo.lab_items_name_ref LIKE '%Creatinine%' OR lo.lab_items_name_ref LIKE '%Lactate%' OR lo.lab_items_name_ref LIKE '%BUN%' OR lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%Hemo%')
+          WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            AND a.income > 30000 
+            AND a.rw < 1.0
+          GROUP BY p.hn, i.an, name, ward, a.income, a.rw
+          ORDER BY i.dchdate DESC
+          LIMIT 30
+      `).catch(err => { console.error('MCC query err:', err); return []; });
+
+    // 4. Abnormal Labs Alerts (Detect potential CC/MCC from Lab)
+    const labCases = await dbQuery(`
+          SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
+                 lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw
+          FROM ipt i
+          INNER JOIN patient p ON i.hn = p.hn
+          INNER JOIN ward w ON i.ward = w.ward
+          INNER JOIN an_stat a ON i.an = a.an
+          INNER JOIN lab_head lh ON lh.hn = i.hn AND lh.order_date BETWEEN i.regdate AND i.dchdate
+          INNER JOIN lab_order lo ON lo.lab_order_number = lh.lab_order_number
+          WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            AND lo.abnormal_result = 'Y'
+          ORDER BY i.dchdate DESC
+          LIMIT 50
+      `).catch(err => { console.error('Lab query err:', err); return []; });
+
+    // Build AI Insights
+    const pdxMapped = (pdxCases || []).map(c => {
+      let baseSuggest = 'ตรวจสอบความเจาะจงของรหัสโรค';
+      let estRevenue = 4200;
+      if (c.original_pdx === 'J189') { baseSuggest = 'เปลี่ยนเป็น J15.0 (+ RW 0.8)'; estRevenue = 8400; }
+      else if (c.original_pdx === 'K358') { baseSuggest = 'เปลี่ยนเป็น K35.2 (+ RW 1.2)'; estRevenue = 12500; }
+      else if (c.original_pdx === 'A419') { baseSuggest = 'เปลี่ยนเป็น A41.51 (+ RW 0.5)'; estRevenue = 5000; }
+      else if (c.original_pdx === 'I64') { baseSuggest = 'เปลี่ยนเป็น I63.4 (+ RW 1.0)'; estRevenue = 10000; }
+      else if (c.original_pdx === 'N201') { baseSuggest = 'เปลี่ยนเป็น N13.2 (+ RW 0.4)'; estRevenue = 4200; }
+      else if (c.original_pdx === 'A099') { baseSuggest = 'เจาะจงเชื้อโรค A09.0 (+ RW 0.5)'; estRevenue = 3000; }
+      else if (c.original_pdx === 'N390') { baseSuggest = 'ระบุเชื้อ N39.0 (+ RW 0.3)'; estRevenue = 3500; }
+
+      let issue = `PDx เดิม: ${c.original_pdx} (RW ${c.rw || 0}) Unspecified`;
+      let aiSuggest = baseSuggest;
+
+      let labsStr = c.abnormal_labs ? c.abnormal_labs : '';
+      if (labsStr) {
+        if (labsStr.length > 90) labsStr = labsStr.substring(0, 90) + '...';
+        issue = `PDx เดิม: ${c.original_pdx} (RW ${c.rw || 0}) ── 🩸 พบผล Lab: ${labsStr}`;
+        aiSuggest = `AI เสนอ: ${baseSuggest} และอ้างอิงจากผล Lab ควรแจ้งเตือนแพทย์ทบทวนชาร์ต`;
+      } else {
+        aiSuggest = `AI เสนอ: ${baseSuggest} (ควรตรวจสอบประวัติเพิ่มเติม)`;
+      }
+
+      return { hn: c.hn, an: c.an, name: c.name, ward: c.ward, issue, aiSuggest, estRevenue };
+    });
+
+    const losMapped = (losCases || []).map(c => {
+      let stayType = c.los <= 1 ? 'Short Stay Outlier' : 'Long Stay Outlier';
+
+      let rwData = '';
+      let warningText = '';
+      if (c.rw && c.adjrw) {
+        const diff = (c.rw - c.adjrw).toFixed(4);
+        if (c.rw > c.adjrw) {
+          warningText = ` (สูญเสีย AdjRW -${diff})`;
+        } else if (c.rw < c.adjrw) {
+          warningText = ` (AdjRW เพิ่มขึ้น +${Math.abs(diff).toFixed(4)})`;
+        }
+        rwData = `(RW Base ${c.rw.toFixed(4)} 📉 AdjRW เหลือ ${c.adjrw.toFixed(4)})`;
+      } else {
+        rwData = `(รอประมวลผล RW System)`;
+      }
+
+      let issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. ${rwData} ── ⏱️ วันนอน ${c.los} วัน (${stayType})`;
+      let aiSuggest = c.los <= 1
+        ? `AI เสนอ: ถูกปรับลด AdjRW ตรวจสอบเกณฑ์ One Day Surgery ให้ถูกต้อง${warningText}`
+        : `AI เสนอ: วันนอนนานผิดปกติ ระบุ Medical Necessity แจ้ง CDI ให้แพทย์ทบทวนชาร์ต${warningText}`;
+
+      return { hn: c.hn, an: c.an, name: c.name, ward: c.ward, issue, aiSuggest };
+    });
+
+    const mccMapped = (mccCases || []).map(c => {
+      let issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. (RW ${c.rw || 0}) แต่ไม่มีระบุ CC/MCC`;
+      let aiSuggest = 'AI หาสัญญาณ Sepsis/AKI จากการวินิจฉัยเพิ่มเติม';
+      let estRevenue = 12500;
+
+      let labs = c.abnormal_labs ? c.abnormal_labs.toLowerCase() : '';
+      let detected = [];
+      if (labs.includes('creatinine') || labs.includes('bun')) detected.push('AKI');
+      if (labs.includes('wbc') || labs.includes('hemo') || labs.includes('lactate')) detected.push('Sepsis/Infection');
+
+      if (detected.length > 0) {
+        let labsStr = c.abnormal_labs;
+        if (labsStr.length > 90) labsStr = labsStr.substring(0, 90) + '...';
+        issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. (RW ${c.rw || 0}) ── 🩸 วิกฤต: ${labsStr}`;
+        aiSuggest = `AI สงสัยพยาธิสภาพ ${detected.join(', ')} ขาดการระบุรหัส CC/MCC ควรเตือนแพทย์ทบทวนชาร์ต!`;
+      }
+
+      return { hn: c.hn, an: c.an, name: c.name, ward: c.ward, issue, aiSuggest, estRevenue };
+    });
+
+    const labMapped = [];
+    const seenLabAn = new Set();
+    (labCases || []).forEach(c => {
+      const key = c.an + '-' + c.lab_name;
+      if (seenLabAn.has(key)) return;
+      seenLabAn.add(key);
+
+      let issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. (RW ${c.rw || 0}) ── 🩸 วิกฤต: ${c.lab_name} [${c.lab_result}] (ปกติ: ${c.lab_normal})`;
+      let aiSuggest = 'AI เสนอ: ตรวจสอบการลงรหัส CC/MCC เพิ่มเติม';
+      let estRevenue = 4500;
+      let isCritical = false;
+
+      const ln = (c.lab_name || '').toLowerCase();
+      const res = parseFloat(c.lab_result);
+      if (!isNaN(res)) {
+        if (ln.includes('potassium') || ln === 'k') {
+          if (res < 3.0) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypokalemia (E87.6) (+RW)'; estRevenue = 6000; isCritical = true; }
+          else if (res > 5.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyperkalemia (E87.5) (+RW)'; estRevenue = 7000; isCritical = true; }
+        } else if (ln.includes('sodium') || ln === 'na') {
+          if (res < 130) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyponatremia (E87.1) (+RW)'; estRevenue = 7500; isCritical = true; }
+          else if (res > 150) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypernatremia (E87.0) (+RW)'; estRevenue = 7500; isCritical = true; }
+        } else if (ln.includes('creatinine') || ln === 'cr') {
+          if (res > 1.5) { aiSuggest = 'AI เสนอ: ตรวจสอบ Acute Kidney Injury (N17.9) (+RW)'; estRevenue = 15000; isCritical = true; }
+        } else if (ln.includes('lactate')) {
+          if (res > 2.0) { aiSuggest = 'AI เสนอ: พิจารณาสัญญาณ Sepsis/Septic Shock (A41.9) (+RW)'; estRevenue = 20000; isCritical = true; }
+        } else if (ln.includes('albumin')) {
+          if (res < 2.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Severe Malnutrition (E43) (+RW)'; estRevenue = 12000; isCritical = true; }
+        } else if (ln.includes('trop') || ln.includes('troponin')) {
+          aiSuggest = 'AI เสนอ: ตรวจสอบประวัติเจ็บหน้าอก พิจารณา NSTEMI/STEMI (I21.-) (+RW)'; estRevenue = 25000; isCritical = true;
+        } else if (ln.includes('ph')) {
+          if (res < 7.35) { aiSuggest = 'AI เสนอ: ภาวะ Acidosis (E87.2) ส่งผลต่อความรุนแรง (+RW) ควรแจ้งแพทย์'; estRevenue = 8000; isCritical = true; }
+        }
+      }
+
+      if (isCritical) {
+        labMapped.push({ hn: c.hn, an: c.an, name: c.name, ward: c.ward, issue, aiSuggest, estRevenue });
+      }
+    });
+
+    return {
+      pdxOptimization: pdxMapped,
+      losAlert: losMapped,
+      mccMissing: mccMapped,
+      labAlerts: labMapped.slice(0, 30),
+      pdxRevenue: pdxMapped.reduce((sum, c) => sum + (c.estRevenue || 0), 0),
+      mccRevenue: mccMapped.reduce((sum, c) => sum + (c.estRevenue || 0), 0),
+      labRevenue: labMapped.slice(0, 30).reduce((sum, c) => sum + (c.estRevenue || 0), 0),
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error("DRG Optimization API Error:", error);
+    return { error: error.message };
+  }
+}));
+
+export default router;

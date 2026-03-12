@@ -40,7 +40,7 @@ export function getMVStatus() {
 // Each view has: name, SQL, refreshIntervalMs, category
 const VIEW_DEFINITIONS = [
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. Daily Revenue Summary (from opitemrece — millions of rows)
+    // 1. Daily Revenue Summary (from vn_stat — lightweight)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
         name: 'mv_daily_revenue',
@@ -48,22 +48,19 @@ const VIEW_DEFINITIONS = [
         refreshIntervalMs: 5 * 60 * 1000,   // Every 5 minutes
         sql: `
             SELECT 
-                o.vstdate,
-                COUNT(DISTINCT o.vn) as visit_count,
-                COUNT(DISTINCT o.hn) as patient_count,
-                COALESCE(SUM(v.income), 0) as total_revenue,
-                COALESCE(SUM(CASE WHEN o.an IS NOT NULL THEN v.income ELSE 0 END), 0) as ipd_revenue,
-                COALESCE(SUM(CASE WHEN o.an IS NULL THEN v.income ELSE 0 END), 0) as opd_revenue
-            FROM ovst o
-            INNER JOIN vn_stat v ON o.vn = v.vn
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-            GROUP BY o.vstdate
-            ORDER BY o.vstdate DESC
+                vstdate,
+                COUNT(DISTINCT vn) as visit_count,
+                COUNT(DISTINCT hn) as patient_count,
+                COALESCE(SUM(income), 0) as total_revenue
+            FROM vn_stat
+            WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            GROUP BY vstdate
+            ORDER BY vstdate DESC
         `
     },
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. Monthly Revenue by Department (Heavy JOIN)
+    // 2. Monthly Revenue by Department
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
         name: 'mv_monthly_dept_revenue',
@@ -75,16 +72,16 @@ const VIEW_DEFINITIONS = [
                 YEAR(o.vstdate) as yr,
                 MONTH(o.vstdate) as mo,
                 k.depcode,
-                k.depname as dept_name,
+                k.department as dept_name,
                 COUNT(DISTINCT o.vn) as visit_count,
                 COUNT(DISTINCT o.hn) as patient_count,
                 SUM(v.income) as revenue
             FROM ovst o
             INNER JOIN vn_stat v ON o.vn = v.vn
             INNER JOIN kskdepartment k ON o.main_dep = k.depcode
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 YEAR)
+            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
               AND v.income > 0
-            GROUP BY month, yr, mo, k.depcode, k.depname
+            GROUP BY month, yr, mo, k.depcode, k.department
             ORDER BY month DESC, revenue DESC
         `
     },
@@ -98,18 +95,17 @@ const VIEW_DEFINITIONS = [
         refreshIntervalMs: 15 * 60 * 1000,
         sql: `
             SELECT
-                DATE_FORMAT(o.vstdate, '%Y-%m') as month,
-                YEAR(o.vstdate) as yr,
-                MONTH(o.vstdate) as mo,
+                DATE_FORMAT(v.vstdate, '%Y-%m') as month,
+                YEAR(v.vstdate) as yr,
+                MONTH(v.vstdate) as mo,
                 pt.pttype,
                 pt.name as payer_name,
-                COUNT(DISTINCT o.vn) as visit_count,
+                COUNT(DISTINCT v.vn) as visit_count,
                 SUM(v.income) as revenue
-            FROM ovst o
-            INNER JOIN vn_stat v ON o.vn = v.vn
-            INNER JOIN patient p ON o.hn = p.hn
+            FROM vn_stat v
+            INNER JOIN patient p ON v.hn = p.hn
             LEFT JOIN pttype pt ON p.pttype = pt.pttype
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 YEAR)
+            WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
               AND v.income > 0
             GROUP BY month, yr, mo, pt.pttype, pt.name
             ORDER BY month DESC, revenue DESC
@@ -176,7 +172,7 @@ const VIEW_DEFINITIONS = [
     },
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 6. OPD Revenue Per Visit (opitemrece — heaviest table)
+    // 6. OPD Revenue Per Visit (from vn_stat — avoids opitemrece)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
         name: 'mv_opd_revenue_per_visit',
@@ -184,21 +180,15 @@ const VIEW_DEFINITIONS = [
         refreshIntervalMs: 10 * 60 * 1000,
         sql: `
             SELECT 
-                o.vstdate,
-                COUNT(DISTINCT o.vn) as visit_count,
-                ROUND(SUM(oi.qty * oi.unitprice), 0) as total_charge,
-                ROUND(AVG(t.visit_charge), 0) as avg_revenue_per_visit
-            FROM ovst o
-            INNER JOIN (
-                SELECT vn, SUM(qty * unitprice) as visit_charge
-                FROM opitemrece
-                WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                GROUP BY vn
-            ) t ON o.vn = t.vn
-            LEFT JOIN opitemrece oi ON o.vn = oi.vn
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            GROUP BY o.vstdate
-            ORDER BY o.vstdate DESC
+                vstdate,
+                COUNT(DISTINCT vn) as visit_count,
+                ROUND(SUM(income), 0) as total_charge,
+                ROUND(AVG(income), 0) as avg_revenue_per_visit
+            FROM vn_stat
+            WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+              AND income > 0
+            GROUP BY vstdate
+            ORDER BY vstdate DESC
         `
     },
 
@@ -213,11 +203,10 @@ const VIEW_DEFINITIONS = [
             SELECT 
                 o.vstdate,
                 COUNT(o.vn) as total_visits,
-                SUM(CASE WHEN EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn LIMIT 1) THEN 1 ELSE 0 END) as coded_visits,
-                SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn LIMIT 1) THEN v.income ELSE 0 END) as uncoded_revenue
+                COUNT(DISTINCT d.vn) as coded_visits
             FROM ovst o
-            INNER JOIN vn_stat v ON o.vn = v.vn
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            LEFT JOIN ovstdiag d ON o.vn = d.vn
+            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
             GROUP BY o.vstdate
             ORDER BY o.vstdate DESC
         `
@@ -263,7 +252,7 @@ const VIEW_DEFINITIONS = [
                 COUNT(DISTINCT vn) AS visit_count,
                 COUNT(DISTINCT hn) AS patient_count
             FROM vn_stat 
-            WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 YEAR)
+            WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
               AND income > 0
             GROUP BY YEAR(vstdate), MONTH(vstdate) 
             ORDER BY yr, mo

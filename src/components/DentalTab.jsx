@@ -1,723 +1,391 @@
-// ============================================================
-// BCH 360° Intelligence V.10 - Dental Tab
-// 🦷 Professional Dental Analytics + Deep Root-Cause Analysis
-// ============================================================
 import React, { useEffect, useMemo } from 'react';
+import { useDashboard } from '../context/DashboardContext';
 import {
-    ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-    Cell, ComposedChart, Area, Line, PieChart, Pie
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
 import KPICard from './KPICard.jsx';
+import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
 
 export default function DentalTab() {
     const { state, fetchData } = useDashboard();
-    const dentalToday = state.dentalToday;
+    const dentalToday = state.dentalToday || {};
     const dentalAnalytics = state.dentalAnalytics;
-    const loading = state.loading;
+    const dentalRevenueFiscal = state.dentalRevenueFiscal;
+    const loading = state.loading || {};
 
     useEffect(() => {
-        fetchData('dentalToday', '/api/dental/today');
-        fetchData('dentalAnalytics', '/api/dental/analytics');
-        fetchData('dentalRevenueFiscal', '/api/dental/revenue-fiscal');
+        // Fetch data if not present
+        if (!dentalToday.total && !loading.dentalToday) {
+            fetchData('dentalToday', '/api/dental/today');
+        }
+        if (!dentalAnalytics && !loading.dentalAnalytics) {
+            fetchData('dentalAnalytics', '/api/dental/analytics');
+        }
+        if (!dentalRevenueFiscal && !loading.dentalRevenueFiscal) {
+            fetchData('dentalRevenueFiscal', '/api/dental/revenue-fiscal');
+        }
     }, [fetchData]);
 
-    const today = dentalToday || {};
+    // ━━━━━━ 🧠 AI Strategic Intelligence ━━━━━━
+    const aiAnalytics = useMemo(() => {
+        const defaultResult = {
+            problems: [],
+            urgencyScore: 0,
+            urgencyColor: '#10b981',
+            urgencyLabel: 'ปกติ',
+            latestFY: { fiscal_label: 'FY' },
+            yoyGrowth: 0,
+            strategicKPIs: [],
+            benchmarks: {}
+        };
+
+        if (!dentalAnalytics) return defaultResult;
+
+        const a = dentalAnalytics;
+        const completionRate = a.completion_rate ?? 0;
+        const revisitRate = a.revisit_rate ?? 0;
+        const avgWait = a.avg_wait_time ?? 0;
+        const medianWait = a.median_wait_time ?? 0;
+        const p90Wait = a.p90_wait_time ?? 0;
+        const avgRevenue = a.avg_revenue_per_visit ?? 0;
+
+        const problems = [];
+        // P90 Wait is the best indicator of "bad days"
+        if (p90Wait > 60) {
+            problems.push({
+                priority: 1, severity: 'critical', color: '#f43f5e',
+                title: `🔴 ประสบการณ์ผู้ป่วยแย่ (P90: ${p90Wait}m)`,
+                rootCause: `ผู้ป่วย 10% รอนานกว่า 1 ชม. แสดงถึงปัญหาระบบคัดกรองหรือกำลังคนไม่พอในช่วงพีค`,
+                fixFirst: `เกลี่ยคิวนัดหมาย (Load Balancing) ย้ายเคสเร่งด่วนไปช่วงก่อน 10:00`
+            });
+        }
+        if (avgWait > 30) {
+            problems.push({
+                priority: 2, severity: 'warning', color: '#f59e0b',
+                title: `🟡 เวลารอเฉลี่ยตึงตัว: ${avgWait}m`,
+                rootCause: `ค่าเฉลี่ยสูงกว่าเป้าหมาย 30 นาที (Median: ${medianWait}m)`,
+                fixFirst: `ตรวจสอบคอขวดขั้นตอนการเตรียมเครื่องมือและอุปกรณ์`
+            });
+        }
+        if (completionRate < 85) {
+            problems.push({
+                priority: 3, severity: 'warning', color: '#f59e0b',
+                title: `🟡 ประสิทธิภาพการปิดเคส: ${completionRate}%`,
+                rootCause: `มีผู้ป่วย Dropout ${a.dropout_count || 0} รายในเดือนนี้`,
+                fixFirst: `ปรับปรุงระบบติดตามผ่าน LINE/SMS และแจ้งแผนการรักษาระยะยาว`
+            });
+        }
+
+        const years = dentalRevenueFiscal?.fiscal_years || [];
+        const latestFY = years[years.length - 1] || { fiscal_label: 'FY' };
+        const prevFY = years[years.length - 2];
+        const latestRev = latestFY.comparable_revenue || latestFY.total_revenue || 0;
+        const prevRev = prevFY ? (prevFY.comparable_revenue || prevFY.total_revenue || 0) : 0;
+        const yoyGrowth = prevRev > 0 ? ((latestRev - prevRev) / prevRev * 100) : 0;
+
+        const strategicKPIs = [
+            { label: 'P90 Wait', value: `${p90Wait}m`, color: p90Wait < 45 ? '#10b981' : p90Wait < 75 ? '#f59e0b' : '#f43f5e', icon: '⚡' },
+            { label: 'Wait SLA', value: `${a.wait_sla_pct ?? 0}%`, color: (a.wait_sla_pct ?? 0) > 85 ? '#10b981' : '#f59e0b', icon: '⏱️' },
+            { label: 'Completion', value: `${completionRate}%`, color: completionRate > 90 ? '#10b981' : '#f59e0b', icon: '✅' },
+            { label: 'Rev/Visit', value: `฿${(avgRevenue).toLocaleString()}`, color: '#8b5cf6', icon: '💰' }
+        ];
+
+        const critCount = problems.filter(p => p.severity === 'critical').length;
+        const warnCount = problems.filter(p => p.severity === 'warning').length;
+        const urgencyScore = Math.min(10, critCount * 3 + warnCount * 1.5);
+
+        return {
+            problems,
+            urgencyScore,
+            urgencyColor: urgencyScore >= 7 ? '#f43f5e' : urgencyScore >= 4 ? '#f59e0b' : '#10b981',
+            urgencyLabel: urgencyScore >= 7 ? 'วิกฤต' : urgencyScore >= 4 ? 'เฝ้าระวัง' : 'ปกติ',
+            latestFY,
+            yoyGrowth,
+            strategicKPIs,
+            benchmarks: { medianWait, p90Wait }
+        };
+    }, [dentalAnalytics, dentalRevenueFiscal]);
+
+    // ━━━━━━ 📈 Build Chart Data for Revenue ━━━━━━
+    const revenueChartData = useMemo(() => {
+        if (!dentalRevenueFiscal?.fiscal_years) return [];
+        const years = dentalRevenueFiscal.fiscal_years;
+        const MONTH_ORDER = ['ต.ค.', 'พ.ย.', 'ธ.ค.', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.'];
+
+        return MONTH_ORDER.map((label, i) => {
+            const row = { month: label };
+            years.forEach((fy, fi) => {
+                row[`fy${fi}`] = fy.months && fy.months[i] ? fy.months[i].revenue : 0;
+            });
+            return row;
+        });
+    }, [dentalRevenueFiscal]);
 
     return (
         <div className="space-y-4 animate-fade-in pb-8">
-            {/* ━━━ Hero KPI Strip — Professional Design ━━━ */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))', gap: '12px' }}>
-
-                {/* ── ผู้ป่วยวันนี้ (Hero Card) ── */}
-                <div style={{
-                    gridColumn: 'span 2', padding: '1.25rem 1.5rem', borderRadius: '16px',
-                    background: 'linear-gradient(135deg, rgba(139,92,246,.12) 0%, rgba(124,58,237,.06) 100%)',
-                    border: '1px solid rgba(139,92,246,.2)',
-                    backdropFilter: 'blur(12px)',
-                    position: 'relative', overflow: 'hidden',
+            {/* 🚀 AI Intelligence Feed */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '12px', marginBottom: '1rem' }}>
+                <div className="glass-card" style={{
+                    padding: '14px 20px', display: 'flex', alignItems: 'center', gap: '16px',
+                    borderLeft: `5px solid ${aiAnalytics.urgencyColor}`, background: `linear-gradient(90deg, ${aiAnalytics.urgencyColor}10 0%, transparent 100%)`
                 }}>
-                    <div style={{ position: 'absolute', top: '-30px', right: '-30px', width: '120px', height: '120px', borderRadius: '50%', background: 'radial-gradient(circle, rgba(139,92,246,.15) 0%, transparent 70%)', pointerEvents: 'none' }} />
-
-                    {loading.dentalToday ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            <div className="skeleton" style={{ height: '12px', width: '80px' }} />
-                            <div className="skeleton" style={{ height: '40px', width: '120px' }} />
-                            <div className="skeleton" style={{ height: '8px', width: '100%', borderRadius: '99px' }} />
+                    <div style={{ fontSize: '32px', filter: 'drop-shadow(0 0 8px rgba(0,0,0,0.1))' }}>🤖</div>
+                    <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: aiAnalytics.urgencyColor, textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Operational Diagnostics</p>
+                            <span style={{ padding: '2px 8px', borderRadius: '4px', background: aiAnalytics.urgencyColor, color: 'white', fontSize: '9px', fontWeight: 900 }}>{aiAnalytics.urgencyLabel}</span>
                         </div>
-                    ) : (() => {
-                        const total = today.total ?? 0;
-                        const completed = today.completed ?? 0;
-                        const waiting = today.waiting ?? 0;
-                        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-                        return (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#8b5cf6', margin: 0 }}>
-                                        🦷 ผู้ป่วยทันตกรรมวันนี้
-                                    </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(139,92,246,.08)', padding: '2px 8px', borderRadius: '99px' }}>
-                                        Real-time
-                                    </span>
-                                </div>
-
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                                    <span style={{ fontSize: '42px', fontWeight: 900, color: '#8b5cf6', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(139,92,246,.3)' }}>
-                                        {total}
-                                    </span>
-                                    <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>ราย</span>
-                                    <span style={{
-                                        fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
-                                        background: 'rgba(16,185,129,.1)', color: '#10b981',
-                                    }}>
-                                        ✅ {completed} เสร็จ ({pct}%)
-                                    </span>
-                                    {waiting > 0 && (
-                                        <span style={{
-                                            fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
-                                            background: 'rgba(245,158,11,.1)', color: '#f59e0b',
-                                        }}>
-                                            ⏳ {waiting} รอ
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Completion bar */}
-                                <div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed} ({pct}%)</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f59e0b' }}>รอรับบริการ {waiting}</span>
-                                    </div>
-                                    <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(245,158,11,.12)', display: 'flex' }}>
-                                        <div style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
-                                        <div style={{ flex: 1, background: 'rgba(245,158,11,.2)', borderRadius: '0 99px 99px 0' }} />
-                                    </div>
-                                </div>
-                            </div>
-                        );
-                    })()}
+                        <p style={{ margin: '4px 0 0', fontSize: '15px', fontWeight: 700, color: 'var(--md-text-primary)' }}>
+                            {loading.dentalAnalytics ? 'กำลังประมวลผลอัลกอริทึมวิเคราะห์...' : (aiAnalytics.problems[0]?.title || 'ระบบทันตกรรมดำเนินงานได้อย่างมีประสิทธิภาพสูงสุด')}
+                        </p>
+                    </div>
                 </div>
+                <div className="glass-card" style={{ padding: '14px 20px', textAlign: 'center', minWidth: '150px' }}>
+                    <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#8b5cf6', textTransform: 'uppercase' }}>Growth index</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '22px', fontWeight: 900, color: aiAnalytics.yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
+                        {aiAnalytics.yoyGrowth >= 0 ? '↑' : '↓'} {Math.abs(aiAnalytics.yoyGrowth).toFixed(1)}%
+                    </p>
+                </div>
+            </div>
 
-                {/* ── Mini KPI Cards ── */}
-                {[
-                    {
-                        title: 'รอเฉลี่ย', value: `${today.avg_wait_time || 0} min`, icon: '⏱️', unit: '',
-                        grad: (today.avg_wait_time ?? 0) > 30 ? ['#f43f5e', '#dc2626'] : (today.avg_wait_time ?? 0) > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
-                        glow: 'rgba(14,165,233,.2)',
-                        loading: loading.dentalToday,
-                    },
-                    {
-                        title: 'เด็ก (<12)', value: today.children ?? 0, icon: '👶', unit: 'ราย',
-                        grad: ['#0ea5e9', '#0284c7'], glow: 'rgba(14,165,233,.2)',
-                        loading: loading.dentalToday,
-                    },
-                    {
-                        title: 'ผู้สูงอายุ', value: today.elderly ?? 0, icon: '👴', unit: 'ราย',
-                        grad: (today.elderly ?? 0) > 10 ? ['#f59e0b', '#d97706'] : ['#8b5cf6', '#7c3aed'],
-                        glow: 'rgba(139,92,246,.2)',
-                        loading: loading.dentalToday,
-                    },
-                    {
-                        title: 'รอรับบริการ', value: today.waiting ?? 0, icon: '⏳', unit: 'ราย',
-                        grad: (today.waiting ?? 0) > 10 ? ['#f43f5e', '#dc2626'] : ['#f59e0b', '#d97706'],
-                        glow: 'rgba(245,158,11,.2)',
-                        loading: loading.dentalToday,
-                    },
-                ].map((kpi, i) => (
-                    <div key={`dental-kpi-${i}`} style={{
-                        padding: '1rem 1.25rem', borderRadius: '14px',
-                        background: `linear-gradient(135deg, ${kpi.grad[0]}10 0%, ${kpi.grad[1]}05 100%)`,
-                        border: `1px solid ${kpi.grad[0]}25`,
-                        position: 'relative', overflow: 'hidden',
-                        transition: 'transform 0.2s, box-shadow 0.2s',
-                    }}
-                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 8px 25px ${kpi.glow}`; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
-                    >
-                        {kpi.loading ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                <div className="skeleton" style={{ height: '10px', width: '60px' }} />
-                                <div className="skeleton" style={{ height: '28px', width: '50px' }} />
+            {/* 📊 Today's Performance & Wait Distribution */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px' }}>
+                <div style={{
+                    gridColumn: 'span 2', padding: '1.5rem', borderRadius: '20px',
+                    background: 'linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.05) 100%)',
+                    border: '1px solid rgba(139,92,246,0.25)', position: 'relative', overflow: 'hidden'
+                }}>
+                    <div style={{ position: 'absolute', top: -20, right: -20, fontSize: '120px', opacity: 0.05 }}>🦷</div>
+                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', color: '#8b5cf6', margin: 0, letterSpacing: '0.1em' }}>Daily Patient Throughput</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px', marginTop: '12px' }}>
+                        <div>
+                            <span style={{ fontSize: '48px', fontWeight: 950, color: '#6366f1', letterSpacing: '-0.04em' }}>{dentalToday.total || 0}</span>
+                            <span style={{ fontSize: '16px', color: 'var(--md-text-tertiary)', fontWeight: 600, marginLeft: '6px' }}>ราย</span>
+                        </div>
+                        <div style={{ height: '40px', width: '1px', background: 'rgba(0,0,0,0.1)' }} />
+                        <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-secondary)' }}>Completed</span>
+                                <span style={{ fontSize: '11px', fontWeight: 800, color: '#10b981' }}>{dentalToday.completed || 0}</span>
                             </div>
-                        ) : (
-                            <>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
-                                        {kpi.title}
-                                    </span>
-                                    <span style={{ fontSize: '18px' }}>{kpi.icon}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                                    <span style={{ fontSize: '28px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
-                                        {typeof kpi.value === 'number' ? kpi.value.toLocaleString() : kpi.value}
-                                    </span>
-                                    {kpi.unit && <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{kpi.unit}</span>}
-                                </div>
-                            </>
+                            <div style={{ height: '6px', background: 'rgba(0,0,0,0.05)', borderRadius: '3px' }}>
+                                <div style={{ height: '100%', background: '#10b981', borderRadius: '3px', width: `${(dentalToday.total > 0 ? (dentalToday.completed / dentalToday.total * 100) : 0)}%` }} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <KPICard title="Wait (Median)" value={aiAnalytics.benchmarks.medianWait || 0} subtitle="นาที (30D)" icon="⏱️" loading={loading.dentalAnalytics} color="blue" />
+                <KPICard title="DPI Index" value={dentalAnalytics?.dpi || 0} subtitle="/100 (Operational Score)" icon="🎯" loading={loading.dentalAnalytics} color="purple" />
+            </div>
+
+            {/* 🔬 Deep Diagnostics Panel */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '16px' }}>
+                <div className="glass-card" style={{ padding: '20px' }}>
+                    <p style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ background: '#8b5cf6', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '10px' }}>ST-01</span> Strategic Indicators
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        {aiAnalytics.strategicKPIs.length > 0 ? aiAnalytics.strategicKPIs.map((kpi, idx) => (
+                            <div key={idx} style={{ padding: '14px 10px', borderRadius: '16px', background: 'var(--md-surface)', border: '1px solid var(--md-border)', textAlign: 'center', transition: 'transform 0.2s' }}>
+                                <div style={{ fontSize: '24px', marginBottom: '6px' }}>{kpi.icon}</div>
+                                <p style={{ margin: 0, fontSize: '16px', fontWeight: 950, color: kpi.color }}>{kpi.value}</p>
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginTop: '2px' }}>{kpi.label}</p>
+                            </div>
+                        )) : (
+                            <div style={{ gridColumn: 'span 2', textAlign: 'center', padding: '3rem', color: 'var(--md-text-tertiary)', fontSize: '12px' }}>
+                                {loading.dentalAnalytics ? 'รวบรวมข้อมูล Strategic Dashboard...' : 'No Data Available'}
+                            </div>
                         )}
                     </div>
-                ))}
-            </div>
+                </div>
 
-            {/* ━━━━━ DPI + Advanced Dental Analytics Panel ━━━━━ */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
-                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #8b5cf6, #6366f1)', borderRadius: '99px' }} />
-                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
-                    🔬 Advanced Analytics — Dental
-                </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(139,92,246,.08)', padding: '2px 8px', borderRadius: '99px' }}>30d · HOSxP XE</span>
-            </div>
-
-            <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
-                {loading.dentalAnalytics ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: '1.5rem' }}>
-                        <div className="skeleton" style={{ height: '200px', width: '200px', borderRadius: '50%' }} />
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                            {[1, 2, 3, 4, 5, 6].map(i => <div key={i} className="skeleton" style={{ height: '56px', borderRadius: '10px' }} />)}
-                        </div>
+                <div className="glass-card" style={{ padding: '20px', borderLeft: `5px solid ${aiAnalytics.urgencyColor}` }}>
+                    <p style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ background: aiAnalytics.urgencyColor, color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '10px' }}>AI-DX</span> Problem Discovery & Diagnosis
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {aiAnalytics.problems.length > 0 ? aiAnalytics.problems.map((p, idx) => (
+                            <div key={idx} style={{ padding: '14px', borderRadius: '16px', background: `${p.color}08`, border: `1px solid ${p.color}20`, position: 'relative' }}>
+                                <p style={{ margin: 0, fontSize: '13px', fontWeight: 800, color: p.color }}>{p.title}</p>
+                                <p style={{ margin: '6px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6 }}>{p.rootCause}</p>
+                                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ fontSize: '12px' }}>🧪</span>
+                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#10b981' }}>RECOMMENDATION: {p.fixFirst}</p>
+                                </div>
+                            </div>
+                        )) : (
+                            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--md-text-tertiary)', background: 'rgba(16,185,129,0.03)', borderRadius: '16px', border: '1px dashed #10b98140' }}>
+                                <div style={{ fontSize: '32px', marginBottom: '10px' }}>✨</div>
+                                <p style={{ margin: 0, fontWeight: 700, color: '#10b981' }}>High Performance Mode</p>
+                                <p style={{ margin: 0, fontSize: '11px' }}>ตัวบ่งชี้ทุกตัวอยู่ในเกณฑ์มาตรฐานความปลอดภัยและคุณภาพ</p>
+                            </div>
+                        )}
                     </div>
-                ) : (() => {
-                    const a = dentalAnalytics || {};
-                    const dpi = a.dpi ?? 0;
-                    const dpiColor = dpi >= 80 ? '#10b981' : dpi >= 60 ? '#f59e0b' : '#f43f5e';
-                    const dpiGrade = dpi >= 90 ? 'A+' : dpi >= 80 ? 'A' : dpi >= 70 ? 'B+' : dpi >= 60 ? 'B' : dpi >= 50 ? 'C' : 'D';
-                    const r = 72;
-                    const circumference = Math.PI * r;
-                    const dashLen = Math.min(dpi / 100, 1) * circumference;
-
-                    const dpiComp = a.dpi_components || {};
-                    const dpiRadar = [
-                        { name: 'Wait Time', score: dpiComp.wait_time || 0 },
-                        { name: 'Completion', score: dpiComp.completion || 0 },
-                        { name: 'Revisit', score: dpiComp.revisit || 0 },
-                        { name: 'Revenue', score: dpiComp.revenue || 0 },
-                        { name: 'SLA', score: dpiComp.sla || 0 },
-                    ];
-
-                    // ━━━ Tier 1: Wait Time & Flow ━━━
-                    const tier1Cards = [
-                        {
-                            icon: '⏱️', label: 'เวลารอเฉลี่ย',
-                            value: `${a.avg_wait_time ?? 0} min`,
-                            sub: `σ ${a.sd_wait_time ?? 0}min · SLA ≤30min: ${a.wait_sla_pct ?? 0}%`,
-                            desc: 'เวลารอก่อนพบทันตแพทย์ (30 วัน)',
-                            color: (a.avg_wait_time ?? 30) <= 15 ? '#10b981' : (a.avg_wait_time ?? 30) <= 30 ? '#f59e0b' : '#f43f5e',
-                            problem: (a.avg_wait_time ?? 30) <= 15
-                                ? `รอเฉลี่ย ${a.avg_wait_time ?? 0} min — ดีเยี่ยม (≤15min) ผู้ป่วยได้รับบริการรวดเร็ว SLA ${a.wait_sla_pct ?? 0}%`
-                                : (a.avg_wait_time ?? 30) <= 30
-                                    ? `รอเฉลี่ย ${a.avg_wait_time ?? 0} min (σ ${a.sd_wait_time ?? 0}) — ยังอยู่ในเกณฑ์ แต่ควรลด มี ${a.wait_over_30m ?? 0} ครั้งที่รอ >30min ผู้ป่วยทันตกรรมมักไม่อยากรอนาน → ลด revisit`
-                                    : `🚨 รอเฉลี่ย ${a.avg_wait_time ?? 0} min — สูง! ${a.wait_over_30m ?? 0} ครั้ง >30min ผู้ป่วยอาจ dropout หรือเลือกไปคลินิกเอกชน`,
-                            recommend: (a.avg_wait_time ?? 30) <= 15
-                                ? '✅ คงมาตรฐาน — Appointment system ทำงานดี'
-                                : '📋 ลดเวลารอ: (1) Appointment-based scheduling (2) เพิ่ม Unit ช่วง Peak (3) Pre-screening ก่อนถึงคิว (4) SMS แจ้งคิว real-time (5) เป้าหมาย: ≤15 min',
-                        },
-                        {
-                            icon: '🕐', label: 'เวลารวม (Visit)',
-                            value: `${a.avg_total_time ?? 0} min`,
-                            sub: `σ ${a.sd_total_time ?? 0}min · Total SLA ≤60min: ${a.total_sla_pct ?? 0}%`,
-                            desc: 'เวลาเฉลี่ยทั้งกระบวนการ ลงทะเบียน→รักษา→ชำระเงิน',
-                            color: (a.avg_total_time ?? 60) <= 45 ? '#10b981' : (a.avg_total_time ?? 60) <= 60 ? '#f59e0b' : '#f43f5e',
-                            problem: `เวลารวม ${a.avg_total_time ?? 0} min (σ ${a.sd_total_time ?? 0}) — ${(a.avg_total_time ?? 60) <= 45 ? 'ดี Flow ลื่นไหล' : (a.avg_total_time ?? 60) <= 60 ? 'ปานกลาง ควรลด bottleneck' : '⚠️ สูง! ผู้ป่วยใช้เวลาทั้งหมดนานเกินไป ตรวจสอบ bottleneck'}`,
-                            recommend: '📋 ลดเวลารวม: (1) Pre-register online (2) Digital payment ลดรอชำระเงิน (3) Chair-side billing (4) Lean flow: ลด Non-value steps',
-                        },
-                        {
-                            icon: '📊', label: 'Avg Daily Visits',
-                            value: `${a.avg_daily_visits ?? 0}`,
-                            sub: `${(a.total_visits ?? 0).toLocaleString()} ราย / 30 วัน · ${a.unique_patients ?? 0} patients`,
-                            desc: 'จำนวนผู้ป่วยเฉลี่ยต่อวัน',
-                            color: '#0ea5e9',
-                            problem: `เฉลี่ย ${a.avg_daily_visits ?? 0} ราย/วัน (รวม ${(a.total_visits ?? 0).toLocaleString()} ราย) · Unique patients ${a.unique_patients ?? 0} — ${(a.avg_daily_visits ?? 0) > 50 ? '⚠️ Volume สูง ตรวจสอบ Capacity' : 'Volume ปกติ'}`,
-                            recommend: '📋 Capacity: (1) วิเคราะห์ Chair utilization rate (2) เพิ่ม Unit ถ้า Utilization >85% (3) Extended hours สำหรับ Peak days',
-                        },
-                        {
-                            icon: '⏰', label: 'Wait >30 min',
-                            value: `${a.wait_over_30m ?? 0}`,
-                            sub: `จาก 30 วัน`,
-                            desc: 'จำนวนครั้งที่รอนานเกิน 30 นาที',
-                            color: (a.wait_over_30m ?? 0) < 10 ? '#10b981' : (a.wait_over_30m ?? 0) < 30 ? '#f59e0b' : '#f43f5e',
-                            problem: (a.wait_over_30m ?? 0) < 10
-                                ? `Wait >30min เพียง ${a.wait_over_30m ?? 0} ครั้ง — Flow ดี ไม่มีปัญหาคอขวด`
-                                : `Wait >30min ${a.wait_over_30m ?? 0} ครั้ง — ${(a.wait_over_30m ?? 0) >= 30 ? '🚨 บ่อยเกินไป! ผู้ป่วยรอนานเป็นประจำ' : 'ต้องเฝ้าระวัง อาจเกิดช่วง Peak'}`,
-                            recommend: (a.wait_over_30m ?? 0) < 10
-                                ? '✅ ดี — RCA ทุกครั้งที่เกิด wait >30min'
-                                : '📋 ลด Long wait: (1) Buffer time ระหว่าง appointment (2) เพิ่ม dental hygienist ช่วย Pre-procedure (3) Parallel processing',
-                        },
-                    ];
-
-                    // ━━━ Tier 2: Quality ━━━
-                    const tier2Cards = [
-                        {
-                            icon: '✅', label: 'Completion Rate',
-                            value: `${a.completion_rate ?? 0}%`,
-                            sub: `Dropout ${a.dropout_count ?? 0} ราย`,
-                            desc: '% ผู้ป่วยที่รักษาเสร็จสิ้น',
-                            color: (a.completion_rate ?? 0) >= 95 ? '#10b981' : (a.completion_rate ?? 0) >= 85 ? '#f59e0b' : '#f43f5e',
-                            problem: (a.completion_rate ?? 0) >= 95
-                                ? `Completion ${a.completion_rate ?? 0}% — ดีเยี่ยม Dropout เพียง ${a.dropout_count ?? 0} ราย`
-                                : `Completion ${a.completion_rate ?? 0}% — Dropout ${a.dropout_count ?? 0} ราย ${(a.completion_rate ?? 0) < 85 ? '⚠️ สูง! ตรวจสอบสาเหตุ: รอนาน? กลัว? ค่าใช้จ่าย?' : 'ควรสอบถามสาเหตุ'}`,
-                            recommend: '📋 ลด Dropout: (1) SMS เตือนก่อนนัด 1 วัน (2) ลด Wait time (3) ให้ข้อมูลค่าใช้จ่ายล่วงหน้า (4) เป้าหมาย: ≥95%',
-                        },
-                        {
-                            icon: '🔄', label: 'Revisit 7 วัน',
-                            value: `${a.revisit_rate ?? 0}%`,
-                            sub: `${a.revisit_count ?? 0} ราย กลับมาภายใน 7 วัน`,
-                            desc: '% ผู้ป่วยที่กลับมาอีกในสัปดาห์เดียวกัน',
-                            color: (a.revisit_rate ?? 0) < 5 ? '#10b981' : (a.revisit_rate ?? 0) < 15 ? '#f59e0b' : '#f43f5e',
-                            problem: (a.revisit_rate ?? 0) < 5
-                                ? `Revisit ${a.revisit_rate ?? 0}% — ต่ำ สะท้อน Treatment quality ดี`
-                                : `Revisit ${a.revisit_rate ?? 0}% (${a.revisit_count ?? 0} ราย) — ${(a.revisit_rate ?? 0) >= 15 ? '⚠️ สูง! อาจมี Complication หรือ Treatment plan ต้องหลาย visit' : 'ปานกลาง อาจเป็น Planned multi-visit cases'}`,
-                            recommend: '📋 Review: (1) แยก Planned revisit vs Unplanned (2) Audit unplanned — Complication? Undertreated? (3) Treatment plan ที่ดียิ่งขึ้น',
-                        },
-                    ];
-
-                    // ━━━ Tier 3: Financial ━━━
-                    const tier3Cards = [
-                        {
-                            icon: '💰', label: 'รายได้ / Visit',
-                            value: `฿${(a.avg_revenue_per_visit ?? 0).toLocaleString()}`,
-                            sub: `Max ฿${(a.max_revenue ?? 0).toLocaleString()} · Daily ฿${(a.daily_revenue ?? 0).toLocaleString()}`,
-                            desc: 'รายได้เฉลี่ยต่อ 1 visit ทันตกรรม',
-                            color: '#0ea5e9',
-                            problem: `Avg Rev/Visit ฿${(a.avg_revenue_per_visit ?? 0).toLocaleString()} — ${(a.avg_revenue_per_visit ?? 0) < 500 ? '⚠️ ต่ำ อาจมี Under-billing หรือส่วนใหญ่เป็น Basic dental care' : 'สอดคล้องกับ Procedure mix'}`,
-                            recommend: '📋 Optimize: (1) ตรวจสอบ Procedure billing ครบถ้วน (2) เพิ่ม Preventive service packages (3) ลด Free visit %',
-                        },
-                        {
-                            icon: '💵', label: 'รายได้รวม (30d)',
-                            value: `฿${((a.total_revenue ?? 0) / 1000).toFixed(0)}k`,
-                            sub: `${(a.total_visits ?? 0).toLocaleString()} visits`,
-                            desc: 'รายได้รวมทันตกรรม 30 วัน',
-                            color: '#10b981',
-                            problem: `Revenue ฿${((a.total_revenue ?? 0) / 1000).toFixed(0)}k / 30 วัน จาก ${(a.total_visits ?? 0).toLocaleString()} visits`,
-                            recommend: '📋 เพิ่มรายได้: (1) Dental packages (ขูดหินปูน+ตรวจ+X-ray) (2) Cosmetic dentistry promotion (3) Referral program',
-                        },
-                    ];
-
-                    return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                            {/* DPI Gauge + Component Breakdown */}
-                            <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: '1.5rem', alignItems: 'start' }}>
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                                    <svg width="180" height="100" viewBox="0 0 180 105" style={{ overflow: 'visible' }}>
-                                        <path d={`M 18,90 A ${r},${r} 0 0,1 162,90`} fill="none" stroke="rgba(203,213,225,.5)" strokeWidth="14" strokeLinecap="round" />
-                                        <path d={`M 18,90 A ${r},${r} 0 0,1 162,90`} fill="none" stroke={dpiColor} strokeWidth="14" strokeLinecap="round"
-                                            strokeDasharray={`${dashLen} ${circumference}`} style={{ transition: 'stroke-dasharray 1s ease' }} />
-                                        <text x="90" y="78" textAnchor="middle" fontSize="32" fontWeight="900" fill={dpiColor} fontFamily="'Outfit',sans-serif">{dpi}</text>
-                                        <text x="90" y="96" textAnchor="middle" fontSize="11" fontWeight="700" fill="#6b7280" fontFamily="sans-serif">DPI Score</text>
-                                    </svg>
-                                    <div style={{ textAlign: 'center' }}>
-                                        <div style={{ fontSize: '26px', fontWeight: 900, color: dpiColor }}>{dpiGrade}</div>
-                                        <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: dpiColor }}>
-                                            {dpi >= 80 ? 'ประสิทธิภาพสูง' : dpi >= 60 ? 'ระดับมาตรฐาน' : 'ต้องปรับปรุง'}
-                                        </div>
-                                        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>Dental Performance Index</div>
-                                    </div>
-                                    <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>DPI Components</p>
-                                        {dpiRadar.map((c, i) => {
-                                            const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
-                                            return (
-                                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
-                                                    <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
-                                                        <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
-                                                    </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-
-                                {/* Tiered KPI Cards */}
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                    {[
-                                        { title: 'Wait Time & Flow', color: '#f43f5e', cards: tier1Cards },
-                                        { title: 'Quality & Outcomes', color: '#0ea5e9', cards: tier2Cards },
-                                        { title: 'Financial Intelligence', color: '#f59e0b', cards: tier3Cards },
-                                    ].map((tier, ti) => (
-                                        <div key={ti}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                                <div style={{ width: '3px', height: '14px', background: `linear-gradient(180deg, ${tier.color}, ${tier.color}99)`, borderRadius: '99px' }} />
-                                                <span style={{ fontSize: '11px', fontWeight: 800, color: tier.color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{tier.title}</span>
-                                            </div>
-                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                                                {tier.cards.map((k, i) => (
-                                                    <div key={i} style={{ padding: '8px 10px', borderRadius: '10px', background: `${k.color}06`, border: `1px solid ${k.color}20` }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                            <span style={{ fontSize: '18px', flexShrink: 0 }}>{k.icon}</span>
-                                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</p>
-                                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
-                                                            </div>
-                                                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                                                <p style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
-                                                            </div>
-                                                        </div>
-                                                        {k.problem && (
-                                                            <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
-                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
-                                                            </div>
-                                                        )}
-                                                        {k.recommend && (
-                                                            <div style={{ marginTop: '4px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
-                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.recommend}</p>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Charts Row */}
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', borderTop: '1px solid var(--md-border)', paddingTop: '1rem' }}>
-                                {/* Hourly Pattern */}
-                                <div>
-                                    <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>🕐 Hourly Load (30 วัน)</p>
-                                    <ResponsiveContainer width="100%" height={130}>
-                                        <BarChart data={(a.hourly_pattern || []).filter(h => h.avg > 0)} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
-                                            <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 8, fontWeight: 700 }} axisLine={false} tickLine={false}
-                                                tickFormatter={l => l.replace(':00', '')} />
-                                            <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={20} />
-                                            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
-                                                formatter={(v) => [`${v} ราย/วัน`, 'เฉลี่ย']} />
-                                            <Bar dataKey="avg" radius={[3, 3, 0, 0]} barSize={8}>
-                                                {(a.hourly_pattern || []).filter(h => h.avg > 0).map((d, i) => (
-                                                    <Cell key={i} fill={d.hour === a.peak_hour?.hour ? '#f43f5e' : '#8b5cf6'} />
-                                                ))}
-                                            </Bar>
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-
-                                {/* Age Distribution */}
-                                <div>
-                                    <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>👥 Age Distribution (30 วัน)</p>
-                                    <ResponsiveContainer width="100%" height={130}>
-                                        <BarChart data={a.age_distribution || []} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
-                                            <XAxis dataKey="group" tick={{ fill: '#6b7280', fontSize: 9, fontWeight: 700 }} axisLine={false} tickLine={false} />
-                                            <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={24} />
-                                            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
-                                                formatter={(v) => [`${v} ราย`, 'จำนวน']} />
-                                            <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={18}>
-                                                {(a.age_distribution || []).map((_, i) => {
-                                                    const colors = ['#f43f5e', '#f59e0b', '#eab308', '#10b981', '#0ea5e9', '#8b5cf6'];
-                                                    return <Cell key={i} fill={colors[i] || '#7c3aed'} />;
-                                                })}
-                                            </Bar>
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-
-                                {/* Monthly Trend */}
-                                <div>
-                                    <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>📈 Monthly Trend (6 เดือน)</p>
-                                    <ResponsiveContainer width="100%" height={130}>
-                                        <ComposedChart data={a.monthly_trend || []} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
-                                            <XAxis dataKey="month" tick={{ fill: '#6b7280', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
-                                            <YAxis yAxisId="left" tick={{ fill: '#9ca3af', fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
-                                            <YAxis yAxisId="right" orientation="right" tick={{ fill: '#10b981', fontSize: 9 }} axisLine={false} tickLine={false} width={28}
-                                                tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
-                                            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
-                                                formatter={(v, n) => {
-                                                    if (n === 'visits') return [`${v} ราย`, 'จำนวน'];
-                                                    if (n === 'total_rev') return [`฿${v.toLocaleString()}`, 'รายได้'];
-                                                    return [`${v}`, n];
-                                                }} />
-                                            <Bar yAxisId="left" dataKey="visits" fill="rgba(139,92,246,.3)" radius={[4, 4, 0, 0]} barSize={14} />
-                                            <Line yAxisId="right" type="monotone" dataKey="total_rev" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981' }} />
-                                        </ComposedChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-
-                            {/* Top Diagnoses */}
-                            <div style={{ borderTop: '1px solid var(--md-border)', paddingTop: '1rem' }}>
-                                <p style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>🏷️ Top Diagnoses (30 วัน)</p>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
-                                    {(a.top_diagnoses || []).slice(0, 8).map((d, i) => (
-                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '8px', background: i === 0 ? 'rgba(139,92,246,.06)' : 'transparent' }}>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#8b5cf6', width: '16px', textAlign: 'center' }}>{i + 1}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#8b5cf6', flexShrink: 0 }}>{d.count}</span>
-                                            <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>฿{d.avg_rev?.toLocaleString()}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })()}
+                </div>
             </div>
 
-            {/* ━━━━━━ 🔥 Deep Root-Cause Analysis Panel — Dental ━━━━━━ */}
-            {!loading.dentalAnalytics && dentalAnalytics && (() => {
-                const a = dentalAnalytics || {};
-                const dpi = a.dpi ?? 0;
-                const avgWait = a.avg_wait_time ?? 0;
-                const sdWait = a.sd_wait_time ?? 0;
-                const avgTotal = a.avg_total_time ?? 0;
-                const waitOver30m = a.wait_over_30m ?? 0;
-                const waitSlaPct = a.wait_sla_pct ?? 0;
+            {/* 📋 Professional KPI Description Cards */}
+            {dentalAnalytics && (() => {
+                const a = dentalAnalytics;
+                const p90Wait = a.p90_wait_time ?? 0;
+                const waitSla = a.wait_sla_pct ?? 0;
                 const completionRate = a.completion_rate ?? 0;
-                const dropoutCount = a.dropout_count ?? 0;
-                const revisitRate = a.revisit_rate ?? 0;
-                const avgDaily = a.avg_daily_visits ?? 0;
-                const totalVisits = a.total_visits ?? 0;
+                const dpi = a.dpi ?? 0;
                 const avgRevenue = a.avg_revenue_per_visit ?? 0;
-                const totalRevenue = a.total_revenue ?? 0;
-                const peakHour = a.peak_hour?.label || '—';
-
-                const problems = [];
-
-                if (avgWait > 20) {
-                    problems.push({
-                        priority: 1, severity: avgWait > 30 ? 'critical' : 'warning',
-                        title: `🔴 เวลารอสูง: ${avgWait} min (σ ${sdWait}) — SLA ≤30min ผ่านเพียง ${waitSlaPct}% · ${waitOver30m} ครั้ง >30min`,
-                        rootCause: `ผู้ป่วยทันตกรรมรอเฉลี่ย ${avgWait} นาที (σ ${sdWait}) ── สาเหตุ: (1) Appointment over-booking — นัดเกินกว่า Unit จะรองรับ (2) Procedure time ไม่แน่นอน — งานบางอย่างใช้เวลานานกว่าคาด (3) Walk-in ไม่มีนัดมาซ้อน slot (4) Peak hour ${peakHour} — ผู้ป่วยกระจุกตัว (5) Staff ไม่เพียงพอช่วง Peak`,
-                        cascadeEffect: `Wait สูง → ผู้ป่วย Dropout (ปัจจุบัน ${dropoutCount} ราย) → Revenue loss → คนไข้เลือกไปคลินิกเอกชน → Volume ลดลงระยะยาว ● Wait สูง → Satisfaction ลดลง → Complaint เพิ่ม → ภาพลักษณ์ รพ. ● DPI ลดลง (${dpi}/100)`,
-                        fixFirst: `🔧 ด่วนที่สุด: (1) Appointment-based scheduling — จำกัด Walk-in (2) Buffer time 10 min ระหว่าง appointment (3) เพิ่ม Unit/ทันตแพทย์ ช่วง Peak ${peakHour} (4) Pre-screening: ให้ผู้ป่วยกรอกประวัติก่อนมา (5) SMS notification คิว real-time (6) เป้าหมาย: ≤15 min ภายใน 30 วัน`,
-                        color: avgWait > 30 ? '#f43f5e' : '#f59e0b',
-                    });
-                }
-
-                if (completionRate < 90) {
-                    problems.push({
-                        priority: 2, severity: completionRate < 80 ? 'critical' : 'warning',
-                        title: `🟡 Completion Rate ต่ำ: ${completionRate}% — Dropout ${dropoutCount} ราย`,
-                        rootCause: `${completionRate}% เท่านั้นที่รักษาเสร็จ — ${dropoutCount} ราย Dropout ── สาเหตุ: (1) Wait time นาน → ผู้ป่วยเลือกออก (2) Dental phobia — กลัวการรักษาทันตกรรม (3) ค่าใช้จ่ายสูงกว่าคาด → ตัดสินใจไม่รักษา (4) เวลาจำกัด — มาตอนเช้า แต่คิวถึงบ่าย`,
-                        cascadeEffect: `Dropout สูง → Revenue loss ฿${(dropoutCount * avgRevenue).toLocaleString()} → ทันตแพทย์มี idle time → Unit utilization ลดลง ● ผู้ป่วยที่ Dropout อาจมีปัญหาฟันลุกลาม → กลับมาแพงกว่าเดิม`,
-                        fixFirst: `🔧 ลด Dropout: (1) แจ้ง Wait time estimate ทุกราย (2) ให้ข้อมูลค่าใช้จ่ายประมาณการก่อนรักษา (3) Sedation dentistry สำหรับผู้ป่วยกลัว (4) Flexible scheduling — นัดรอบบ่าย/เย็น (5) เป้าหมาย: Completion ≥95%`,
-                        color: completionRate < 80 ? '#f43f5e' : '#f59e0b',
-                    });
-                }
-
-                if (revisitRate > 10) {
-                    problems.push({
-                        priority: 3, severity: revisitRate > 20 ? 'critical' : 'warning',
-                        title: `🟡 Revisit 7d สูง: ${revisitRate}% — Treatment Quality Concern`,
-                        rootCause: `${revisitRate}% กลับมาภายใน 7 วัน — ต้องแยก Planned vs Unplanned: ถ้า Planned (ครอบฟัน, รากฟันเทียม) = ปกติ ถ้า Unplanned (ปวด, บวม, Complication) = ต้องปรับปรุง`,
-                        cascadeEffect: `Unplanned revisit → เพิ่ม Workload ทันตแพทย์ → Wait time เพิ่ม → Satisfaction ลดลง ● Complication → Extra cost + ความเสี่ยงฟ้องร้อง`,
-                        fixFirst: `🔧 ลด Unplanned Revisit: (1) Audit ทุก 7d revisit — แยก Planned vs Complication (2) Post-treatment instruction ชัดเจน (3) Follow-up call 24 ชม. หลังหัตถการใหญ่ (4) Antibiotic ครบถ้วนสำหรับ Surgical cases`,
-                        color: revisitRate > 20 ? '#f43f5e' : '#f59e0b',
-                    });
-                }
-
-                if (avgRevenue < 500 && totalVisits > 100) {
-                    problems.push({
-                        priority: 4, severity: 'warning',
-                        title: `🟠 Revenue/Visit ต่ำ: ฿${avgRevenue.toLocaleString()} — อาจมี Under-billing หรือ Procedure mix ไม่สมดุล`,
-                        rootCause: `Rev/Visit ฿${avgRevenue.toLocaleString()} ← ต่ำสำหรับทันตกรรม (ควร ≥฿500) ── สาเหตุ: (1) ส่วนใหญ่เป็น Basic care (ขูดหินปูน, อุดฟัน) ไม่มี High-value procedure (2) Under-billing — Procedure ทำแล้วไม่ charge (3) สิทธิ์บัตรทอง/ประกันสังคม ที่ Rate ต่ำ (4) Missing charges จาก Material/Supply`,
-                        cascadeEffect: `Low revenue → Budget ทันตกรรมไม่เพียงพอ → ไม่สามารถซื้ออุปกรณ์ใหม่ → Service quality ลดลง → ผู้ป่วยลดลง = วงจรลบ`,
-                        fixFirst: `🔧 เพิ่ม Revenue: (1) Audit billing completeness ทุกสัปดาห์ (2) Dental packages: ตรวจ+ขูด+X-ray+Fluoride (3) เพิ่ม High-value services: Implant, Orthodontics, Whitening (4) Verify procedure coding ถูกต้อง`,
-                        color: '#f59e0b',
-                    });
-                }
-
-                if (problems.length === 0) {
-                    problems.push({
-                        priority: 0, severity: 'good',
-                        title: '✅ Dental Operations ทำงานได้ดี — ไม่พบปัญหาเร่งด่วน',
-                        rootCause: `DPI ${dpi}/100 · Wait ${avgWait}min · Completion ${completionRate}% · Revisit ${revisitRate}% — ตัวชี้วัดอยู่ในเกณฑ์ดี`,
-                        cascadeEffect: `ไม่มีผลกระทบลูกโซ่ — Dental clinic ทำงานได้มาตรฐาน`,
-                        fixFirst: `🎯 Continuous Improvement: (1) ยกระดับ DPI ≥ ${Math.min(dpi + 10, 100)} (2) เพิ่ม Preventive services (3) Patient satisfaction survey`,
-                        color: '#10b981',
-                    });
-                }
-
-                problems.sort((a, b) => a.priority - b.priority);
-                const critCount = problems.filter(p => p.severity === 'critical').length;
-                const warnCount = problems.filter(p => p.severity === 'warning').length;
-                const urgencyScore = Math.min(10, critCount * 3 + warnCount * 1.5);
-                const urgencyColor = urgencyScore >= 7 ? '#f43f5e' : urgencyScore >= 4 ? '#f59e0b' : '#10b981';
-                const urgencyLabel = urgencyScore >= 7 ? 'ต้องดำเนินการทันที' : urgencyScore >= 4 ? 'ควรแก้ไขเร็ว' : 'สถานการณ์ปกติ';
+                const todayShort = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
 
                 return (
-                    <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
-                            <div style={{ width: '3px', height: '18px', background: '#f43f5e', borderRadius: '99px' }} />
-                            <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>🔥 วิเคราะห์สถานการณ์เชิงลึก — Deep Root-Cause Analysis</span>
-                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>วิเคราะห์ข้ามตัวชี้วัดทันตกรรมเพื่อหาปัญหาที่แท้จริง</span>
-                        </div>
-                        <div className={`glass-card ${urgencyScore >= 7 ? 'alert-critical' : urgencyScore >= 4 ? 'alert-warning' : ''}`} style={{ padding: '1.5rem', border: `1.5px solid ${urgencyColor}25` }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '1.5rem', alignItems: 'center', padding: '1rem 1.25rem', borderRadius: '14px', background: `linear-gradient(135deg, ${urgencyColor}08, ${urgencyColor}03)`, border: `1px solid ${urgencyColor}20`, marginBottom: '1.25rem' }}>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                        <span style={{ fontSize: '11px', fontWeight: 800, color: urgencyColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ระดับความเร่งด่วนรวม — Dental</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px', border: `1px solid ${urgencyColor}25` }}>{urgencyLabel}</span>
-                                    </div>
-                                    <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>
-                                        พบ <strong style={{ color: '#f43f5e' }}>{critCount} วิกฤต</strong>
-                                        {warnCount > 0 && <> + <strong style={{ color: '#f59e0b' }}>{warnCount} เตือน</strong></>}
-                                        {problems[0]?.severity === 'good' && <strong style={{ color: '#10b981' }}> ไม่พบปัญหา</strong>}
-                                    </span>
-                                    <div style={{ marginTop: '8px', height: '6px', background: 'rgba(0,0,0,.06)', borderRadius: '99px', overflow: 'hidden' }}>
-                                        <div style={{ height: '100%', width: `${urgencyScore * 10}%`, background: 'linear-gradient(90deg, #10b981, #f59e0b, #f43f5e)', borderRadius: '99px', transition: 'width 1s ease' }} />
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
-                                        <span style={{ fontSize: '9px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
-                                        <span style={{ fontSize: '9px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
-                                        <span style={{ fontSize: '9px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
-                                    </div>
-                                </div>
-                                <div style={{ textAlign: 'center' }}>
-                                    <div className="urgency-score-pulse" style={{ fontSize: '36px', fontWeight: 900, color: urgencyColor, lineHeight: 1 }}>{Math.round(urgencyScore)}<span style={{ fontSize: '16px', fontWeight: 700 }}>/10</span></div>
-                                    <div style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
-                                </div>
-                            </div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {problems.map((p, i) => (
-                                    <div key={i} style={{ borderRadius: '14px', border: `1.5px solid ${p.color}20`, background: `${p.color}04`, overflow: 'hidden' }}>
-                                        <div style={{ padding: '10px 16px', background: `linear-gradient(90deg, ${p.color}12, transparent)`, borderBottom: `1px solid ${p.color}15`, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                            {p.priority > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%', background: p.color, color: '#fff', fontSize: '11px', fontWeight: 900, flexShrink: 0 }}>{p.priority}</span>}
-                                            <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--md-text-primary)', lineHeight: 1.4 }}>{p.title}</span>
-                                            <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: '999px', background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25` }}>
-                                                {p.severity === 'critical' ? '🔴 CRITICAL' : p.severity === 'warning' ? '🟡 WARNING' : '🟢 GOOD'}
-                                            </span>
-                                        </div>
-                                        <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔍 ปัญหาที่แท้จริง (Root Cause)</p>
-                                                <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.rootCause}</p>
-                                            </div>
-                                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ผลกระทบลูกโซ่ (Cascade Effect)</p>
-                                                <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.cascadeEffect}</p>
-                                            </div>
-                                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)</p>
-                                                <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.fixFirst}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {problems.length > 1 && problems[0]?.severity !== 'good' && (
-                                <div style={{ marginTop: '16px', padding: '14px 16px', borderRadius: '12px', background: 'rgba(14,165,233,.04)', border: '1px solid rgba(14,165,233,.15)' }}>
-                                    <p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🗺️ แผนที่ความเชื่อมโยง — Dental Bottleneck Chain</p>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                                        {[
-                                            { label: `Wait ${avgWait}min`, color: '#f59e0b' },
-                                            { label: `Dropout ${dropoutCount}`, color: '#f43f5e' },
-                                            { label: `Completion ${completionRate}%`, color: '#0ea5e9' },
-                                            { label: `Revisit ${revisitRate}%`, color: '#e11d48' },
-                                            { label: `Rev ฿${avgRevenue}`, color: '#8b5cf6' },
-                                            { label: `DPI = ${dpi}/100`, color: '#10b981' },
-                                        ].map((item, i) => (
-                                            <React.Fragment key={i}>
-                                                {i > 0 && <span style={{ color: '#94a3b8', fontSize: '14px' }}>→</span>}
-                                                <span style={{ fontSize: '11px', fontWeight: 700, color: item.color, background: `${item.color}10`, padding: '4px 10px', borderRadius: '8px', border: `1px solid ${item.color}20` }}>{item.label}</span>
-                                            </React.Fragment>
-                                        ))}
-                                    </div>
-                                    <p style={{ margin: '10px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500, fontStyle: 'italic' }}>
-                                        💡 <strong>สรุป:</strong> ปัญหาทันตกรรมเริ่มจาก <strong style={{ color: '#f59e0b' }}>Wait time สูง</strong> → ผู้ป่วย Dropout → Revenue ลดลง — <strong>แก้ ด่วนที่ 1 ก่อน</strong> (ลดเวลารอด้วย Appointment system) จะปรับปรุง KPI ทุกตัวพร้อมกัน
-                                    </p>
-                                </div>
-                            )}
-                        </div>
-                    </>
+                    <KPIDescriptionCards kpis={[
+                        {
+                            label: 'P90 Wait Time', thLabel: 'เวลารอ P90 (Percentile 90)',
+                            value: `${p90Wait}m`, color: p90Wait < 45 ? '#10b981' : p90Wait < 75 ? '#f59e0b' : '#f43f5e', icon: '⚡',
+                            sub: p90Wait < 45 ? 'ดีเยี่ยม' : p90Wait < 75 ? 'ปานกลาง' : 'วิกฤต',
+                            desc: `ผู้ป่วย 90% รอไม่เกิน ${p90Wait} นาที`,
+                            meaning: 'เวลารอที่ผู้ป่วย 90% จะได้รับบริการ (P90) สะท้อนประสบการณ์ผู้ป่วยกลุ่ม worst-case ได้ดีกว่าค่าเฉลี่ย',
+                            calc: 'PERCENTILE(wait_times, 0.90) — คำนวณจากทุก visit 30 วัน',
+                            dataSource: 'service_time (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง ถึง ${todayShort}`,
+                            target: '< 45 นาที',
+                            benchmark: 'รพ.ชุมชน: <60m | รพ.เอกชน: <30m',
+                            aiTip: p90Wait < 45 ? 'P90 ดี — ผู้ป่วยส่วนใหญ่ได้รับบริการเร็ว' : 'P90 สูง — ตรวจสอบคอขวดช่วง Peak และเพิ่มนัดหมายล่วงหน้า',
+                        },
+                        {
+                            label: 'Wait SLA Compliance', thLabel: 'อัตราผ่าน SLA เวลารอ (≤30m)',
+                            value: `${waitSla}%`, color: waitSla > 85 ? '#10b981' : waitSla > 70 ? '#f59e0b' : '#f43f5e', icon: '⏱️',
+                            sub: waitSla > 85 ? 'ผ่านเกณฑ์' : 'ต่ำกว่าเกณฑ์',
+                            desc: `${waitSla}% ของผู้ป่วยรอไม่เกิน 30 นาที`,
+                            meaning: 'สัดส่วนผู้ป่วยที่ได้รับบริการภายใน 30 นาที (Service Level Agreement) วัดประสิทธิภาพการจัดคิว',
+                            calc: '(จำนวน visit ที่รอ ≤ 30min ÷ Total visits) × 100',
+                            dataSource: 'service_time (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≥ 85%',
+                            benchmark: 'สธ.: ≥80% | HA: ≥85%',
+                            aiTip: waitSla > 85 ? 'การจัดคิวดีเยี่ยม — คงมาตรฐาน' : 'ต่ำกว่าเป้า — ปรับระบบนัดหมายและ Load Balancing',
+                        },
+                        {
+                            label: 'Completion Rate', thLabel: 'อัตราการรักษาเสร็จสมบูรณ์',
+                            value: `${completionRate}%`, color: completionRate > 90 ? '#10b981' : completionRate > 80 ? '#f59e0b' : '#f43f5e', icon: '✅',
+                            sub: completionRate > 90 ? 'ดีมาก' : 'ต้องปรับปรุง',
+                            desc: `${completionRate}% ของผู้ป่วยรักษาเสร็จสิ้นตามแผน`,
+                            meaning: 'สัดส่วนผู้ป่วยที่เข้ารับบริการครบถ้วนจนเสร็จสิ้น (ไม่ Dropout ระหว่างรอ) สะท้อนคุณภาพบริการ',
+                            calc: '(Completed visits ÷ Total registered visits) × 100',
+                            dataSource: 'ovst + vn_stat (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≥ 90%',
+                            benchmark: 'รพ.ชุมชน: ≥85% | HA: ≥90%',
+                            aiTip: completionRate > 90 ? 'Dropout ต่ำ — ผู้ป่วยพึงพอใจ' : 'Dropout สูง — วิเคราะห์สาเหตุ (รอนาน? ค่าใช้จ่าย?)',
+                        },
+                        {
+                            label: 'DPI Score', thLabel: 'ดัชนีประสิทธิภาพทันตกรรม',
+                            value: `${dpi}`, color: dpi >= 80 ? '#10b981' : dpi >= 60 ? '#f59e0b' : '#f43f5e', icon: '🎯',
+                            sub: dpi >= 80 ? 'Optimal' : dpi >= 60 ? 'Fair' : 'Critical',
+                            desc: `Dental Performance Index: ${dpi}/100`,
+                            meaning: 'ดัชนีรวมประสิทธิภาพคลินิกทันตกรรม คำนวณจาก Wait Time + Completion Rate + Revisit Rate + Revenue Yield',
+                            calc: 'W(0.3)×Wait_Score + W(0.25)×Completion + W(0.2)×Revisit + W(0.25)×Revenue',
+                            dataSource: 'AI Composite (HOSxP XE)',
+                            period: `📅 ประมวลผล ${todayShort}`,
+                            target: '≥ 80',
+                            benchmark: 'BCH Internal ≥75 | Excellence ≥85',
+                            aiTip: dpi >= 80 ? 'DPI สูง — คลินิกทันตกรรมทำงานได้ดีรอบด้าน' : 'DPI ต่ำ — ตรวจสอบ Component ที่คะแนนต่ำสุด',
+                        },
+                        {
+                            label: 'Revenue / Visit', thLabel: 'รายได้เฉลี่ยต่อ Visit',
+                            value: `฿${avgRevenue.toLocaleString()}`, color: '#8b5cf6', icon: '💰',
+                            desc: `รายได้เฉลี่ยต่อ 1 visit ทันตกรรม`,
+                            meaning: 'รายได้เฉลี่ยต่อ 1 ครั้งที่ผู้ป่วยเข้ารับบริการทันตกรรม สะท้อน Service Mix และ Billing Completeness',
+                            calc: 'Total Revenue (30d) ÷ Total Visits (30d)',
+                            dataSource: 'income + ovst (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≥ ฿800',
+                            benchmark: 'รพ.ชุมชน: ฿500-800 | รพ.ศูนย์: ฿800-1500',
+                            aiTip: avgRevenue >= 800 ? 'Service Mix ดี — มีหัตถการมูลค่าสูง' : 'Revenue/Visit ต่ำ — เพิ่ม Procedure Mix (ครอบฟัน, รากเทียม)',
+                        },
+                    ]} />
                 );
             })()}
 
-            {/* ━━━━━━ รายได้โดยประมาณ Dental — ปีงบประมาณ (3 ปีย้อนหลัง) ━━━━━━ */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
-                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #8b5cf6, #7c3aed)', borderRadius: '99px' }} />
-                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
-                    💰 รายได้โดยประมาณ Dental — ปีงบประมาณ (3 ปีย้อนหลัง)
-                </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(139,92,246,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
-            </div>
-
-            <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
-                {loading.dentalRevenueFiscal ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        <div className="skeleton" style={{ height: '80px', borderRadius: '12px' }} />
-                        <div className="skeleton" style={{ height: '280px', borderRadius: '12px' }} />
+            {/* 💰 Revenue & Growth Trends */}
+            <div className="glass-card" style={{ padding: '24px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+                    <div>
+                        <p style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: 'var(--md-text-primary)' }}>Financial Persistence & Fiscal Trends</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>เปรียบเทียบรายได้ปีงบประมาณปัจจุบันและย้อนหลัง</p>
                     </div>
-                ) : (() => {
-                    const fd = state.dentalRevenueFiscal;
-                    const years = fd?.fiscal_years || [];
-                    if (years.length === 0) return <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--md-text-tertiary)', textAlign: 'center', padding: '2rem 0' }}>ไม่พบข้อมูลรายได้</p>;
-
-                    const FY_COLORS = ['#94a3b8', '#a78bfa', '#8b5cf6'];
-                    const MONTH_ORDER = ['ต.ค.', 'พ.ย.', 'ธ.ค.', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.'];
-                    const chartData = MONTH_ORDER.map((label, i) => {
-                        const row = { month: label };
-                        years.forEach((fy, fi) => { row[`fy${fi}`] = (fy.months[i]?.revenue || 0); });
-                        return row;
-                    });
-                    const latestYear = years[years.length - 1];
-                    const prevYear = years.length >= 2 ? years[years.length - 2] : null;
-                    const yoyGrowth = prevYear && prevYear.total_revenue > 0
-                        ? Math.round(((latestYear.total_revenue - prevYear.total_revenue) / prevYear.total_revenue) * 1000) / 10 : 0;
-
-                    return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${years.length}, 1fr)`, gap: '10px' }}>
-                                {years.map((fy, fi) => {
-                                    const isLatest = fi === years.length - 1;
-                                    const color = FY_COLORS[fi];
+                    <div style={{ display: 'flex', gap: '12px' }}>
+                        {dentalRevenueFiscal?.fiscal_years?.slice(-2).map((fy, fi) => (
+                            <div key={fi} style={{ textAlign: 'right' }}>
+                                <p style={{ margin: 0, fontSize: '9px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{fy.fiscal_label}</p>
+                                <p style={{ margin: 0, fontSize: '14px', fontWeight: 900, color: fi === 1 ? '#8b5cf6' : 'var(--md-text-secondary)' }}>฿{(fy.total_revenue / 1e6).toFixed(2)}M</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                {dentalRevenueFiscal?.fiscal_years ? (
+                    <div style={{ height: '320px', width: '100%' }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={revenueChartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                                <defs>
+                                    <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stopColor="#8b5cf6" stopOpacity={1} />
+                                        <stop offset="100%" stopColor="#6366f1" stopOpacity={1} />
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.05)" />
+                                <XAxis dataKey="month" tick={{ fontSize: 11, fontWeight: 700, fill: 'var(--md-text-tertiary)' }} axisLine={false} tickLine={false} />
+                                <YAxis tick={{ fontSize: 10, fontWeight: 600, fill: 'var(--md-text-tertiary)' }} axisLine={false} tickLine={false} tickFormatter={v => `${(v / 1e6).toFixed(1)}M`} />
+                                <Tooltip
+                                    cursor={{ fill: 'rgba(139,92,246,0.05)' }}
+                                    contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 50px rgba(0,0,0,0.15)', padding: '12px' }}
+                                />
+                                {dentalRevenueFiscal.fiscal_years.map((fy, fi) => {
+                                    const isLatest = fi === dentalRevenueFiscal.fiscal_years.length - 1;
                                     return (
-                                        <div key={fi} style={{ padding: '0.75rem 1rem', borderRadius: '12px', background: isLatest ? `linear-gradient(135deg, ${color}12, ${color}05)` : `${color}06`, border: `1px solid ${color}${isLatest ? '30' : '15'}` }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color }} />
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fy.fiscal_label}</span>
-                                                {isLatest && <span style={{ fontSize: '9px', fontWeight: 700, color: '#8b5cf6', background: 'rgba(139,92,246,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>}
-                                            </div>
-                                            <p style={{ fontSize: '22px', fontWeight: 900, color, margin: '0 0 2px', letterSpacing: '-0.02em' }}>฿{(fy.total_revenue / 1e6).toFixed(1)}M</p>
-                                            <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
-                                                {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
-                                            </p>
-                                            {isLatest && prevYear && (
-                                                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
-                                                        {yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%
-                                                    </span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label}</span>
-                                                </div>
-                                            )}
-                                        </div>
+                                        <Bar
+                                            key={fi}
+                                            dataKey={`fy${fi}`}
+                                            name={fy.fiscal_label}
+                                            fill={isLatest ? "url(#barGrad)" : "#cbd5e1"}
+                                            radius={[6, 6, 0, 0]}
+                                            barSize={isLatest ? 28 : 20}
+                                        />
                                     );
                                 })}
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                ) : (
+                    <div style={{ height: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed var(--md-border)', borderRadius: '24px' }}>
+                        <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
+                            <p style={{ color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{loading.dentalRevenueFiscal ? 'Predictive Analytics is running...' : 'Financial Data Stream Offline'}</p>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* 📋 Top Diagnoses (30D) */}
+            <div className="glass-card" style={{ padding: '24px' }}>
+                <p style={{ margin: '0 0 20px 0', fontSize: '15px', fontWeight: 900, color: 'var(--md-text-primary)' }}>Top Clinical Diagnoses & Procedures (30D)</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
+                    {dentalAnalytics?.top_diagnoses?.slice(0, 6).map((item, idx) => (
+                        <div key={idx} style={{ padding: '12px 16px', background: 'var(--md-surface)', borderRadius: '12px', border: '1px solid var(--md-border)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#8b5cf610', color: '#8b5cf6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '12px' }}>
+                                {idx + 1}
                             </div>
-                            <ResponsiveContainer width="100%" height={280}>
-                                <BarChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 4 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
-                                    <XAxis dataKey="month" tick={{ fill: '#6b7280', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={40}
-                                        tickFormatter={v => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : `${(v / 1e3).toFixed(0)}K`} />
-                                    <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '12px', fontSize: '11px', boxShadow: '0 4px 20px rgba(0,0,0,.08)' }}
-                                        formatter={(v, name) => { const idx = Number(name.replace('fy', '')); return [`฿${(v / 1e6).toFixed(2)}M`, years[idx]?.fiscal_label || name]; }} />
-                                    {years.map((fy, fi) => (
-                                        <Bar key={fi} dataKey={`fy${fi}`} fill={FY_COLORS[fi]} radius={[3, 3, 0, 0]} barSize={years.length <= 2 ? 20 : 14} opacity={fi === years.length - 1 ? 1 : 0.5} name={`fy${fi}`} />
-                                    ))}
-                                </BarChart>
-                            </ResponsiveContainer>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', justifyContent: 'center' }}>
-                                {years.map((fy, fi) => (
-                                    <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                        <div style={{ width: '10px', height: '10px', borderRadius: '3px', background: FY_COLORS[fi], opacity: fi === years.length - 1 ? 1 : 0.5 }} />
-                                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-secondary)', fontWeight: 600 }}>{fy.fiscal_label}</span>
-                                        <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>฿{(fy.total_revenue / 1e6).toFixed(1)}M</span>
-                                    </div>
-                                ))}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name || item.icd10}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)' }}>{item.icd10}</p>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                                <p style={{ margin: 0, fontSize: '13px', fontWeight: 800, color: '#8b5cf6' }}>{item.count}</p>
+                                <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Visits</p>
                             </div>
                         </div>
-                    );
-                })()}
+                    ))}
+                    {(!dentalAnalytics?.top_diagnoses || dentalAnalytics.top_diagnoses.length === 0) && !loading.dentalAnalytics && (
+                        <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '2rem', color: 'var(--md-text-tertiary)' }}>No diagnosis data available for this period</div>
+                    )}
+                </div>
             </div>
         </div>
     );

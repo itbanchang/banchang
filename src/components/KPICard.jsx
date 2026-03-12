@@ -3,6 +3,7 @@
 // Material Dashboard 3 PRO — พร้อม Trend Indicator
 // ============================================================
 import React from 'react';
+import { useDashboard } from '../context/DashboardContext.jsx';
 
 const colorMap = {
     blue: { accent: '#7c3aed', gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)', bg: 'rgba(124,58,237,.07)' },
@@ -13,8 +14,7 @@ const colorMap = {
     teal: { accent: '#0ea5e9', gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)', bg: 'rgba(14,165,233,.07)' },
 };
 
-/** แสดงลูกศร + ข้อความภาษาไทย สำหรับ trend */
-function TrendBadge({ trend, trendLabel }) {
+const TrendBadge = React.memo(function TrendBadge({ trend, trendLabel }) {
     if (trend == null) return null;
     const isUp = trend > 0;
     const isDown = trend < 0;
@@ -34,29 +34,32 @@ function TrendBadge({ trend, trendLabel }) {
         <div style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '3px',
-            marginTop: '3px',
-            padding: '2px 7px',
+            gap: '4px',
+            marginTop: '4px',
+            padding: '3px 8px',
             borderRadius: '999px',
             background: `${color}12`,
             border: `1px solid ${color}25`,
         }}>
-            <span style={{ color, fontSize: '8px', lineHeight: 1, fontWeight: 900 }}>{arrow}</span>
-            <span style={{ color, fontSize: 'var(--fs-2xs)', fontWeight: 700, lineHeight: 1 }}>
+            <span style={{ color, fontSize: '10px', lineHeight: 1, fontWeight: 900 }}>{arrow}</span>
+            <span style={{ color, fontSize: 'var(--fs-xs)', fontWeight: 700, lineHeight: 1 }}>
                 {Math.abs(trend)}%
             </span>
-            <span style={{ color: '#9ca3af', fontSize: 'var(--fs-2xs)', fontWeight: 500, lineHeight: 1 }}>
+            <span style={{ color: '#9ca3af', fontSize: 'var(--fs-xs)', fontWeight: 500, lineHeight: 1 }}>
                 {label}
             </span>
         </div>
     );
-}
+});
 
-export default function KPICard({
+function KPICard({
     title, value, subtitle, icon, color = 'blue',
-    trend, trendLabel, format = 'number', loading
+    trend, trendLabel, format = 'number', loading,
+    drillDownId, drillDownTitle, drillDownEndpoint
 }) {
+    const { openDrillDown } = useDashboard();
     const c = colorMap[color] || colorMap.blue;
+    const isClickable = !!drillDownId;
 
     const formatValue = (val) => {
         if (val == null) return '—';
@@ -70,6 +73,12 @@ export default function KPICard({
         if (format === 'percent') return `${val}%`;
         if (format === 'number') return Number(val).toLocaleString();
         return val;
+    };
+
+    const handleClick = () => {
+        if (isClickable) {
+            openDrillDown(drillDownId, drillDownTitle || title, drillDownEndpoint);
+        }
     };
 
     /* ---- Skeleton ---- */
@@ -90,8 +99,9 @@ export default function KPICard({
 
     return (
         <div
-            className="ai-glow-card group cursor-default"
-            style={{ padding: '0.875rem 1rem', minHeight: '88px' }}
+            className={`ai-glow-card group ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+            style={{ padding: '0.875rem 1rem', minHeight: '88px', transition: 'all 0.2s ease', position: 'relative' }}
+            onClick={handleClick}
         >
             {/* Hover tint */}
             <div
@@ -110,19 +120,26 @@ export default function KPICard({
                 {/* Text block */}
                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
                     {/* Label */}
-                    <p style={{
-                        fontSize: 'var(--fs-2xs)',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.08em',
-                        color: 'var(--md-text-tertiary)',
-                        marginBottom: '2px',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                    }}>
-                        {title}
-                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                        <p style={{
+                            fontSize: 'var(--fs-2xs)',
+                            fontWeight: 700,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: 'var(--md-text-tertiary)',
+                            margin: 0,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                        }}>
+                            {title}
+                        </p>
+                        {isClickable && (
+                            <span style={{ fontSize: '10px', opacity: 0.5 }} className="group-hover:opacity-100 transition-opacity">
+                                🔍
+                            </span>
+                        )}
+                    </div>
 
                     {/* Value */}
                     <p style={{
@@ -175,3 +192,5 @@ export default function KPICard({
         </div>
     );
 }
+
+export default React.memo(KPICard);

@@ -90,7 +90,19 @@ router.get('/risk-distribution', cacheMiddleware(300), async (req, res) => {
   }
 });
 
-router.post('/calculate-ews', (req, res) => {
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
+
+// ---- EWS Validation Schema ----
+const ewsSchema = z.object({
+  systolic_bp: z.number().min(0).max(300),
+  heart_rate: z.number().min(0).max(300),
+  respiratory_rate: z.number().min(0).max(100),
+  temperature: z.number().min(30).max(45),
+  spo2: z.number().min(0).max(100).optional()
+});
+
+router.post('/calculate-ews', validate(ewsSchema), (req, res) => {
   const { systolic_bp, heart_rate, respiratory_rate, temperature, spo2 } = req.body;
   let score = 0;
   if (systolic_bp <= 90 || systolic_bp >= 220) score += 3;

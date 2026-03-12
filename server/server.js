@@ -46,13 +46,13 @@ const server = createServer(app);
 // ---- AI-3: Lock CORS to known origins ----
 const ALLOWED_ORIGINS = [
   'http://localhost:5173',                                      // Vite dev
-  'http://localhost:3001',                                      // Dev server
-  'http://localhost:3000',                                      // Production
-  `http://${process.env.SERVER_IP || '10.1.0.3'}:3001`,         // LAN dev
-  `http://${process.env.SERVER_IP || '10.1.0.3'}:3000`,         // LAN prod
+  'http://localhost:4001',                                      // Dev server
+  'http://localhost:4000',                                      // Production
+  `http://${process.env.SERVER_IP || '10.1.0.3'}:4001`,         // LAN dev
+  `http://${process.env.SERVER_IP || '10.1.0.3'}:4000`,         // LAN prod
 ];
 const io = new SocketIO(server, { cors: { origin: ALLOWED_ORIGINS } });
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 4001;
 
 // ---- ESM __dirname ----
 const __filename = fileURLToPath(import.meta.url);
@@ -465,7 +465,7 @@ app.get('/api/dashboard/summary', cached('summary', 45000, async () => {
     // รายได้เดือนก่อน (เปรียบเทียบ trend)
     dbQueryOne(`
       SELECT SUM(income) as revenue
-      FROM opdscreen
+      FROM vn_stat
       WHERE vstdate >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')
         AND vstdate < DATE_FORMAT(CURDATE(), '%Y-%m-01')
     `).catch(() => null),
@@ -484,9 +484,8 @@ app.get('/api/dashboard/summary', cached('summary', 45000, async () => {
 
     // ER เมื่อวาน
     dbQueryOne(`
-      SELECT COUNT(*) as total FROM opdscreen
+      SELECT COUNT(*) as total FROM er_regist
       WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-        AND ipdtype IN (SELECT ipdtype FROM ipt WHERE regdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY) LIMIT 1)
     `).catch(() => null),
   ]);
 
@@ -597,7 +596,7 @@ async function detectAlerts() {
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_discharge_status IS NULL
+        AND e.er_dch_type IS NULL
         AND st.service7 IS NULL
     `).catch(() => null),
 
@@ -616,7 +615,7 @@ async function detectAlerts() {
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_discharge_status IS NULL
+        AND e.er_dch_type IS NULL
         AND st.service1 IS NULL
         AND o.vsttime IS NOT NULL
         AND TIME_TO_SEC(TIMEDIFF(CURTIME(), o.vsttime)) > 7200
@@ -629,7 +628,7 @@ async function detectAlerts() {
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
         AND e.er_pt_type = '1'
-        AND e.er_discharge_status IS NULL
+        AND e.er_dch_type IS NULL
         AND st.service1 IS NULL
       `).catch(() => null),
     ]);

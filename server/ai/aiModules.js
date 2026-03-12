@@ -29,28 +29,81 @@ export async function getReadmissionRisk() {
   const hnList = patients.map(p => p.hn);
   const anList = patients.map(p => p.an);
 
-  // Run ER + Comorbidity in parallel for speed
+  // Run ER, Comorbidity, Diagnosis, and Operations in parallel
   const erMap = {};
   const ccMap = {};
-  const [erList, ccList] = await Promise.all([
+  const dxMap = {};
+  const opMap = {};
+
+  const [erList, ccList, dxList, opList, vsList, labList] = await Promise.all([
     hnList.length > 0 ? dbQuery(`
-            SELECT o.hn, COUNT(*) as cnt FROM er_regist e
-            INNER JOIN ovst o ON e.vn = o.vn
+            SELECT o.hn, COUNT(*) as cnt FROM vn_stat o
+            INNER JOIN er_regist e ON o.vn = e.vn
             WHERE o.hn IN (${hnList.map(() => '?').join(',')}) AND e.vstdate>=DATE_SUB(CURDATE(),INTERVAL 3 MONTH)
             GROUP BY o.hn
         `, hnList) : [],
     anList.length > 0 ? dbQuery(`
-            SELECT an, COUNT(DISTINCT icd10) as cnt FROM iptdiag 
-            WHERE an IN (${anList.map(() => '?').join(',')}) AND diagtype>1
+            SELECT i.an, COUNT(DISTINCT i.icd10) as cnt, GROUP_CONCAT(DISTINCT d.name SEPARATOR ', ') as cc_details 
+            FROM iptdiag i
+            LEFT JOIN icd101 d ON i.icd10 = d.code
+            WHERE i.an IN (${anList.map(() => '?').join(',')}) AND i.diagtype>1
+            GROUP BY i.an
+        `, anList) : [],
+    anList.length > 0 ? dbQuery(`
+            SELECT i.an, i.icd10, d.name as dx_name 
+            FROM iptdiag i 
+            LEFT JOIN icd101 d ON i.icd10 = d.code 
+            WHERE i.an IN (${anList.map(() => '?').join(',')}) AND i.diagtype=1
+        `, anList) : [],
+    anList.length > 0 ? dbQuery(`
+            SELECT an, GROUP_CONCAT(operation_name SEPARATOR ', ') as op_names
+            FROM operation_list
+            WHERE an IN (${anList.map(() => '?').join(',')})
             GROUP BY an
-        `, anList) : []
+        `, anList) : [],
+    hnList.length > 0 ? dbQuery(`
+            SELECT hn, bps, bpd, pulse, temperature, o2sat
+            FROM opdscreen
+            WHERE hn IN (${hnList.map(() => '?').join(',')})
+            AND vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            ORDER BY vstdate DESC, vsttime DESC
+        `, hnList) : [],
+    hnList.length > 0 ? dbQuery(`
+            SELECT h.hn, i.lab_items_name_ref as name, i.lab_order_result as result, h.order_date
+            FROM lab_head h
+            JOIN lab_order i ON h.lab_order_number = i.lab_order_number
+            WHERE h.hn IN (${hnList.map(() => '?').join(',')})
+              AND (i.lab_items_name_ref LIKE '%Hb%' 
+                OR i.lab_items_name_ref LIKE '%Hct%'
+                OR i.lab_items_name_ref LIKE '%BUN%'
+                OR i.lab_items_name_ref LIKE '%Cr%'
+                OR i.lab_items_name_ref LIKE '%K%')
+              AND h.order_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            ORDER BY h.order_date DESC
+        `, hnList) : []
   ]);
-  erList?.forEach(e => erMap[e.hn] = e.cnt);
-  ccList?.forEach(c => ccMap[c.an] = c.cnt);
 
+  erList?.forEach(e => erMap[e.hn] = e.cnt);
+  ccList?.forEach(c => ccMap[c.an] = { cnt: c.cnt, details: c.cc_details });
+  dxList?.forEach(d => dxMap[d.an] = { icd10: d.icd10, name: d.dx_name });
+  opList?.forEach(o => opMap[o.an] = o.op_names);
+
+  const vitalMap = {};
+  vsList?.forEach(v => {
+    if (!vitalMap[v.hn]) vitalMap[v.hn] = v;
+  });
+
+  const labMap = {};
+  labList?.forEach(l => {
+    if (!labMap[l.hn]) labMap[l.hn] = [];
+    if (labMap[l.hn].length < 4) {
+      if (l.result && l.result.trim() !== '') labMap[l.hn].push(`${l.name}: ${l.result}`);
+    }
+  });
   const result = patients.map(pt => {
     pt.er_visits_6m = erMap[pt.hn] || 0;
-    pt.comorbidity_count = ccMap[pt.an] || 0;
+    pt.comorbidity_count = ccMap[pt.an]?.cnt || 0;
+    pt.comorbidity_details = ccMap[pt.an]?.details || '';
 
     let L = pt.los <= 1 ? 1 : pt.los <= 3 ? 2 : pt.los <= 6 ? 3 : pt.los <= 13 ? 4 : 5;
     let A = (pt.er_visits_6m > 0) ? 3 : 0;
@@ -63,12 +116,47 @@ export async function getReadmissionRisk() {
     let risk = totalScore >= 10 ? 'high' : totalScore >= 5 ? 'moderate' : 'low';
     let pct = Math.min(Math.round(totalScore / 19 * 100), 100);
 
+    let recommendation = '';
+    if (risk === 'high') {
+      recommendation = '🚨 High Risk ปรึกษาทีม UM/UR: ';
+      let reasons = [];
+      if (pt.age >= 70) reasons.push('ผู้ป่วยสูงอายุอาจมีภาวะเปราะบาง แนะนำประสานทีม Home Health Care ประเมินความพร้อมและวางแผนดูแลต่อที่บ้านอย่างใกล้ชิด');
+      if (E >= 2) reasons.push('มีประวัติเข้า ER บ่อยครั้งในช่วงที่ผ่านมา ควรเพิ่มช่องทางติดต่อฉุกเฉินและสอนญาติสังเกตอาการเตือน (Warning Signs) ให้ชัดเจน');
+      if (pt.comorbidity_count >= 3) reasons.push('มีโรคร่วมหลายโรคและทับซ้อน ควรให้เภสัชกรทำ Medication Reconciliation ทบทวนความซ้ำซ้อนของยาและผลข้างเคียงก่อนจำหน่ายอย่างละเอียด');
+      if (pt.rw > 1.5) reasons.push('เคสมีความยาก/ซับซ้อนสูง (RW > 1.5) ทบทวนผลการตรวจทางห้องปฏิบัติการและภาพถ่ายรังสีทั้งหมดก่อนพิจารณาจำหน่าย และพิจารณานัดติดตามอาการระยะสั้น (3-7 วัน)');
+
+      if (reasons.length === 0) {
+        recommendation += '1) ทำ Medication Reconciliation โดยเภสัชกรครบถ้วน 2) ทบทวนผล Lab/Imaging ก่อนกลับ 3) นัด Follow-up 3-7 วัน 4) เตรียมช่องทางติดต่อฉุกเฉิน';
+      } else {
+        recommendation += reasons.join(' | ');
+      }
+    } else if (risk === 'moderate') {
+      recommendation = '⚠️ Moderate Risk: ';
+      let reasons = [];
+      if (pt.los >= 6) reasons.push('นอนโรงพยาบาลเป็นเวลานาน อาจมีความเสี่ยงติดเชื้อในโรงพยาบาลหรือภาวะแทรกซ้อน แนะนำติดตามอาการหลังจำหน่าย 48-72 ชม. ด้วยระบบ Telemed');
+      if (pt.age >= 60) reasons.push('เน้นย้ำเรื่องยาที่ได้รับกลับบ้าน ให้คำแนะนำและแจกเอกสารความรู้เพิ่มเติม และประเมินกิจวัตรประจำวันเบื้องต้น');
+
+      if (reasons.length === 0) {
+        recommendation += '1) สอนญาติ/Caregiver ถึงอาการผิดปกติที่ต้องรีบกลับมา 2) นัดหมายคลินิกเฉพาะทางเพื่อติดตาม 3) ประสานทีมโทรติดตามหลังจำหน่าย 48 ชม.';
+      } else {
+        recommendation += reasons.join(' | ');
+      }
+    } else {
+      recommendation = '✅ Low Risk: ให้การดูแลและจำหน่ายตามมาตรฐานปกติ (Routine Discharge)';
+    }
+
+    let dx = dxMap[pt.an] || {};
+    let ops = opMap[pt.an] || '';
+    let vs = vitalMap[pt.hn] || null;
+    let labs = labMap[pt.hn] || [];
+
     return {
       ...pt, lace_score: lace, total_score: totalScore, risk_pct: pct, risk_level: risk,
-      recommendation: risk === 'high' ? '⚠️ วางแผน Discharge + นัด F/U 7 วัน' : risk === 'moderate' ? '📋 ติดตาม 48 ชม.' : '✅ Routine'
+      recommendation, dx_icd10: dx.icd10 || '-', dx_name: dx.name || 'ไม่ระบุ',
+      op_names: ops, vitals: vs, labs: labs
     };
   }).sort((a, b) => b.total_score - a.total_score);
-  console.log(`🧠 Readmission Risk: ${Date.now() - start}ms (${result.length} patients)`);
+  console.log(`🧠 Readmission Risk: ${Date.now() - start}ms(${result.length} patients)`);
   return result;
 }
 
@@ -88,10 +176,10 @@ const WARD_SHORT = {
 
 export async function getBedDemandForecast() {
   const [wards, avgLOS, erRate, admRate] = await Promise.all([
-    dbQuery(`SELECT w.ward as id, w.name, COALESCE(w.shortname, w.name) as shortname, w.bedcount as total, COUNT(DISTINCT CASE WHEN i.dchdate IS NULL THEN i.an END) as occupied FROM ward w LEFT JOIN ipt i ON w.ward=i.ward WHERE w.ward_active='Y' AND w.ward != '17' GROUP BY w.ward,w.name,w.shortname,w.bedcount`),
-    dbQueryOne(`SELECT AVG(DATEDIFF(dchdate,regdate)) as v FROM ipt WHERE dchdate IS NOT NULL AND regdate>=DATE_SUB(NOW(),INTERVAL 30 DAY)`),
-    dbQueryOne(`SELECT COUNT(*)/30 as daily_avg FROM er_regist WHERE vstdate>=DATE_SUB(CURDATE(),INTERVAL 30 DAY)`),
-    dbQueryOne(`SELECT COUNT(*)/30 as daily_avg FROM ipt WHERE regdate>=DATE_SUB(CURDATE(),INTERVAL 30 DAY)`)
+    dbQuery(`SELECT w.ward as id, w.name, COALESCE(w.shortname, w.name) as shortname, w.bedcount as total, COUNT(DISTINCT CASE WHEN i.dchdate IS NULL THEN i.an END) as occupied FROM ward w LEFT JOIN ipt i ON w.ward = i.ward WHERE w.ward_active = 'Y' AND w.ward != '17' GROUP BY w.ward, w.name, w.shortname, w.bedcount`),
+    dbQueryOne(`SELECT AVG(DATEDIFF(dchdate, regdate)) as v FROM ipt WHERE dchdate IS NOT NULL AND regdate >= DATE_SUB(NOW(), INTERVAL 30 DAY)`),
+    dbQueryOne(`SELECT COUNT(*) / 30 as daily_avg FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`),
+    dbQueryOne(`SELECT COUNT(*) / 30 as daily_avg FROM ipt WHERE regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`)
   ]);
 
   const globalALOS = Number(avgLOS?.v || 5);
@@ -125,17 +213,17 @@ export async function getBedDemandForecast() {
 // ============================================================
 export async function getDRGOptimizer() {
   const cases = await dbQuery(`
-        SELECT i.an, i.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
-          a.drg, a.rw, COALESCE(a.income,0) as income,
-          DATEDIFF(COALESCE(i.dchdate,NOW()),i.regdate) as los,
-          TIMESTAMPDIFF(YEAR,p.birthday,NOW()) as age, id1.icd10 as primary_dx
-        FROM ipt i INNER JOIN patient p ON i.hn=p.hn
-        INNER JOIN an_stat a ON i.an=a.an
-        LEFT JOIN iptdiag id1 ON i.an=id1.an AND id1.diagtype=1
-        WHERE i.dchdate IS NOT NULL AND i.regdate>=DATE_SUB(NOW(),INTERVAL 3 MONTH)
-          AND a.rw IS NOT NULL AND a.rw>0
+        SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
+      a.drg, a.rw, COALESCE(a.income, 0) as income,
+      DATEDIFF(COALESCE(i.dchdate, NOW()), i.regdate) as los,
+      TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age, id1.icd10 as primary_dx
+        FROM ipt i INNER JOIN patient p ON i.hn = p.hn
+        INNER JOIN an_stat a ON i.an = a.an
+        LEFT JOIN iptdiag id1 ON i.an = id1.an AND id1.diagtype = 1
+        WHERE i.dchdate IS NOT NULL AND i.regdate >= DATE_SUB(NOW(), INTERVAL 3 MONTH)
+          AND a.rw IS NOT NULL AND a.rw > 0
         ORDER BY i.regdate DESC LIMIT 500
-    `);
+      `);
 
   if (!cases || cases.length === 0) return { cases: [] };
   const anList = cases.map(c => c.an);
@@ -144,8 +232,8 @@ export async function getDRGOptimizer() {
   if (anList.length > 0) {
     const ccList = await dbQuery(`
             SELECT an, COUNT(DISTINCT icd10) as cnt, GROUP_CONCAT(DISTINCT icd10 SEPARATOR ',') as dx
-            FROM iptdiag WHERE an IN (${anList.map(() => '?').join(',')}) AND diagtype>1 GROUP BY an
-        `, anList);
+            FROM iptdiag WHERE an IN(${anList.map(() => '?').join(',')}) AND diagtype > 1 GROUP BY an
+      `, anList);
     ccList?.forEach(c => ccMap[c.an] = { cnt: c.cnt, dx: c.dx });
   }
 
@@ -179,18 +267,18 @@ export async function getDRGOptimizer() {
 
     if (gapPct >= 20) {
       if (c.cc_count === 0 && c.los > 7) {
-        analysis = `LOS นาน (${c.los} วัน) แต่ไม่มีโรคร่วม (CC=0)`;
+        analysis = `LOS นาน(${c.los} วัน) แต่ไม่มีโรคร่วม(CC = 0)`;
         recommendation = 'ตรวจสอบสรุปเวชระเบียนซ้ำ อาจขาด Comorbidity';
       } else if (c.age >= 75 && c.cc_count < 2) {
-        analysis = `ผู้สูงอายุ (${c.age} ปี) มักมีโรคเรื้อรังซ่อนเร้น`;
+        analysis = `ผู้สูงอายุ(${c.age} ปี) มักมีโรคเรื้อรังซ่อนเร้น`;
         recommendation = 'ค้นหาโรคทางเรื้อรัง (HT, DM, CKD) เพิ่มเติม';
       } else {
-        analysis = `Expected RW (${Math.round(expectedRW * 100) / 100}) สูงกว่า Actual อย่างมีนัยสำคัญ`;
+        analysis = `Expected RW(${Math.round(expectedRW * 100) / 100}) สูงกว่า Actual อย่างมีนัยสำคัญ`;
         recommendation = 'Audit ชาร์ตและประสานแพทย์เพิ่มรหัสโรค (Upcoding)';
       }
     } else if (gapPct <= -20) {
       if (c.los <= 3) {
-        analysis = `LOS สั้น (${c.los} วัน) แต่ RW สูงเกินเกณฑ์เฉลี่ย`;
+        analysis = `LOS สั้น(${c.los} วัน) แต่ RW สูงเกินเกณฑ์เฉลี่ย`;
         recommendation = 'ระวังถูกประเมิน Over-coding อาจถูกปฏิเสธจ่ายเงิน';
       } else {
         analysis = `Actual RW ปกติสูงกว่าค่าเฉลี่ย DRG ${c.drg || 'UNK'}`;
@@ -227,9 +315,9 @@ export async function getDRGOptimizer() {
 export async function getERSurgePrediction() {
   // er_regist ไม่มี vsttime — ใช้ enter_er_time (datetime) แทน
   const [hourly, daily, today] = await Promise.all([
-    dbQuery(`SELECT HOUR(enter_er_time) as hr, COUNT(*)/30 as avg_cnt FROM er_regist WHERE vstdate>=DATE_SUB(CURDATE(),INTERVAL 30 DAY) AND enter_er_time IS NOT NULL GROUP BY HOUR(enter_er_time)`),
-    dbQuery(`SELECT DAYOFWEEK(vstdate) as dow, COUNT(*)/12 as avg_daily FROM er_regist WHERE vstdate>=DATE_SUB(CURDATE(),INTERVAL 90 DAY) GROUP BY DAYOFWEEK(vstdate)`),
-    dbQuery(`SELECT HOUR(enter_er_time) as hr, COUNT(*) as cnt FROM er_regist WHERE vstdate=CURDATE() AND enter_er_time IS NOT NULL GROUP BY HOUR(enter_er_time)`)
+    dbQuery(`SELECT HOUR(enter_er_time) as hr, COUNT(*) / 30 as avg_cnt FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND enter_er_time IS NOT NULL GROUP BY HOUR(enter_er_time)`),
+    dbQuery(`SELECT DAYOFWEEK(vstdate) as dow, COUNT(*) / 12 as avg_daily FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) GROUP BY DAYOFWEEK(vstdate)`),
+    dbQuery(`SELECT HOUR(enter_er_time) as hr, COUNT(*) as cnt FROM er_regist WHERE vstdate = CURDATE() AND enter_er_time IS NOT NULL GROUP BY HOUR(enter_er_time)`)
   ]);
 
   const currentHour = new Date().getHours();
@@ -320,14 +408,14 @@ export async function getERBottleneckAI(flowData) {
     alerts.push({
       component: 'Lab', status: 'critical',
       message: `🚨 วิกฤต: รอผล Lab นานเฉลี่ย ${labAvg} นาที`,
-      analysis: `🔍 เวลาเฉลี่ยเจาะเลือดถึงรายงานผล (TAT) เกินเกณฑ์ ${thresholds.lab} นาที สะท้อนปัญหาตั้งแต่ขั้นตอนการเจาะ (Phlebotomy) หรือคิวคอขวดในห้องปฏิบัติการ`,
-      recommendation: `💡 เพิ่มบุคลากรเจาะเลือดช่วง Peak, ประสาน Lab จัด Priority สำหรับ ER (STAT Lab) เข้มงวดขึ้น, หรือพิจารณา Point-of-Care Testing (POCT)`
+      analysis: `🔍 เวลาเฉลี่ยเจาะเลือดถึงรายงานผล(TAT) เกินเกณฑ์ ${thresholds.lab} นาที สะท้อนปัญหาตั้งแต่ขั้นตอนการเจาะ(Phlebotomy) หรือคิวคอขวดในห้องปฏิบัติการ`,
+      recommendation: `💡 เพิ่มบุคลากรเจาะเลือดช่วง Peak, ประสาน Lab จัด Priority สำหรับ ER(STAT Lab) เข้มงวดขึ้น, หรือพิจารณา Point - of - Care Testing(POCT)`
     });
   } else if (labAvg > thresholds.lab * 0.7) {
     alerts.push({
       component: 'Lab', status: 'warning',
-      message: `⚠️ เฝ้าระวัง: รอผล Lab เฉลี่ย ${labAvg} นาที (ใกล้เกินเกณฑ์)`,
-      analysis: `🔍 TAT ใกล้ถึงขีดจำกัด อาจส่งผลให้ Discharge/Admit ล่าช้าในไม่ช้า`,
+      message: `⚠️ เฝ้าระวัง: รอผล Lab เฉลี่ย ${labAvg} นาที(ใกล้เกินเกณฑ์)`,
+      analysis: `🔍 TAT ใกล้ถึงขีดจำกัด อาจส่งผลให้ Discharge / Admit ล่าช้าในไม่ช้า`,
       recommendation: `💡 จัดการคิวเจาะเลือดล่วงหน้าและติดตามแนวโน้มปริมาณใบสั่ง Lab อย่างใกล้ชิด`
     });
   }
@@ -337,14 +425,14 @@ export async function getERBottleneckAI(flowData) {
     alerts.push({
       component: 'X-ray', status: 'critical',
       message: `🚨 วิกฤต: รอภาพวินิจฉัยรวมถึงผลอ่านนานเฉลี่ย ${xrayAvg} นาที`,
-      analysis: `🔍 ปริมาณผู้ป่วยรอ X-ray / CT Scan เกินจำนวนคิวและเจ้าหน้าที่รังสีเทคนิคที่รองรับได้ ทำให้ขั้นตอน Disposition ล่าช้าสะสม`,
-      recommendation: `💡 พิจารณาเปิดห้อง X-ray สำรอง, แยกคิวผู้ป่วย ER ออกจากผู้ป่วย OPD และ IPD, หรือเรียกแพทย์เฉพาะทางเสริมด่วน`
+      analysis: `🔍 ปริมาณผู้ป่วยรอ X - ray / CT Scan เกินจำนวนคิวและเจ้าหน้าที่รังสีเทคนิคที่รองรับได้ ทำให้ขั้นตอน Disposition ล่าช้าสะสม`,
+      recommendation: `💡 พิจารณาเปิดห้อง X - ray สำรอง, แยกคิวผู้ป่วย ER ออกจากผู้ป่วย OPD และ IPD, หรือเรียกแพทย์เฉพาะทางเสริมด่วน`
     });
   } else if (xrayAvg > thresholds.xray * 0.7) {
     alerts.push({
       component: 'X-ray', status: 'warning',
-      message: `⚠️ เฝ้าระวัง: รอ X-ray เฉลี่ย ${xrayAvg} นาที (คิวเริ่มยาว)`,
-      analysis: `🔍 คิว X-ray เริ่มหนาแน่น มีแนวโน้มจะกลายเป็นจุดคอขวดในเวลาไม่กี่ชั่วโมง`,
+      message: `⚠️ เฝ้าระวัง: รอ X - ray เฉลี่ย ${xrayAvg} นาที(คิวเริ่มยาว)`,
+      analysis: `🔍 คิว X - ray เริ่มหนาแน่น มีแนวโน้มจะกลายเป็นจุดคอขวดในเวลาไม่กี่ชั่วโมง`,
       recommendation: `💡 บริหารจัดการเตียงรอถ่ายภาพและประสานงานรังสีแพทย์เพื่อเร่งอ่านผลผู้ป่วยเร่งด่วนก่อน`
     });
   }
@@ -355,7 +443,7 @@ export async function getERBottleneckAI(flowData) {
       component: 'Pharmacy', status: 'critical',
       message: `🚨 วิกฤต: รอรับยาที่ห้องยานานเฉลี่ย ${pharmAvg} นาที`,
       analysis: `🔍 ขั้นตอนจ่ายยาล่าช้าเกิน ${thresholds.pharmacy} นาที ไม่สอดคล้องกับมาตรฐาน ER ส่งผลให้เตียงเต็มไปด้วยผู้ป่วยที่กำลังรอ Discharge`,
-      recommendation: `💡 เปิดช่องจ่ายยาเฉพาะ ER (ER Line), ลดขั้นตอนทวนสอบใบสั่งยาที่ซ้ำซ้อน, และจัดเตรียมยาฉุกเฉินชุด Pree-pack ให้พร้อมตลอดเวลา`
+      recommendation: `💡 เปิดช่องจ่ายยาเฉพาะ ER(ER Line), ลดขั้นตอนทวนสอบใบสั่งยาที่ซ้ำซ้อน, และจัดเตรียมยาฉุกเฉินชุด Pree - pack ให้พร้อมตลอดเวลา`
     });
   }
 
@@ -433,7 +521,8 @@ export async function getERWaitTimeForecast(patients) {
 export async function getLOSPrediction() {
   const patients = await dbQuery(`
         SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
-      w.name as ward, i.regdate, DATEDIFF(NOW(), i.regdate) as current_los, a.drg, a.rw
+      w.name as ward, i.regdate, DATEDIFF(NOW(), i.regdate) as current_los, a.drg, a.rw,
+      TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age
         FROM ipt i
         INNER JOIN patient p ON i.hn = p.hn
         LEFT JOIN ward w ON i.ward = w.ward
@@ -443,15 +532,77 @@ export async function getLOSPrediction() {
 
   if (!patients || patients.length === 0) return [];
   const drgList = [...new Set(patients.map(p => p.drg).filter(x => x))];
+  const anList = patients.map(p => p.an);
+  const hnList = patients.map(p => p.hn);
 
-  const drgAvgMap = {};
-  if (drgList.length > 0) {
-    const drgAvgs = await dbQuery(`
+  const [drgAvgs, ccList, dxList, opList, vsList, labList] = await Promise.all([
+    drgList.length > 0 ? dbQuery(`
             SELECT a.drg, AVG(DATEDIFF(i.dchdate, i.regdate)) as avg_los FROM ipt i INNER JOIN an_stat a ON i.an = a.an
             WHERE i.dchdate IS NOT NULL AND i.regdate >= DATE_SUB(NOW(), INTERVAL 6 MONTH) AND a.drg IN(${drgList.map(() => '?').join(',')}) GROUP BY a.drg
-      `, drgList);
-    drgAvgs?.forEach(d => drgAvgMap[d.drg] = d.avg_los);
-  }
+        `, drgList) : [],
+    anList.length > 0 ? dbQuery(`
+            SELECT an, COUNT(DISTINCT icd10) as cnt FROM iptdiag 
+            WHERE an IN(${anList.map(() => '?').join(',')}) AND diagtype > 1
+            GROUP BY an
+        `, anList) : [],
+    anList.length > 0 ? dbQuery(`
+            SELECT i.an, i.icd10, d.name as dx_name 
+            FROM iptdiag i 
+            LEFT JOIN icd101 d ON i.icd10 = d.code 
+            WHERE i.an IN (${anList.map(() => '?').join(',')}) AND i.diagtype=1
+        `, anList) : [],
+    anList.length > 0 ? dbQuery(`
+            SELECT an, GROUP_CONCAT(operation_name SEPARATOR ', ') as op_names
+            FROM operation_list
+            WHERE an IN (${anList.map(() => '?').join(',')})
+            GROUP BY an
+        `, anList) : [],
+    hnList.length > 0 ? dbQuery(`
+            SELECT hn, bps, bpd, pulse, temperature, o2sat
+            FROM opdscreen
+            WHERE hn IN (${hnList.map(() => '?').join(',')})
+            AND vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            ORDER BY vstdate DESC, vsttime DESC
+        `, hnList) : [],
+    hnList.length > 0 ? dbQuery(`
+            SELECT h.hn, i.lab_items_name_ref as name, i.lab_order_result as result, h.order_date
+            FROM lab_head h
+            JOIN lab_order i ON h.lab_order_number = i.lab_order_number
+            WHERE h.hn IN (${hnList.map(() => '?').join(',')})
+              AND (i.lab_items_name_ref LIKE '%Hb%' 
+                OR i.lab_items_name_ref LIKE '%Hct%'
+                OR i.lab_items_name_ref LIKE '%BUN%'
+                OR i.lab_items_name_ref LIKE '%Cr%'
+                OR i.lab_items_name_ref LIKE '%K%')
+              AND h.order_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            ORDER BY h.order_date DESC
+        `, hnList) : []
+  ]);
+
+  const drgAvgMap = {};
+  drgAvgs?.forEach(d => drgAvgMap[d.drg] = d.avg_los);
+
+  const ccMap = {};
+  ccList?.forEach(c => ccMap[c.an] = c.cnt);
+
+  const dxMap = {};
+  dxList?.forEach(d => dxMap[d.an] = { icd10: d.icd10, name: d.dx_name });
+
+  const opMap = {};
+  opList?.forEach(o => opMap[o.an] = o.op_names);
+
+  const vitalMap = {};
+  vsList?.forEach(v => {
+    if (!vitalMap[v.hn]) vitalMap[v.hn] = v;
+  });
+
+  const labMap = {};
+  labList?.forEach(l => {
+    if (!labMap[l.hn]) labMap[l.hn] = [];
+    if (labMap[l.hn].length < 4) {
+      if (l.result && l.result.trim() !== '') labMap[l.hn].push(`${l.name}: ${l.result}`);
+    }
+  });
 
   const GLOBAL_AVG = 5.2;
 
@@ -460,7 +611,50 @@ export async function getLOSPrediction() {
     const exp = Math.round(expected * 10) / 10;
     const gap = pt.current_los - exp;
     let status = gap >= 2 ? 'over_stay' : gap >= 0 ? 'at_risk' : 'on_track';
-    return { ...pt, expected_los: exp, gap: Math.round(gap * 10) / 10, status, suggestion: status === 'over_stay' ? '🚨 Over Stay — ทบทวนแผนการรักษาด่วน' : status === 'at_risk' ? '⚠️ เฝ้าระวัง LOS — เตรียมนัด F/U' : '✅ ปกติ' };
+
+    pt.comorbidity_count = ccMap[pt.an] || 0;
+
+    let suggestion = '';
+    if (status === 'over_stay') {
+      suggestion = '🚨 Action UM/UR ด่วน: ';
+      let reasons = [];
+      if (pt.current_los >= 14) reasons.push('ผู้ป่วยนอนโรงพยาบาลเป็นเวลานานมาก (Long-stay) ประเมินปัญหา Social Admission หรือจัดเตรียมเตียง Step-down');
+      if (pt.age >= 70) reasons.push('ผู้ป่วยอายุมาก ยิ่งนอนนานยิ่งเสี่ยงภาวะแทรกซ้อน (Deconditioning) เร่งนักกายภาพบำบัดฟื้นฟูสภาพ');
+      if (gap >= 5) reasons.push('วันนอนเกินเกณฑ์เกิน 5 วัน จัด Case Conference ร่วมกับแพทย์เพื่อทบทวนแผนการรักษา (Root Cause Analysis)');
+      if (pt.comorbidity_count >= 3) reasons.push('ผู้ป่วยมีโรคร่วมหลายโรค ทบทวนเป้าหมายการรักษาแต่ละโรคว่าสำเร็จถึงเกณฑ์จำหน่ายแล้วหรือไม่');
+      if (pt.rw > 1.5) reasons.push('ความซับซ้อนของโรคสูง ตรวจสอบรายการ Pending Investigations (รอ Lab/X-Ray/Consult) เพื่อตั้ง Fast-track');
+
+      if (reasons.length === 0) {
+        suggestion += '1) ทำ RCA ร่วมกับแพทย์พักเจ้าของไข้ 2) ติดตามผล Investigation ที่ตกค้าง 3) รีบประสานครอบครัวเรื่องวันจำหน่าย';
+      } else {
+        suggestion += reasons.join(' | ');
+      }
+    } else if (status === 'at_risk') {
+      suggestion = '⚠️ เตรียมตัวจำหน่าย (Discharge Readiness): ';
+      let reasons = [];
+      if (pt.age >= 60) reasons.push('แจ้งให้ครอบครัว/ผู้ดูแลทราบล่วงหน้า 24-48 ชม. เพื่อเตรียมสภาพแวดล้อมที่บ้านรับผู้ป่วยกลับ');
+      if (pt.comorbidity_count >= 2) reasons.push('ประสานเภสัชกรเตรียมจัดยากลับบ้านและเตรียมให้คำแนะนำเรื่องยาที่มีหลายขนาน');
+      if (pt.rw > 1) reasons.push('ตรวจสอบแผนการนัดหมายคลินิกเฉพาะทางหลังจำหน่าย และเตรียมใบสรุปการรักษา (Discharge Summary)');
+
+      if (reasons.length === 0) {
+        suggestion += '1) ทบทวน Clinical Pathway 2) เตรียม D/C Planning 3) แจ้งผู้ป่วยและญาติ';
+      } else {
+        suggestion += reasons.join(' | ');
+      }
+    } else {
+      suggestion = '✅ นอนพักฟื้นตามแผนการรักษาปกติ (On Track): ติดตามและให้การดูแลตาม Clinical Pathway';
+    }
+
+    let dx = dxMap[pt.an] || {};
+    let ops = opMap[pt.an] || '';
+    let vs = vitalMap[pt.hn] || null;
+    let labs = labMap[pt.hn] || [];
+
+    return {
+      ...pt, expected_los: exp, gap: Math.round(gap * 10) / 10, status, suggestion,
+      dx_icd10: dx.icd10 || '-', dx_name: dx.name || 'ไม่ระบุ',
+      op_names: ops, vitals: vs, labs: labs
+    };
   }).sort((a, b) => b.gap - a.gap);
 }
 
@@ -507,16 +701,16 @@ export async function getBillingAnomalies() {
         const type = zScore > 0 ? 'unusually_high' : 'unusually_low';
 
         if (zScore > 3.5) {
-          analysis = `ค่ารักษาสูงเกินเกณฑ์มากกว่า 3.5 เท่าของส่วนเบี่ยงเบนมาตรฐาน (Z-Score = ${zValue})`;
+          analysis = `ค่ารักษาสูงเกินเกณฑ์มากกว่า 3.5 เท่าของส่วนเบี่ยงเบนมาตรฐาน(Z - Score = ${zValue})`;
           recommendation = '⚠️ ตรวจสอบรายการยาเวชภัณฑ์และค่าหัตถการ อาจมีปัญหา Over-charging หรือคีย์ซ้ำ';
         } else if (zScore > 2.5) {
-          analysis = `ค่ารักษาสูงกว่าปกติเล็กน้อยเมื่อเทียบกับเคสทั่วไปในคลิกนิกเดียวกัน (Z-Score = ${zValue})`;
+          analysis = `ค่ารักษาสูงกว่าปกติเล็กน้อยเมื่อเทียบกับเคสทั่วไปในคลิกนิกเดียวกัน(Z - Score = ${zValue})`;
           recommendation = '💡 สุ่มตรวจรายการเรียกเก็บรายตัวเทียบกับมาตรฐานของคลิกนิก';
         } else if (zScore < -3.5) {
-          analysis = `ค่ารักษาต่ำเตี้ยผิดปกติอย่างมาก (Z-Score = ${zValue})`;
+          analysis = `ค่ารักษาต่ำเตี้ยผิดปกติอย่างมาก(Z - Score = ${zValue})`;
           recommendation = '🚨 เช็คด่วนว่าลืมคีย์รายการสำคัญหรือไม่ เสี่ยงสูญเสียรายได้';
         } else if (zScore < -2.5) {
-          analysis = `ยอดเรียกเก็บต่ำผิดปกติ (Z-Score = ${zValue})`;
+          analysis = `ยอดเรียกเก็บต่ำผิดปกติ(Z - Score = ${zValue})`;
           recommendation = '🔍 ตรวจสอบรายการที่ควรต้องคีย์ตามมาตรฐานการรักษาของโรคนี้';
         }
 
@@ -541,10 +735,10 @@ export async function getClaimDenialRisk() {
   const start = Date.now();
   // Get today's visits from vn_stat to check for risks
   const visits = await dbQuery(`
-        SELECT v.vn, v.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
-          v.vstdate, v.pttype, pt.name as pttype_name, v.spclty, 
-          v.pdx, v.income, v.rcpt_money,
-          TIMESTAMPDIFF(YEAR,p.birthday,NOW()) as age
+        SELECT v.vn, v.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
+  v.vstdate, v.pttype, pt.name as pttype_name, v.spclty,
+  v.pdx, v.income, v.rcpt_money,
+  TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age
         FROM vn_stat v
         INNER JOIN patient p ON v.hn = p.hn
         LEFT JOIN pttype pt ON v.pttype = pt.pttype
@@ -580,7 +774,7 @@ export async function getClaimDenialRisk() {
     return risks.length > 0 ? { ...v, risks } : null;
   }).filter(v => v !== null);
 
-  console.log(`🧠 Denial Predictor: ${Date.now() - start}ms (${riskCases.length} at-risk cases)`);
+  console.log(`🧠 Denial Predictor: ${Date.now() - start} ms(${riskCases.length} at - risk cases)`);
   return {
     at_risk_count: riskCases.length,
     high_risk_count: riskCases.filter(c => c.risks.some(r => r.severity === 'critical' || r.severity === 'high')).length,
@@ -603,8 +797,8 @@ export async function getUnderChargingDetection() {
 
   // Get active patients with their primary diagnosis
   const patients = await dbQuery(`
-    SELECT i.an, i.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
-      id.icd10 as pdx, w.name as ward, i.regdate
+    SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
+  id.icd10 as pdx, w.name as ward, i.regdate
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
     INNER JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
@@ -623,7 +817,7 @@ export async function getUnderChargingDetection() {
         // Check if required items exist for this AN
         const [check] = await dbQuery(`
           SELECT COUNT(*) as cnt FROM opitemrece 
-          WHERE an = ? AND icode IN (${rule.items.map(() => '?').join(',')})
+          WHERE an = ? AND icode IN(${rule.items.map(() => '?').join(',')})
         `, [pt.an, ...rule.items]);
 
         if (check.cnt === 0) {
@@ -633,14 +827,14 @@ export async function getUnderChargingDetection() {
             missing_service: rule.label,
             severity: rule.severity,
             potential_loss: 2000, // Estimated value
-            reason: `💡 ตรวจพบวินิจฉัย ${pt.pdx} แต่ยังไม่มีการคีย์ ${rule.label}`
+            reason: `💡 ตรวจพบวินิจฉัย ${pt.pdx} แต่ยังไม่มีการคีย์ ${rule.label} `
           });
         }
       }
     }
   }
 
-  console.log(`🧠 Under-Charging Detection: ${Date.now() - start}ms (${leakages.length} leakages)`);
+  console.log(`🧠 Under - Charging Detection: ${Date.now() - start} ms(${leakages.length} leakages)`);
   return {
     total_leakage_detected: leakages.length,
     estimated_revenue_recovery: leakages.reduce((s, l) => s + l.potential_loss, 0),
@@ -657,33 +851,33 @@ export async function getPaymentVariance() {
   // Find cases with significant gap between Income and (Paid + UC + Discount)
   // Higher threshold (1000฿) to avoid small rounding differences
   const discrepancies = await dbQuery(`
-    SELECT a.an, a.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
-      a.pttype, pt.name as pttype_name, a.dchdate,
-      a.income, 
-      (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0)) as total_covered,
-      (a.income - (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0))) as variance
+    SELECT a.an, a.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
+  a.pttype, pt.name as pttype_name, a.dchdate,
+  a.income,
+  (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0)) as total_covered,
+  (a.income - (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0))) as variance
     FROM an_stat a
     INNER JOIN patient p ON a.hn = p.hn
     LEFT JOIN pttype pt ON a.pttype = pt.pttype
     WHERE a.dchdate >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
-    AND (a.income - (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0))) > 500
+AND(a.income - (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0))) > 500
     ORDER BY variance DESC
     LIMIT 100
   `);
 
   const summaryByPayer = await dbQuery(`
     SELECT a.pttype, pt.name as pttype_name,
-      COUNT(*) as case_count,
-      SUM(a.income - (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0))) as total_variance
+  COUNT(*) as case_count,
+  SUM(a.income - (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0))) as total_variance
     FROM an_stat a
     LEFT JOIN pttype pt ON a.pttype = pt.pttype
     WHERE a.dchdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
-    AND (a.income - (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0))) > 500
+AND(a.income - (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0))) > 500
     GROUP BY a.pttype, pt.name
     ORDER BY total_variance DESC
   `);
 
-  console.log(`🧠 Payment Variance: ${Date.now() - start}ms (${discrepancies.length} issues)`);
+  console.log(`🧠 Payment Variance: ${Date.now() - start} ms(${discrepancies.length} issues)`);
   return {
     total_variance_count: discrepancies.length,
     total_estimated_gap: discrepancies.reduce((s, d) => s + Number(d.variance), 0),
@@ -698,25 +892,41 @@ export async function getPaymentVariance() {
 export async function getPatientPropensityToPay() {
   const start = Date.now();
 
-  // Predict risk for current IPD patients
-  const risks = await dbQuery(`
-    SELECT a.an, a.hn, CONCAT(p.pname,p.fname,' ',p.lname) as name,
-      a.pttype, pt.name as pttype_name, pt.paidst,
-      a.income,
-      (SELECT SUM(total_amount - paid) FROM rcpt_debt rd WHERE rd.hn = a.hn AND (total_amount - paid) > 0) as past_debt
+  // 1. Fetch active IPD patients with basic info
+  const patients = await dbQuery(`
+    SELECT a.an, a.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
+  a.pttype, pt.name as pttype_name, pt.paidst,
+  a.income
     FROM an_stat a
     INNER JOIN patient p ON a.hn = p.hn
     LEFT JOIN pttype pt ON a.pttype = pt.pttype
     WHERE a.dchdate IS NULL
-    AND (
-      (pt.paidst = '01' AND a.income > 5000) -- Self pay with some cost
-      OR a.income > 100000                   -- Very high cost regardless of payer
-      OR (p.fname LIKE '%ไม่ทราบชื่อ%' OR p.fname LIKE '%Unknown%') -- Unidentified
-      OR (SELECT COUNT(*) FROM rcpt_debt rd WHERE rd.hn = a.hn AND (total_amount - paid) > 0) > 0 -- Has past debt
-    )
-    ORDER BY a.income DESC
-    LIMIT 50
   `);
+
+  if (!patients || patients.length === 0) return { total_at_risk: 0, high_risk_count: 0, risks: [] };
+
+  const hnList = patients.map(p => p.hn);
+
+  // 2. Fetch past debt only for these patients
+  const debtList = await dbQuery(`
+    SELECT hn, SUM(total_amount - paid) as total_debt
+    FROM rcpt_debt
+WHERE(total_amount - paid) > 0 AND hn IN(${hnList.map(() => '?').join(',')})
+    GROUP BY hn
+  `, hnList);
+
+  const debtMap = {};
+  debtList?.forEach(d => debtMap[d.hn] = Number(d.total_debt || 0));
+
+  // 3. Combine and Filter in JS
+  const risks = patients.map(p => {
+    return { ...p, past_debt: debtMap[p.hn] || 0 };
+  }).filter(p => {
+    return (p.paidst === '01' && p.income > 5000) ||
+      (p.income > 100000) ||
+      (p.name.includes('ไม่ทราบชื่อ') || p.name.includes('Unknown')) ||
+      (p.past_debt > 0);
+  }).sort((a, b) => b.income - a.income).slice(0, 50);
 
   const processedRisks = risks.map(r => {
     let score = 0;
@@ -733,7 +943,7 @@ export async function getPatientPropensityToPay() {
 
     if (r.past_debt > 0) {
       score += 30;
-      factors.push(`⚠️ มีหนี้ค้างชำระเดิม (฿${Number(r.past_debt).toLocaleString()})`);
+      factors.push(`⚠️ มีหนี้ค้างชำระเดิม(฿${Number(r.past_debt).toLocaleString()})`);
     }
 
     let severity = 'low';
@@ -744,7 +954,7 @@ export async function getPatientPropensityToPay() {
     return { ...r, risk_score: score, severity, factors };
   });
 
-  console.log(`🧠 Propensity to Pay: ${Date.now() - start}ms (${processedRisks.length} at-risk)`);
+  console.log(`🧠 Propensity to Pay: ${Date.now() - start} ms(${processedRisks.length} at - risk)`);
   return {
     total_at_risk: processedRisks.length,
     high_risk_count: processedRisks.filter(p => p.severity === 'critical' || p.severity === 'high').length,
