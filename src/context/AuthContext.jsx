@@ -8,43 +8,48 @@ export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const bypassAuth = true; // Login disabled — direct dashboard access
-  const [user, setUser]       = useState(bypassAuth ? { username: 'admin', role: 'admin', full_name: 'Administrator' } : null);
+  const [user, setUser] = useState(
+    bypassAuth ? { username: 'admin', role: 'admin', full_name: 'Administrator' } : null
+  );
   const [loading, setLoading] = useState(bypassAuth ? false : true);
-  const [error, setError]     = useState(null);
+  const [error, setError] = useState(null);
 
   // ── Login — server sets httpOnly cookies; we only store user profile ──
-  const login = useCallback(async (username, password) => {
-    if (bypassAuth) {
-      setUser({ username: 'admin', role: 'admin', full_name: 'Administrator' });
-      return { user: { username: 'admin', role: 'admin', full_name: 'Administrator' } };
-    }
-
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch('/api/auth/login', {
-        method:      'POST',
-        headers:     { 'Content-Type': 'application/json' },
-        credentials: 'include',   // required for Set-Cookie to work
-        body:        JSON.stringify({ username, password }),
-        signal:      AbortSignal.timeout(10000)
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Login failed');
+  const login = useCallback(
+    async (username, password) => {
+      if (bypassAuth) {
+        setUser({ username: 'admin', role: 'admin', full_name: 'Administrator' });
+        return { user: { username: 'admin', role: 'admin', full_name: 'Administrator' } };
       }
 
-      const data = await response.json();
-      setUser(data.user);
-      return data;
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, [bypassAuth]);
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include', // required for Set-Cookie to work
+          body: JSON.stringify({ username, password }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Login failed');
+        }
+
+        const data = await response.json();
+        setUser(data.user);
+        return data;
+      } catch (err) {
+        setError(err.message);
+        throw err;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [bypassAuth]
+  );
 
   // ── Logout — clears server-side cookies and local user state ──
   const logout = useCallback(async () => {
@@ -54,10 +59,12 @@ export const AuthProvider = ({ children }) => {
     }
     try {
       await fetch('/api/auth/logout', {
-        method:      'POST',
-        credentials: 'include'
+        method: 'POST',
+        credentials: 'include',
       });
-    } catch { /* ignore network errors on logout */ }
+    } catch {
+      /* ignore network errors on logout */
+    }
     setUser(null);
   }, [bypassAuth]);
 
@@ -66,9 +73,9 @@ export const AuthProvider = ({ children }) => {
     if (bypassAuth) return true;
     try {
       const response = await fetch('/api/auth/refresh', {
-        method:      'POST',
+        method: 'POST',
         credentials: 'include',
-        signal:      AbortSignal.timeout(10000)
+        signal: AbortSignal.timeout(10000),
       });
       if (!response.ok) {
         await logout();
@@ -90,21 +97,25 @@ export const AuthProvider = ({ children }) => {
 
     fetch('/api/auth/me', { credentials: 'include', signal: AbortSignal.timeout(8000) })
       .then(r => (r.ok ? r.json() : null))
-      .then(data => { if (data?.user) setUser(data.user); })
-      .catch(() => { /* not logged in — stay as null */ })
+      .then(data => {
+        if (data?.user) setUser(data.user);
+      })
+      .catch(() => {
+        /* not logged in — stay as null */
+      })
       .finally(() => setLoading(false));
   }, [bypassAuth]);
 
   const value = {
     user,
     setUser,
-    tokens: null,         // kept for API compat — tokens are now in httpOnly cookies
+    tokens: null, // kept for API compat — tokens are now in httpOnly cookies
     loading,
     error,
     login,
     logout,
     refreshAccessToken,
-    isAuthenticated: !!user
+    isAuthenticated: !!user,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

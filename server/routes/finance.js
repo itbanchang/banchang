@@ -12,7 +12,10 @@ import { cached } from '../cache/staleCache.js';
 import logger from '../logger.js';
 import { forecastRevenue } from '../ai/forecastEngine.js';
 import { getRevenueFiscalByPayer } from '../helpers/fiscal.js';
-import { generateRevenueForecastNarrative, generateDRGLeakageNarrative } from '../ai/claudeNarrative.js';
+import {
+  generateRevenueForecastNarrative,
+  generateDRGLeakageNarrative,
+} from '../ai/claudeNarrative.js';
 import { getFinanceCal } from '../ai/calibration.js';
 
 const router = Router();
@@ -24,103 +27,139 @@ const _narrativeCache = new Map();
 // Validation Schemas (Phase 2.4)
 // ============================================================
 const monthlyQuerySchema = z.object({
-    year: z.coerce.number().int().min(2000).max(2100).optional(),
+  year: z.coerce.number().int().min(2000).max(2100).optional(),
 });
 
 const claimsQuerySchema = z.object({
-    limit: z.coerce.number().int().min(1).max(1000).default(100),
-    offset: z.coerce.number().int().min(0).default(0),
-    dateFrom: z.string().date().optional(),
-    dateTo: z.string().date().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+  offset: z.coerce.number().int().min(0).default(0),
+  dateFrom: z.string().date().optional(),
+  dateTo: z.string().date().optional(),
 });
 
 const debtAgingQuerySchema = z.object({
-    bucket: z.enum(['0-30_days', '31-60_days', '61-90_days', '>90_days']).optional(),
-    limit: z.coerce.number().int().min(1).max(500).default(100),
+  bucket: z.enum(['0-30_days', '31-60_days', '61-90_days', '>90_days']).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 
 const denialAnalyticsQuerySchema = z.object({
-    category: z.enum(['Documentation', 'Coding', 'Authorization', 'Eligibility', 'Duplicate', 'Other']).optional(),
+  category: z
+    .enum(['Documentation', 'Coding', 'Authorization', 'Eligibility', 'Duplicate', 'Other'])
+    .optional(),
 });
 
 const ppfsComparisonQuerySchema = z.object({
-    type: z.enum(['activity', 'revenue', 'los']).default('activity'),
-})
-const MN = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  type: z.enum(['activity', 'revenue', 'los']).default('activity'),
+});
+const MN = [
+  '',
+  'ม.ค.',
+  'ก.พ.',
+  'มี.ค.',
+  'เม.ย.',
+  'พ.ค.',
+  'มิ.ย.',
+  'ก.ค.',
+  'ส.ค.',
+  'ก.ย.',
+  'ต.ค.',
+  'พ.ย.',
+  'ธ.ค.',
+];
 
 // ---- Monthly Summary (cached 3 min) ----
-router.get('/monthly-summary', validateQuery(monthlyQuerySchema), cacheMiddleware(180), async (req, res) => {
+router.get(
+  '/monthly-summary',
+  validateQuery(monthlyQuerySchema),
+  cacheMiddleware(180),
+  async (req, res) => {
     try {
-        const year = req.query.year || new Date().getFullYear();
-        const rows = await hosxp.getMonthlyRevenue(year);
+      const year = req.query.year || new Date().getFullYear();
+      const rows = await hosxp.getMonthlyRevenue(year);
 
-        const monthly = Array.from({ length: 12 }, (_, i) => ({
-            month: i + 1, month_name: MN[i + 1], revenue: 0, expense: 0, profit: 0, margin: 0
-        }));
-        // Expense ratio — calibrated จากข้อมูลจริง หรือ fallback 0.82
-        const EXPENSE_RATIO = getFinanceCal().expense_ratio;
+      const monthly = Array.from({ length: 12 }, (_, i) => ({
+        month: i + 1,
+        month_name: MN[i + 1],
+        revenue: 0,
+        expense: 0,
+        profit: 0,
+        margin: 0,
+      }));
+      // Expense ratio — calibrated จากข้อมูลจริง หรือ fallback 0.82
+      const EXPENSE_RATIO = getFinanceCal().expense_ratio;
 
-        (rows || []).forEach(r => {
-            const m = monthly[r.m - 1];
-            if (m) {
-                m.revenue = Number(r.r || 0);
-                m.visits = Number(r.v || 0);
-                m.expense = Math.round(m.revenue * EXPENSE_RATIO);
-                m.profit = m.revenue - m.expense;
-                m.margin = m.revenue > 0 ? Math.round((m.profit / m.revenue) * 100) : 0;
-            }
-        });
-        const totR = monthly.reduce((s, m) => s + m.revenue, 0);
-        const totE = monthly.reduce((s, m) => s + m.expense, 0);
-        const totP = totR - totE;
+      (rows || []).forEach(r => {
+        const m = monthly[r.m - 1];
+        if (m) {
+          m.revenue = Number(r.r || 0);
+          m.visits = Number(r.v || 0);
+          m.expense = Math.round(m.revenue * EXPENSE_RATIO);
+          m.profit = m.revenue - m.expense;
+          m.margin = m.revenue > 0 ? Math.round((m.profit / m.revenue) * 100) : 0;
+        }
+      });
+      const totR = monthly.reduce((s, m) => s + m.revenue, 0);
+      const totE = monthly.reduce((s, m) => s + m.expense, 0);
+      const totP = totR - totE;
 
-        res.json({
-            data_source: 'HOSxP XE', year, monthly,
-            summary: {
-                total_revenue: Math.round(totR),
-                total_expense: Math.round(totE),
-                net_profit: Math.round(totP),
-                profit_margin: totR > 0 ? Math.round((totP / totR) * 100) : 0,
-                expense_ratio_used: EXPENSE_RATIO,
-                note: `Expense ratio ${EXPENSE_RATIO} — calibrated จากข้อมูล vn_stat 12 เดือน (auto-tune ทุก 24 ชม.)`
-            }
-        });
+      res.json({
+        data_source: 'HOSxP XE',
+        year,
+        monthly,
+        summary: {
+          total_revenue: Math.round(totR),
+          total_expense: Math.round(totE),
+          net_profit: Math.round(totP),
+          profit_margin: totR > 0 ? Math.round((totP / totR) * 100) : 0,
+          expense_ratio_used: EXPENSE_RATIO,
+          note: `Expense ratio ${EXPENSE_RATIO} — calibrated จากข้อมูล vn_stat 12 เดือน (auto-tune ทุก 24 ชม.)`,
+        },
+      });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message });
     }
-});
+  }
+);
 
 // ---- Claims (cached 2 min) ----
 router.get('/claims', validateQuery(claimsQuerySchema), cacheMiddleware(120), async (req, res) => {
-    try {
-        const data = await hosxp.getClaimsData({
-            limit: req.query.limit,
-            offset: req.query.offset,
-            dateFrom: req.query.dateFrom, 
-            dateTo: req.query.dateTo
-        });
-        const claims = data || [];
-        res.json({
-            data_source: 'HOSxP XE', claims,
-            stats: {
-                total: claims.length,
-                total_amount: claims.reduce((s, c) => s + Number(c.charge || 0), 0),
-                approved_amount: claims.reduce((s, c) => s + Number(c.paid || 0), 0),
-                avg_los: claims.length > 0 ? Math.round(claims.reduce((s, c) => s + (c.los || 0), 0) / claims.length * 10) / 10 : 0
-            }
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+  try {
+    const data = await hosxp.getClaimsData({
+      limit: req.query.limit,
+      offset: req.query.offset,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+    });
+    const claims = data || [];
+    res.json({
+      data_source: 'HOSxP XE',
+      claims,
+      stats: {
+        total: claims.length,
+        total_amount: claims.reduce((s, c) => s + Number(c.charge || 0), 0),
+        approved_amount: claims.reduce((s, c) => s + Number(c.paid || 0), 0),
+        avg_los:
+          claims.length > 0
+            ? Math.round((claims.reduce((s, c) => s + (c.los || 0), 0) / claims.length) * 10) / 10
+            : 0,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- Denial Analytics (cached 5 min) — derive from vn_stat/an_stat remain_money ----
 // HOSxP XE has no explicit denial table; unpaid balance (remain_money > 0) is the best proxy
-router.get('/denial-analytics', validateQuery(denialAnalyticsQuerySchema), cacheMiddleware(300), async (req, res) => {
+router.get(
+  '/denial-analytics',
+  validateQuery(denialAnalyticsQuerySchema),
+  cacheMiddleware(300),
+  async (req, res) => {
     try {
-        const [summary, byPayer, ipdUnpaid] = await Promise.all([
-            // OPD: overall denial rate (remain_money > 0 = unpaid/denied)
-            dbQueryOne(`
+      const [summary, byPayer, ipdUnpaid] = await Promise.all([
+        // OPD: overall denial rate (remain_money > 0 = unpaid/denied)
+        dbQueryOne(`
                 SELECT
                     COUNT(*) as total_visits,
                     SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied_count,
@@ -129,8 +168,8 @@ router.get('/denial-analytics', validateQuery(denialAnalyticsQuerySchema), cache
                 WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                   AND income > 0
             `),
-            // OPD by payer (pttype)
-            dbQuery(`
+        // OPD by payer (pttype)
+        dbQuery(`
                 SELECT pt.name as payer, COUNT(*) as count,
                        COALESCE(SUM(v.remain_money), 0) as amount
                 FROM vn_stat v
@@ -141,27 +180,27 @@ router.get('/denial-analytics', validateQuery(denialAnalyticsQuerySchema), cache
                 ORDER BY amount DESC
                 LIMIT 10
             `),
-            // IPD: unpaid from an_stat (uses dchdate, not vstdate)
-            dbQueryOne(`
+        // IPD: unpaid from an_stat (uses dchdate, not vstdate)
+        dbQueryOne(`
                 SELECT COUNT(*) as ipd_denied,
                        COALESCE(SUM(remain_money), 0) as ipd_amount
                 FROM an_stat
                 WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                   AND remain_money > 0 AND income > 0
-            `)
-        ]);
+            `),
+      ]);
 
-        const total = Number(summary?.total_visits || 0);
-        const denied = Number(summary?.denied_count || 0);
-        const denial_rate = total > 0 ? Math.round((denied / total) * 1000) / 10 : 0;
-        const opd_risk = Number(summary?.amount_at_risk || 0);
-        const ipd_risk = Number(ipdUnpaid?.ipd_amount || 0);
-        const totalDenied = denied + Number(ipdUnpaid?.ipd_denied || 0);
+      const total = Number(summary?.total_visits || 0);
+      const denied = Number(summary?.denied_count || 0);
+      const denial_rate = total > 0 ? Math.round((denied / total) * 1000) / 10 : 0;
+      const opd_risk = Number(summary?.amount_at_risk || 0);
+      const ipd_risk = Number(ipdUnpaid?.ipd_amount || 0);
+      const totalDenied = denied + Number(ipdUnpaid?.ipd_denied || 0);
 
-        // If no denials, get revenue breakdown by payer as useful alternative analysis
-        let revenueByPayer = [];
-        if (totalDenied === 0) {
-            revenueByPayer = await dbQuery(`
+      // If no denials, get revenue breakdown by payer as useful alternative analysis
+      let revenueByPayer = [];
+      if (totalDenied === 0) {
+        revenueByPayer = await dbQuery(`
                 SELECT pt.name as payer, v.pttype as payer_code,
                        COUNT(DISTINCT v.vn) as visit_count,
                        COALESCE(SUM(v.income), 0) as total_revenue,
@@ -175,48 +214,70 @@ router.get('/denial-analytics', validateQuery(denialAnalyticsQuerySchema), cache
                 ORDER BY total_revenue DESC
                 LIMIT 15
             `).catch(() => []);
-        }
+      }
 
-        res.json({
-            data_source: 'HOSxP XE',
-            note: totalDenied > 0
-                ? 'Unpaid balances from vn_stat/an_stat (remain_money > 0)'
-                : 'ไม่มีค้างชำระ — แสดง Revenue by Payer แทน',
-            total_visits_30d: total,
-            denial_rate,
-            total_denied: totalDenied,
-            amount_at_risk: opd_risk + ipd_risk,
-            by_payer: totalDenied > 0
-                ? (byPayer || []).map(r => ({ payer: r.payer || 'ไม่ระบุสิทธิ์', count: r.count, amount: r.amount }))
-                : [],
-            revenue_by_payer: revenueByPayer.map(r => ({
+      res.json({
+        data_source: 'HOSxP XE',
+        note:
+          totalDenied > 0
+            ? 'Unpaid balances from vn_stat/an_stat (remain_money > 0)'
+            : 'ไม่มีค้างชำระ — แสดง Revenue by Payer แทน',
+        total_visits_30d: total,
+        denial_rate,
+        total_denied: totalDenied,
+        amount_at_risk: opd_risk + ipd_risk,
+        by_payer:
+          totalDenied > 0
+            ? (byPayer || []).map(r => ({
                 payer: r.payer || 'ไม่ระบุสิทธิ์',
-                payer_code: r.payer_code,
-                visits: Number(r.visit_count),
-                revenue: Number(r.total_revenue),
-                cash: Number(r.cash_collected),
-                collected: Number(r.net_collected),
-                collection_pct: Number(r.collection_pct || 100),
-            })),
-            top_reasons: totalDenied > 0 ? [
+                count: r.count,
+                amount: r.amount,
+              }))
+            : [],
+        revenue_by_payer: revenueByPayer.map(r => ({
+          payer: r.payer || 'ไม่ระบุสิทธิ์',
+          payer_code: r.payer_code,
+          visits: Number(r.visit_count),
+          revenue: Number(r.total_revenue),
+          cash: Number(r.cash_collected),
+          collected: Number(r.net_collected),
+          collection_pct: Number(r.collection_pct || 100),
+        })),
+        top_reasons:
+          totalDenied > 0
+            ? [
                 { reason: 'OPD ค้างชำระ', count: denied, amount: opd_risk },
-                { reason: 'IPD ค้างชำระ', count: Number(ipdUnpaid?.ipd_denied || 0), amount: ipd_risk }
-            ] : [],
-            status: totalDenied === 0 ? 'excellent' : denial_rate > 5 ? 'critical' : denial_rate > 2 ? 'warning' : 'good',
-            analysis: totalDenied === 0
-                ? `ไม่มียอดค้างชำระใน 30 วัน (${total.toLocaleString()} visits) — Collection Rate สมบูรณ์`
-                : `พบค้างชำระ ${totalDenied} เคส (${denial_rate}%) มูลค่า ${((opd_risk + ipd_risk) / 1e6).toFixed(2)} ล้านบาท`
-        });
+                {
+                  reason: 'IPD ค้างชำระ',
+                  count: Number(ipdUnpaid?.ipd_denied || 0),
+                  amount: ipd_risk,
+                },
+              ]
+            : [],
+        status:
+          totalDenied === 0
+            ? 'excellent'
+            : denial_rate > 5
+              ? 'critical'
+              : denial_rate > 2
+                ? 'warning'
+                : 'good',
+        analysis:
+          totalDenied === 0
+            ? `ไม่มียอดค้างชำระใน 30 วัน (${total.toLocaleString()} visits) — Collection Rate สมบูรณ์`
+            : `พบค้างชำระ ${totalDenied} เคส (${denial_rate}%) มูลค่า ${((opd_risk + ipd_risk) / 1e6).toFixed(2)} ล้านบาท`,
+      });
     } catch (err) {
-        logger.error('Denial analytics failed', { error: err.message });
-        res.status(500).json({ error: err.message });
+      logger.error('Denial analytics failed', { error: err.message });
+      res.status(500).json({ error: err.message });
     }
-});
+  }
+);
 
 // ---- Revenue Leakage — unbilled/underbilled detection from vn_stat vs rcpt_print ----
 router.get('/revenue-leakage', cacheMiddleware(300), async (req, res) => {
-    try {
-        const leakages = await dbQuery(`
+  try {
+    const leakages = await dbQuery(`
             SELECT v.vn, v.hn, v.vstdate,
                    v.income as billed_amount,
                    COALESCE(r.rcpt_money, 0) as collected_amount,
@@ -231,259 +292,323 @@ router.get('/revenue-leakage', cacheMiddleware(300), async (req, res) => {
             ORDER BY unbilled_gap DESC
             LIMIT 50
         `);
-        const total_leakage = (leakages || []).reduce((s, r) => s + Number(r.unbilled_gap || 0), 0);
-        res.json({ data_source: 'HOSxP XE', leakages: leakages || [], total_leakage: Math.round(total_leakage) });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    const total_leakage = (leakages || []).reduce((s, r) => s + Number(r.unbilled_gap || 0), 0);
+    res.json({
+      data_source: 'HOSxP XE',
+      leakages: leakages || [],
+      total_leakage: Math.round(total_leakage),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post('/predict-denial', async (req, res) => {
-    try {
-        const { vn, pttype, income } = req.body;
-        // Derive risk from remain_money pattern for this payer type in last 30 days
-        const stats = await dbQueryOne(`
+  try {
+    const { vn, pttype, income } = req.body;
+    // Derive risk from remain_money pattern for this payer type in last 30 days
+    const stats = await dbQueryOne(
+      `
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied
             FROM vn_stat v
             LEFT JOIN patient p ON v.hn = p.hn
             WHERE p.pttype = ? AND v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
               AND v.income > 0
-        `, [pttype || '']);
-        const t = Number(stats?.total || 0);
-        const d = Number(stats?.denied || 0);
-        const risk_score = t > 0 ? Math.round((d / t) * 100) : 0;
-        res.json({
-            vn, risk_score,
-            factors: risk_score > 20
-                ? [{ factor: `สิทธิ ${pttype} มีอัตราค้างชำระ ${risk_score}% ใน 30 วัน`, severity: 'high' }]
-                : []
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        `,
+      [pttype || '']
+    );
+    const t = Number(stats?.total || 0);
+    const d = Number(stats?.denied || 0);
+    const risk_score = t > 0 ? Math.round((d / t) * 100) : 0;
+    res.json({
+      vn,
+      risk_score,
+      factors:
+        risk_score > 20
+          ? [
+              {
+                factor: `สิทธิ ${pttype} มีอัตราค้างชำระ ${risk_score}% ใน 30 วัน`,
+                severity: 'high',
+              },
+            ]
+          : [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- Revenue by Payer — Fiscal Year Comparison (cached 5 min — heavy query) ----
 router.get('/revenue-by-payer-fiscal', cacheMiddleware(300), async (req, res) => {
-    try {
-        const data = await getRevenueFiscalByPayer(req.query.start, req.query.end);
-        res.json(data);
-    } catch (err) {
-        logger.error('Revenue by payer fiscal failed', { error: err.message });
-        res.status(500).json({ error: err.message });
-    }
+  try {
+    const data = await getRevenueFiscalByPayer(req.query.start, req.query.end);
+    res.json(data);
+  } catch (err) {
+    logger.error('Revenue by payer fiscal failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- PPFS Comparison: ผลงาน ปีงบ 68 vs 69 (cached 5 min) ----
-router.get('/ppfs-comparison', validateQuery(ppfsComparisonQuerySchema), cacheMiddleware(300), async (req, res) => {
+router.get(
+  '/ppfs-comparison',
+  validateQuery(ppfsComparisonQuerySchema),
+  cacheMiddleware(300),
+  async (req, res) => {
     try {
-        const data = await hosxp.getPPFSComparison();
-        const rows = (data || []).filter(r => r.c68 > 0 || r.c69 > 0); // Only show activities with data
+      const data = await hosxp.getPPFSComparison();
+      const rows = (data || []).filter(r => r.c68 > 0 || r.c69 > 0); // Only show activities with data
 
-        // Compute totals: cases and revenue for period comparison
-        const total_cases_p1 = rows.reduce((s, r) => s + (r.c68 || 0), 0);
-        const total_cases_p2 = rows.reduce((s, r) => s + (r.c69 || 0), 0);
-        const total_rev_p1 = rows.reduce((s, r) => s + (r.rev68 || 0), 0);
-        const total_rev_p2 = rows.reduce((s, r) => s + (r.rev69 || 0), 0);
-        const growth_pct = total_cases_p1 > 0 ? Math.round(((total_cases_p2 - total_cases_p1) / total_cases_p1) * 100) : 0;
+      // Compute totals: cases and revenue for period comparison
+      const total_cases_p1 = rows.reduce((s, r) => s + (r.c68 || 0), 0);
+      const total_cases_p2 = rows.reduce((s, r) => s + (r.c69 || 0), 0);
+      const total_rev_p1 = rows.reduce((s, r) => s + (r.rev68 || 0), 0);
+      const total_rev_p2 = rows.reduce((s, r) => s + (r.rev69 || 0), 0);
+      const growth_pct =
+        total_cases_p1 > 0
+          ? Math.round(((total_cases_p2 - total_cases_p1) / total_cases_p1) * 100)
+          : 0;
 
-        res.json({
-            data_source: 'HOSxP XE · pp_special',
-            note: 'เปรียบเทียบผลงาน PPFS ปีงบประมาณ 2568 (ต.ค.67-ก.พ.68) vs 2569 (ต.ค.68-ก.พ.69)',
-            // Period labels
-            period_1_label: 'ปีงบ 2568 (ต.ค.67-ก.พ.68)',
-            period_2_label: 'ปีงบ 2569 (ต.ค.68-ก.พ.69)',
-            // Totals
-            total_cases_p1,
-            total_cases_p2,
-            total_rev_p1: Math.round(total_rev_p1),
-            total_rev_p2: Math.round(total_rev_p2),
-            growth_pct,
-            // Legacy fields for backward compat (frontend may use these)
-            total_budget: Math.round(total_rev_p1),
-            total_actual: Math.round(total_rev_p2),
-            budget_used_pct: total_rev_p1 > 0 ? Math.round((total_rev_p2 / total_rev_p1) * 1000) / 10 : 0,
-            // Activity details
-            ppfs: rows,
-            activity_count: rows.length,
-        });
+      res.json({
+        data_source: 'HOSxP XE · pp_special',
+        note: 'เปรียบเทียบผลงาน PPFS ปีงบประมาณ 2568 (ต.ค.67-ก.พ.68) vs 2569 (ต.ค.68-ก.พ.69)',
+        // Period labels
+        period_1_label: 'ปีงบ 2568 (ต.ค.67-ก.พ.68)',
+        period_2_label: 'ปีงบ 2569 (ต.ค.68-ก.พ.69)',
+        // Totals
+        total_cases_p1,
+        total_cases_p2,
+        total_rev_p1: Math.round(total_rev_p1),
+        total_rev_p2: Math.round(total_rev_p2),
+        growth_pct,
+        // Legacy fields for backward compat (frontend may use these)
+        total_budget: Math.round(total_rev_p1),
+        total_actual: Math.round(total_rev_p2),
+        budget_used_pct:
+          total_rev_p1 > 0 ? Math.round((total_rev_p2 / total_rev_p1) * 1000) / 10 : 0,
+        // Activity details
+        ppfs: rows,
+        activity_count: rows.length,
+      });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message });
     }
-});
+  }
+);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Finance Analytics — scores computed from real DB metrics
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get('/analytics', cacheMiddleware(300), async (req, res) => {
-    try {
-        const yr = new Date().getFullYear();
-        const mo = new Date().getMonth() + 1;
-        const prevMo = mo === 1 ? 12 : mo - 1;
-        const prevYr = mo === 1 ? yr - 1 : yr;
-        const curStart = `${yr}-${String(mo).padStart(2, '0')}-01`;
-        const prevStart = `${prevYr}-${String(prevMo).padStart(2, '0')}-01`;
-        const prevEnd = `${yr}-${String(mo).padStart(2, '0')}-01`;
+  try {
+    const yr = new Date().getFullYear();
+    const mo = new Date().getMonth() + 1;
+    const prevMo = mo === 1 ? 12 : mo - 1;
+    const prevYr = mo === 1 ? yr - 1 : yr;
+    const curStart = `${yr}-${String(mo).padStart(2, '0')}-01`;
+    const prevStart = `${prevYr}-${String(prevMo).padStart(2, '0')}-01`;
+    const prevEnd = `${yr}-${String(mo).padStart(2, '0')}-01`;
 
-        const [collectionRate, prevMonth, curMonth, denialStats, ytdRevenue, prevYtdRevenue, arBalanceResult] = await Promise.all([
-            // Collection rate: paid vs billed this month
-            dbQueryOne(`
+    const [
+      collectionRate,
+      prevMonth,
+      curMonth,
+      denialStats,
+      ytdRevenue,
+      prevYtdRevenue,
+      arBalanceResult,
+    ] = await Promise.all([
+      // Collection rate: paid vs billed this month
+      dbQueryOne(
+        `
                 SELECT
                     COALESCE(SUM(income), 0) as billed,
                     COALESCE(SUM(income - remain_money), 0) as collected
                 FROM vn_stat
                 WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH) AND income > 0
-            `, [curStart, curStart]),
-            // Previous month revenue
-            dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate < ?`, [prevStart, prevEnd]),
-            // Current month revenue
-            dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH)`, [curStart, curStart]),
-            // Denial/unpaid rate last 30 days
-            dbQueryOne(`
+            `,
+        [curStart, curStart]
+      ),
+      // Previous month revenue
+      dbQueryOne(
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate < ?`,
+        [prevStart, prevEnd]
+      ),
+      // Current month revenue
+      dbQueryOne(
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH)`,
+        [curStart, curStart]
+      ),
+      // Denial/unpaid rate last 30 days
+      dbQueryOne(`
                 SELECT COUNT(*) as total, SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied
                 FROM vn_stat WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND income > 0
             `),
-            // Year-to-date revenue (current year)
-            dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND vstdate <= CURDATE()`, [yr]),
-            // Year-to-date revenue (previous year, same period)
-            dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND MONTH(vstdate) <= ? AND DAY(vstdate) <= DAY(CURDATE())`, [yr - 1, mo]),
-            // A/R Balance (outstanding amounts)
-            dbQueryOne(`SELECT COALESCE(SUM(remain_money), 0) as ar_balance FROM vn_stat WHERE remain_money > 0`)
-        ]);
+      // Year-to-date revenue (current year)
+      dbQueryOne(
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND vstdate <= CURDATE()`,
+        [yr]
+      ),
+      // Year-to-date revenue (previous year, same period)
+      dbQueryOne(
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND MONTH(vstdate) <= ? AND DAY(vstdate) <= DAY(CURDATE())`,
+        [yr - 1, mo]
+      ),
+      // A/R Balance (outstanding amounts)
+      dbQueryOne(
+        `SELECT COALESCE(SUM(remain_money), 0) as ar_balance FROM vn_stat WHERE remain_money > 0`
+      ),
+    ]);
 
-        const billed = Number(collectionRate?.billed || 0);
-        const collected = Number(collectionRate?.collected || 0);
-        const collRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
+    const billed = Number(collectionRate?.billed || 0);
+    const collected = Number(collectionRate?.collected || 0);
+    const collRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
 
-        const prevRev = Number(prevMonth?.r || 0);
-        const curRev = Number(curMonth?.r || 0);
-        const growthPct = prevRev > 0 ? Math.round(((curRev - prevRev) / prevRev) * 100) : 0;
+    const prevRev = Number(prevMonth?.r || 0);
+    const curRev = Number(curMonth?.r || 0);
+    const growthPct = prevRev > 0 ? Math.round(((curRev - prevRev) / prevRev) * 100) : 0;
 
-        const deniedCount = Number(denialStats?.denied || 0);
-        const totalCount = Number(denialStats?.total || 1);
-        const denialRate = Math.round((deniedCount / totalCount) * 100);
+    const deniedCount = Number(denialStats?.denied || 0);
+    const totalCount = Number(denialStats?.total || 1);
+    const denialRate = Math.round((deniedCount / totalCount) * 100);
 
-        // Year-over-year growth calculation
-        const ytdRev = Number(ytdRevenue?.r || 0);
-        const prevYtdRev = Number(prevYtdRevenue?.r || 0);
-        const yoyGrowthPct = prevYtdRev > 0 ? Math.round(((ytdRev - prevYtdRev) / prevYtdRev) * 100) : 0;
+    // Year-over-year growth calculation
+    const ytdRev = Number(ytdRevenue?.r || 0);
+    const prevYtdRev = Number(prevYtdRevenue?.r || 0);
+    const yoyGrowthPct =
+      prevYtdRev > 0 ? Math.round(((ytdRev - prevYtdRev) / prevYtdRev) * 100) : 0;
 
-        // Days in A/R calculation
-        const arBalance = Number(arBalanceResult?.ar_balance || 0);
-        const daysInPeriod = Math.ceil((new Date() - new Date(yr, 0, 1)) / (1000 * 60 * 60 * 24)); // Days since start of year
-        const avgDailyRevenue = ytdRev / daysInPeriod;
-        const daysInAr = avgDailyRevenue > 0 ? Math.round(arBalance / avgDailyRevenue) : 0;
+    // Days in A/R calculation
+    const arBalance = Number(arBalanceResult?.ar_balance || 0);
+    const daysInPeriod = Math.ceil((new Date() - new Date(yr, 0, 1)) / (1000 * 60 * 60 * 24)); // Days since start of year
+    const avgDailyRevenue = ytdRev / daysInPeriod;
+    const daysInAr = avgDailyRevenue > 0 ? Math.round(arBalance / avgDailyRevenue) : 0;
 
-        // MoM pro-rata: ปรับ current month ตามจำนวนวันที่ผ่านไป (เดือนยังไม่ครบ)
-        const today = new Date();
-        const dayOfMonth = today.getDate();
-        const daysInMonth = new Date(yr, mo, 0).getDate();
-        const proRataRevenue = daysInMonth > 0 ? Math.round(curRev * (daysInMonth / dayOfMonth)) : curRev;
-        const momProRata = prevRev > 0 ? Math.round(((proRataRevenue - prevRev) / prevRev) * 100) : 0;
+    // MoM pro-rata: ปรับ current month ตามจำนวนวันที่ผ่านไป (เดือนยังไม่ครบ)
+    const today = new Date();
+    const dayOfMonth = today.getDate();
+    const daysInMonth = new Date(yr, mo, 0).getDate();
+    const proRataRevenue =
+      daysInMonth > 0 ? Math.round(curRev * (daysInMonth / dayOfMonth)) : curRev;
+    const momProRata = prevRev > 0 ? Math.round(((proRataRevenue - prevRev) / prevRev) * 100) : 0;
 
-        // Score computation from real metrics
-        const revenueScore = Math.min(100, Math.max(0, collRate));
-        const riskScore = Math.min(100, Math.max(0, 100 - denialRate * 3));
-        // Growth score uses YoY (reliable) weighted 60% + MoM pro-rata 40%
-        const growthScore = Math.min(100, Math.max(0, Math.round(50 + yoyGrowthPct * 0.6 + momProRata * 0.4)));
-        const efficiencyScore = Math.min(100, Math.max(0, collRate > 0 ? Math.round((collRate + riskScore) / 2) : 70));
+    // Score computation from real metrics
+    const revenueScore = Math.min(100, Math.max(0, collRate));
+    const riskScore = Math.min(100, Math.max(0, 100 - denialRate * 3));
+    // Growth score uses YoY (reliable) weighted 60% + MoM pro-rata 40%
+    const growthScore = Math.min(
+      100,
+      Math.max(0, Math.round(50 + yoyGrowthPct * 0.6 + momProRata * 0.4))
+    );
+    const efficiencyScore = Math.min(
+      100,
+      Math.max(0, collRate > 0 ? Math.round((collRate + riskScore) / 2) : 70)
+    );
 
-        // Expense estimate — calibrated from real data
-        const expenseRatio = getFinanceCal().expense_ratio;
-        const estExpense = Math.round(ytdRev * expenseRatio);
-        const estProfit = Math.round(ytdRev - estExpense);
-        const profitMargin = ytdRev > 0 ? Math.round((estProfit / ytdRev) * 100) : 0;
+    // Expense estimate — calibrated from real data
+    const expenseRatio = getFinanceCal().expense_ratio;
+    const estExpense = Math.round(ytdRev * expenseRatio);
+    const estProfit = Math.round(ytdRev - estExpense);
+    const profitMargin = ytdRev > 0 ? Math.round((estProfit / ytdRev) * 100) : 0;
 
-        res.json({
-            data_source: 'HOSxP XE',
-            timestamp: new Date().toISOString(),
-            metrics: {
-                collection_rate: collRate,
-                growth_pct: growthPct,
-                growth_pct_prorata: momProRata,
-                yoy_growth_pct: yoyGrowthPct,
-                denial_rate: denialRate,
-                denied_count: deniedCount,
-                cur_month_revenue: Math.round(curRev),
-                cur_month_prorata: proRataRevenue,
-                prev_month_revenue: Math.round(prevRev),
-                ytd_revenue: Math.round(ytdRev),
-                prev_ytd_revenue: Math.round(prevYtdRev),
-                days_in_ar: daysInAr,
-                ar_balance: Math.round(arBalance),
-                est_expense: estExpense,
-                est_profit: estProfit,
-                profit_margin: profitMargin,
-            },
-            ai_insights: {
-                revenue_health: {
-                    title: 'Revenue Health', score: revenueScore,
-                    status: revenueScore >= 80 ? 'optimal' : revenueScore >= 60 ? 'warning' : 'critical',
-                    analysis: `อัตราจัดเก็บรายได้ ${collRate}% · เดือนนี้ ${(curRev / 1e6).toFixed(2)} ล้าน (${dayOfMonth}/${daysInMonth} วัน) · ประมาณเต็มเดือน ${(proRataRevenue / 1e6).toFixed(2)} ล้านบาท`,
-                    recommendation: revenueScore >= 80
-                        ? `รักษาระดับการจัดเก็บ — ลูกหนี้คงค้าง ${(arBalance / 1e6).toFixed(2)} ล้าน · Days in A/R ${daysInAr} วัน`
-                        : 'เร่งติดตามหนี้ค้างชำระ — ตรวจสอบ Aging Report'
-                },
-                growth_strategy: {
-                    title: 'Growth Strategy', score: growthScore,
-                    status: yoyGrowthPct >= 5 ? 'expanding' : yoyGrowthPct >= 0 ? 'stable' : 'declining',
-                    analysis: `YoY Growth +${yoyGrowthPct}% (YTD ${(ytdRev / 1e6).toFixed(1)}M vs ปีก่อน ${(prevYtdRev / 1e6).toFixed(1)}M) · MoM ${momProRata >= 0 ? '+' : ''}${momProRata}% (pro-rata เต็มเดือน)`,
-                    recommendation: yoyGrowthPct >= 5
-                        ? `เติบโตดี +${yoyGrowthPct}% YoY — รักษา Service Mix, ขยายบริการที่ทำรายได้สูง`
-                        : yoyGrowthPct >= 0
-                            ? 'ทรงตัว — วิเคราะห์ Revenue Source ที่มีศักยภาพเติบโต'
-                            : 'รายได้ลดลง YoY — ตรวจสอบปริมาณผู้ป่วย, Service Mix, และนโยบายสิทธิ์'
-                },
-                operational_efficiency: {
-                    title: 'Operational Efficiency', score: efficiencyScore,
-                    status: efficiencyScore >= 80 ? 'efficient' : efficiencyScore >= 60 ? 'moderate' : 'low',
-                    analysis: `Collection rate ${collRate}% · Denial rate ${denialRate}% (${deniedCount} เคส) · Profit margin ${profitMargin}% (est.)`,
-                    recommendation: denialRate > 10
-                        ? 'ลดอัตราการปฏิเสธเบิก — ตรวจสอบ Coding accuracy และเอกสารประกอบ'
-                        : collRate >= 90
-                            ? `ประสิทธิภาพดี — กำไรประมาณ ${(estProfit / 1e6).toFixed(1)} ล้าน (Expense ratio 82%)`
-                            : 'ปรับปรุง Collection process — ติดตาม Claim status'
-                },
-                risk_intelligence: {
-                    title: 'Risk Index', score: riskScore,
-                    status: riskScore >= 80 ? 'safe' : riskScore >= 60 ? 'moderate' : 'high',
-                    analysis: `ค้างชำระ ${denialRate}% (${deniedCount} เคส) · A/R Balance ${(arBalance / 1e6).toFixed(2)} ล้าน · Days A/R ${daysInAr} วัน`,
-                    recommendation: riskScore < 70
-                        ? 'ความเสี่ยงสูง — เร่งติดตามหนี้ค้างชำระ, วิเคราะห์ Aging Bucket'
-                        : `ความเสี่ยงต่ำ — ลูกหนี้หมุนเร็ว (${daysInAr} วัน) ไม่มีหนี้ค้างชำระสะสม`
-                }
-            }
-        });
-    } catch (err) {
-        logger.error('Finance analytics failed', { error: err.message });
-        res.status(500).json({ error: err.message });
-    }
+    res.json({
+      data_source: 'HOSxP XE',
+      timestamp: new Date().toISOString(),
+      metrics: {
+        collection_rate: collRate,
+        growth_pct: growthPct,
+        growth_pct_prorata: momProRata,
+        yoy_growth_pct: yoyGrowthPct,
+        denial_rate: denialRate,
+        denied_count: deniedCount,
+        cur_month_revenue: Math.round(curRev),
+        cur_month_prorata: proRataRevenue,
+        prev_month_revenue: Math.round(prevRev),
+        ytd_revenue: Math.round(ytdRev),
+        prev_ytd_revenue: Math.round(prevYtdRev),
+        days_in_ar: daysInAr,
+        ar_balance: Math.round(arBalance),
+        est_expense: estExpense,
+        est_profit: estProfit,
+        profit_margin: profitMargin,
+      },
+      ai_insights: {
+        revenue_health: {
+          title: 'Revenue Health',
+          score: revenueScore,
+          status: revenueScore >= 80 ? 'optimal' : revenueScore >= 60 ? 'warning' : 'critical',
+          analysis: `อัตราจัดเก็บรายได้ ${collRate}% · เดือนนี้ ${(curRev / 1e6).toFixed(2)} ล้าน (${dayOfMonth}/${daysInMonth} วัน) · ประมาณเต็มเดือน ${(proRataRevenue / 1e6).toFixed(2)} ล้านบาท`,
+          recommendation:
+            revenueScore >= 80
+              ? `รักษาระดับการจัดเก็บ — ลูกหนี้คงค้าง ${(arBalance / 1e6).toFixed(2)} ล้าน · Days in A/R ${daysInAr} วัน`
+              : 'เร่งติดตามหนี้ค้างชำระ — ตรวจสอบ Aging Report',
+        },
+        growth_strategy: {
+          title: 'Growth Strategy',
+          score: growthScore,
+          status: yoyGrowthPct >= 5 ? 'expanding' : yoyGrowthPct >= 0 ? 'stable' : 'declining',
+          analysis: `YoY Growth +${yoyGrowthPct}% (YTD ${(ytdRev / 1e6).toFixed(1)}M vs ปีก่อน ${(prevYtdRev / 1e6).toFixed(1)}M) · MoM ${momProRata >= 0 ? '+' : ''}${momProRata}% (pro-rata เต็มเดือน)`,
+          recommendation:
+            yoyGrowthPct >= 5
+              ? `เติบโตดี +${yoyGrowthPct}% YoY — รักษา Service Mix, ขยายบริการที่ทำรายได้สูง`
+              : yoyGrowthPct >= 0
+                ? 'ทรงตัว — วิเคราะห์ Revenue Source ที่มีศักยภาพเติบโต'
+                : 'รายได้ลดลง YoY — ตรวจสอบปริมาณผู้ป่วย, Service Mix, และนโยบายสิทธิ์',
+        },
+        operational_efficiency: {
+          title: 'Operational Efficiency',
+          score: efficiencyScore,
+          status: efficiencyScore >= 80 ? 'efficient' : efficiencyScore >= 60 ? 'moderate' : 'low',
+          analysis: `Collection rate ${collRate}% · Denial rate ${denialRate}% (${deniedCount} เคส) · Profit margin ${profitMargin}% (est.)`,
+          recommendation:
+            denialRate > 10
+              ? 'ลดอัตราการปฏิเสธเบิก — ตรวจสอบ Coding accuracy และเอกสารประกอบ'
+              : collRate >= 90
+                ? `ประสิทธิภาพดี — กำไรประมาณ ${(estProfit / 1e6).toFixed(1)} ล้าน (Expense ratio 82%)`
+                : 'ปรับปรุง Collection process — ติดตาม Claim status',
+        },
+        risk_intelligence: {
+          title: 'Risk Index',
+          score: riskScore,
+          status: riskScore >= 80 ? 'safe' : riskScore >= 60 ? 'moderate' : 'high',
+          analysis: `ค้างชำระ ${denialRate}% (${deniedCount} เคส) · A/R Balance ${(arBalance / 1e6).toFixed(2)} ล้าน · Days A/R ${daysInAr} วัน`,
+          recommendation:
+            riskScore < 70
+              ? 'ความเสี่ยงสูง — เร่งติดตามหนี้ค้างชำระ, วิเคราะห์ Aging Bucket'
+              : `ความเสี่ยงต่ำ — ลูกหนี้หมุนเร็ว (${daysInAr} วัน) ไม่มีหนี้ค้างชำระสะสม`,
+        },
+      },
+    });
+  } catch (err) {
+    logger.error('Finance analytics failed', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- Professional Drill-Down (cached 2 min) ----
 router.get('/drilldown', cacheMiddleware(120), async (req, res) => {
-    const { type } = req.query;
-    try {
-        if (type === 'revenue') {
-            const [deptRows, summaryRows] = await Promise.all([
-                hosxp.getRevenueByDeptTop10(),
-                hosxp.getRevenueBreakdownSummary()
-            ]);
+  const { type } = req.query;
+  try {
+    if (type === 'revenue') {
+      const [deptRows, summaryRows] = await Promise.all([
+        hosxp.getRevenueByDeptTop10(),
+        hosxp.getRevenueBreakdownSummary(),
+      ]);
 
-            return res.json({
-                breakdown: summaryRows || { opd: 0, ipd: 0, other: 0 },
-                byDept: (deptRows || []).map(r => ({
-                    name: r.dept_name,
-                    visits: r.total_visits,
-                    revenue: r.total_revenue
-                }))
-            });
-        }
-        res.status(400).json({ error: 'Unsupported drill-down type' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+      return res.json({
+        breakdown: summaryRows || { opd: 0, ipd: 0, other: 0 },
+        byDept: (deptRows || []).map(r => ({
+          name: r.dept_name,
+          visits: r.total_visits,
+          revenue: r.total_revenue,
+        })),
+      });
     }
+    res.status(400).json({ error: 'Unsupported drill-down type' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================
@@ -492,10 +617,10 @@ router.get('/drilldown', cacheMiddleware(120), async (req, res) => {
 
 // ---- GET /api/finance/debt-aging — Aging bucket summary ----
 router.get('/debt-aging', async (req, res) => {
-    try {
-        logger.info('Fetching debt aging summary');
-        
-        const summary = await dbQuery(`
+  try {
+    logger.info('Fetching debt aging summary');
+
+    const summary = await dbQuery(`
             SELECT 
                 CASE
                     WHEN remain_money = 0 THEN 'paid'
@@ -524,33 +649,34 @@ router.get('/debt-aging', async (req, res) => {
             ORDER BY 
                 FIELD(aging_bucket, '>90_days', '61-90_days', '31-60_days', '0-30_days', 'not_due', 'paid')
         `);
-        
-        res.json({
-            timestamp: new Date().toISOString(),
-            data_source: 'HOSxP XE + AN_STAT',
-            summary: summary || [],
-            total_unpaid: summary.reduce((s, row) => {
-                if (row.aging_bucket !== 'paid' && row.aging_bucket !== 'not_due') {
-                    return s + (row.total_debt_amount || 0);
-                }
-                return s;
-            }, 0)
-        });
-    } catch (err) {
-        logger.error('Debt aging fetch failed', { error: err.message });
-        res.status(500).json({ error: 'Failed to fetch debt aging data', message: err.message });
-    }
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      data_source: 'HOSxP XE + AN_STAT',
+      summary: summary || [],
+      total_unpaid: summary.reduce((s, row) => {
+        if (row.aging_bucket !== 'paid' && row.aging_bucket !== 'not_due') {
+          return s + (row.total_debt_amount || 0);
+        }
+        return s;
+      }, 0),
+    });
+  } catch (err) {
+    logger.error('Debt aging fetch failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch debt aging data', message: err.message });
+  }
 });
 
 // ---- GET /api/finance/debt-aging/details — Detailed patient list by bucket ----
 router.get('/debt-aging/details', validateQuery(debtAgingQuerySchema), async (req, res) => {
-    try {
-        const bucket = req.query.bucket || '>90_days';
-        const limit = req.query.limit || 100;
-        
-        logger.info('Fetching debt aging details', { bucket, limit });
-        
-        const details = await dbQuery(`
+  try {
+    const bucket = req.query.bucket || '>90_days';
+    const limit = req.query.limit || 100;
+
+    logger.info('Fetching debt aging details', { bucket, limit });
+
+    const details = await dbQuery(
+      `
             SELECT 
                 vs.hn, vs.vn,
                 p.fname, p.lname, TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) as age_y, p.sex, p.pttype,
@@ -569,85 +695,97 @@ router.get('/debt-aging/details', validateQuery(debtAgingQuerySchema), async (re
             HAVING aging_bucket = ?
             ORDER BY days_overdue DESC
             LIMIT ?
-        `, [bucket, limit]);
-        
-        // Apply data masking for finance role
-        const maskedDetails = details.map(d => ({
-            hn: d.hn,
-            vn: d.vn,
-            remain_money: d.remain_money,
-            due_date: d.due_date,
-            days_overdue: d.days_overdue,
-            aging_bucket: d.aging_bucket,
-            age_y: d.age_y,
-            sex: d.sex,
-            pttype: d.pttype,
-            // NO: fname, lname (PDPA masking for finance)
-        }));
-        
-        res.json({
-            aging_bucket: bucket,
-            patient_count: maskedDetails.length,
-            total_amount: maskedDetails.reduce((s, d) => s + (d.remain_money || 0), 0),
-            details: maskedDetails
-        });
-    } catch (err) {
-        logger.error('Debt aging details fetch failed', { error: err.message, bucket: req.query.bucket });
-        res.status(500).json({ error: 'Failed to fetch debt details', message: err.message });
-    }
+        `,
+      [bucket, limit]
+    );
+
+    // Apply data masking for finance role
+    const maskedDetails = details.map(d => ({
+      hn: d.hn,
+      vn: d.vn,
+      remain_money: d.remain_money,
+      due_date: d.due_date,
+      days_overdue: d.days_overdue,
+      aging_bucket: d.aging_bucket,
+      age_y: d.age_y,
+      sex: d.sex,
+      pttype: d.pttype,
+      // NO: fname, lname (PDPA masking for finance)
+    }));
+
+    res.json({
+      aging_bucket: bucket,
+      patient_count: maskedDetails.length,
+      total_amount: maskedDetails.reduce((s, d) => s + (d.remain_money || 0), 0),
+      details: maskedDetails,
+    });
+  } catch (err) {
+    logger.error('Debt aging details fetch failed', {
+      error: err.message,
+      bucket: req.query.bucket,
+    });
+    res.status(500).json({ error: 'Failed to fetch debt details', message: err.message });
+  }
 });
 
 // ---- POST /api/finance/debt-aging/record-payment — Log debt payment ----
 router.post('/debt-aging/record-payment', async (req, res) => {
-    try {
-        const { hn, payment_amount, payment_date, payment_method, notes } = req.body;
-        
-        const parsedAmount = Number(payment_amount);
-        if (!hn || !payment_amount || isNaN(parsedAmount) || parsedAmount <= 0) {
-            return res.status(400).json({ error: 'Missing or invalid required fields: hn, payment_amount (must be > 0)' });
-        }
-        
-        logger.info('Recording debt payment', { 
-            hn, 
-            payment_amount, 
-            payment_method,
-            user: req.user?.username 
-        });
-        
-        // Update vn_stat remain_money — deduct exactly parsedAmount, guard against over-payment
-        const result = await dbQuery(`
+  try {
+    const { hn, payment_amount, payment_date, payment_method, notes } = req.body;
+
+    const parsedAmount = Number(payment_amount);
+    if (!hn || !payment_amount || isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res
+        .status(400)
+        .json({ error: 'Missing or invalid required fields: hn, payment_amount (must be > 0)' });
+    }
+
+    logger.info('Recording debt payment', {
+      hn,
+      payment_amount,
+      payment_method,
+      user: req.user?.username,
+    });
+
+    // Update vn_stat remain_money — deduct exactly parsedAmount, guard against over-payment
+    const result = await dbQuery(
+      `
             UPDATE vn_stat
             SET remain_money = GREATEST(0, remain_money - ?),
                 paid_money = paid_money + ?,
                 last_update = NOW()
             WHERE hn = ? AND remain_money > 0
             LIMIT 1
-        `, [parsedAmount, parsedAmount, hn]);
-        
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'No active debt found for this patient' });
-        }
-        
-        res.json({
-            success: true,
-            message: 'Payment recorded successfully',
-            hn,
-            payment_amount,
-            payment_method: payment_method || 'cash',
-            recorded_at: new Date().toISOString(),
-            recorded_by: req.user?.username || 'system'
-        });
-    } catch (err) {
-        logger.error('Payment recording failed', { error: err.message });
-        res.status(500).json({ error: 'Failed to record payment', message: err.message });
+        `,
+      [parsedAmount, parsedAmount, hn]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'No active debt found for this patient' });
     }
+
+    res.json({
+      success: true,
+      message: 'Payment recorded successfully',
+      hn,
+      payment_amount,
+      payment_method: payment_method || 'cash',
+      recorded_at: new Date().toISOString(),
+      recorded_by: req.user?.username || 'system',
+    });
+  } catch (err) {
+    logger.error('Payment recording failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to record payment', message: err.message });
+  }
 });
 
 // ============================================================
 // 🤖 Revenue Forecast 3 เดือน — Holt-Winters + Claude AI Narrative
 // Cache 10 นาที (Claude API ต้นทุนสูง)
 // ============================================================
-router.get('/revenue-forecast', cached('revForecast_v1', 600000, async () => {
+router.get(
+  '/revenue-forecast',
+  cached('revForecast_v1', 600000, async () => {
     // 1. คำนวณ Holt-Winters forecast 3 เดือน
     const forecast = await forecastRevenue(3);
     if (forecast.error) return { error: forecast.error };
@@ -655,35 +793,40 @@ router.get('/revenue-forecast', cached('revForecast_v1', 600000, async () => {
     // 2. Claude AI narrative — non-blocking: return cached narrative or generate in background
     const cachedNarrative = _narrativeCache.get('revForecast');
     if (!cachedNarrative) {
-        // Fire-and-forget: generate narrative in background for next request
-        generateRevenueForecastNarrative(forecast)
-            .then(n => _narrativeCache.set('revForecast', { text: n, ts: Date.now() }))
-            .catch(() => {});
+      // Fire-and-forget: generate narrative in background for next request
+      generateRevenueForecastNarrative(forecast)
+        .then(n => _narrativeCache.set('revForecast', { text: n, ts: Date.now() }))
+        .catch(() => {});
     } else if (Date.now() - cachedNarrative.ts > 600000) {
-        // Stale narrative — refresh in background
-        generateRevenueForecastNarrative(forecast)
-            .then(n => _narrativeCache.set('revForecast', { text: n, ts: Date.now() }))
-            .catch(() => {});
+      // Stale narrative — refresh in background
+      generateRevenueForecastNarrative(forecast)
+        .then(n => _narrativeCache.set('revForecast', { text: n, ts: Date.now() }))
+        .catch(() => {});
     }
 
     return {
-        data_source: 'HOSxP XE + Holt-Winters + Claude AI',
-        generated_at: new Date().toISOString(),
-        ...forecast,
-        narrative: cachedNarrative?.text || null,
+      data_source: 'HOSxP XE + Holt-Winters + Claude AI',
+      generated_at: new Date().toISOString(),
+      ...forecast,
+      narrative: cachedNarrative?.text || null,
     };
-}));
+  })
+);
 
 // ============================================================
 // 🔍 DRG Revenue Leakage Detection — Undercoding Analysis
 // Cache 5 นาที
 // ============================================================
-router.get('/drg-leakage', cached('drgLeakage_v2', 300000, async () => {
-    const T = (p, ms) => Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
+router.get(
+  '/drg-leakage',
+  cached('drgLeakage_v2', 300000, async () => {
+    const T = (p, ms) =>
+      Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
 
     const [noCCMCC, noCCCount, lowRW, lowRWCount, byWard, totalCases] = await Promise.all([
-        // เคสที่มีแค่ diagtype=1 (PDx) ไม่มี CC/MCC (diagtype 2 หรือ 3) — top 50 ตัวอย่าง
-        T(dbQuery(`
+      // เคสที่มีแค่ diagtype=1 (PDx) ไม่มี CC/MCC (diagtype 2 หรือ 3) — top 50 ตัวอย่าง
+      T(
+        dbQuery(`
             SELECT
                 i.an, i.ward, w.name as ward_name,
                 DATEDIFF(i.dchdate, i.regdate) as los,
@@ -698,19 +841,25 @@ router.get('/drg-leakage', cached('drgLeakage_v2', 300000, async () => {
               AND i.dchdate IS NOT NULL AND COALESCE(a.rw, 0) > 0
               AND NOT EXISTS (SELECT 1 FROM iptdiag d2 WHERE d2.an = i.an AND d2.diagtype IN ('2','3'))
             ORDER BY los DESC, rw ASC LIMIT 50
-        `), 8000),
+        `),
+        8000
+      ),
 
-        // จำนวน No CC/MCC ทั้งหมด (ไม่ LIMIT)
-        T(dbQueryOne(`
+      // จำนวน No CC/MCC ทั้งหมด (ไม่ LIMIT)
+      T(
+        dbQueryOne(`
             SELECT COUNT(DISTINCT i.an) as cnt
             FROM ipt i LEFT JOIN an_stat a ON i.an = a.an
             WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND i.dchdate IS NOT NULL
               AND COALESCE(a.rw, 0) > 0
               AND NOT EXISTS (SELECT 1 FROM iptdiag d2 WHERE d2.an = i.an AND d2.diagtype IN ('2','3'))
-        `), 5000),
+        `),
+        5000
+      ),
 
-        // เคส LOS สูง / RW ต่ำ — top 50 ตัวอย่าง
-        T(dbQuery(`
+      // เคส LOS สูง / RW ต่ำ — top 50 ตัวอย่าง
+      T(
+        dbQuery(`
             SELECT
                 i.an, i.ward, w.name as ward_name,
                 DATEDIFF(i.dchdate, i.regdate) as los,
@@ -723,19 +872,25 @@ router.get('/drg-leakage', cached('drgLeakage_v2', 300000, async () => {
               AND DATEDIFF(i.dchdate, i.regdate) >= 3 AND COALESCE(a.rw, 0) < 0.6
               AND EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an)
             ORDER BY los_per_rw DESC LIMIT 50
-        `), 8000),
+        `),
+        8000
+      ),
 
-        // จำนวน Low RW ทั้งหมด (ไม่ LIMIT)
-        T(dbQueryOne(`
+      // จำนวน Low RW ทั้งหมด (ไม่ LIMIT)
+      T(
+        dbQueryOne(`
             SELECT COUNT(DISTINCT i.an) as cnt
             FROM ipt i LEFT JOIN an_stat a ON i.an = a.an
             WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND i.dchdate IS NOT NULL
               AND DATEDIFF(i.dchdate, i.regdate) >= 3 AND COALESCE(a.rw, 0) < 0.6
               AND EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an)
-        `), 5000),
+        `),
+        5000
+      ),
 
-        // สรุปรายหอ: กี่เคส, RW รวม, ประมาณ RW ที่หายไป
-        T(dbQuery(`
+      // สรุปรายหอ: กี่เคส, RW รวม, ประมาณ RW ที่หายไป
+      T(
+        dbQuery(`
             SELECT
                 w.name as ward,
                 COUNT(DISTINCT i.an) as case_count,
@@ -754,90 +909,97 @@ router.get('/drg-leakage', cached('drgLeakage_v2', 300000, async () => {
             GROUP BY i.ward, w.name
             ORDER BY estimated_rw_loss DESC
             LIMIT 10
-        `), 8000),
+        `),
+        8000
+      ),
 
-        // จำนวนเคสทั้งหมดที่วิเคราะห์
-        T(dbQueryOne(`
+      // จำนวนเคสทั้งหมดที่วิเคราะห์
+      T(
+        dbQueryOne(`
             SELECT COUNT(DISTINCT i.an) as total
             FROM ipt i
             LEFT JOIN an_stat a ON i.an = a.an
             WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
               AND i.dchdate IS NOT NULL
               AND COALESCE(a.rw, 0) > 0
-        `), 5000),
+        `),
+        5000
+      ),
     ]);
 
-    const noCCList  = noCCMCC || [];
-    const lowRWList = lowRW   || [];
-    const wardList  = byWard  || [];
+    const noCCList = noCCMCC || [];
+    const lowRWList = lowRW || [];
+    const wardList = byWard || [];
 
     // ใช้ count จริงจาก query ไม่ LIMIT (ไม่ใช่ array.length ที่ถูก cap ที่ 50)
-    const actualNoCCCount  = Number(noCCCount?.cnt || noCCList.length);
+    const actualNoCCCount = Number(noCCCount?.cnt || noCCList.length);
     const actualLowRWCount = Number(lowRWCount?.cnt || lowRWList.length);
 
     // ประมาณ RW ที่หายไป — ค่า calibrated จากข้อมูลจริง (auto-tune ทุก 24 ชม.)
     const fc = getFinanceCal();
-    const RW_PRICE      = fc.rw_price;
-    const CC_RW_GAIN    = fc.cc_rw_gain;
-    const LOW_RW_GAIN   = fc.low_rw_gain;
-    const noCCLoss  = actualNoCCCount * CC_RW_GAIN * RW_PRICE;
+    const RW_PRICE = fc.rw_price;
+    const CC_RW_GAIN = fc.cc_rw_gain;
+    const LOW_RW_GAIN = fc.low_rw_gain;
+    const noCCLoss = actualNoCCCount * CC_RW_GAIN * RW_PRICE;
     const lowRWLoss = actualLowRWCount * LOW_RW_GAIN * RW_PRICE;
     const total_estimated_loss = Math.round(noCCLoss + lowRWLoss);
-    const totalRWLoss = Math.round((actualNoCCCount * CC_RW_GAIN + actualLowRWCount * LOW_RW_GAIN) * 10) / 10;
+    const totalRWLoss =
+      Math.round((actualNoCCCount * CC_RW_GAIN + actualLowRWCount * LOW_RW_GAIN) * 10) / 10;
 
     const leakageData = {
-        total_cases:          Number(totalCases?.total || 0),
-        no_cc_mcc_count:      actualNoCCCount,
-        low_rw_count:         actualLowRWCount,
-        total_estimated_loss,
-        estimated_rw_loss:    totalRWLoss,
-        rw_price_used:        RW_PRICE,
-        by_ward: wardList.map(w => ({
-            ward:               w.ward,
-            case_count:         Number(w.case_count || 0),
-            total_rw:           Number(w.total_rw || 0),
-            estimated_rw_loss:  Number(w.estimated_rw_loss || 0),
-            estimated_baht_loss: Number(w.estimated_baht_loss || 0),
-        })),
-        no_cc_mcc_cases: noCCList.map(c => ({
-            an:        c.an,
-            ward:      c.ward_name || c.ward,
-            los:       Number(c.los || 0),
-            rw:     Number(c.rw || 0),
-            drg:       c.drg,
-            pdx:       c.pdx,
-            pdx_name:  c.pdx_name || c.pdx,
-            issue:     'no_cc_mcc',
-            potential_rw_gain: CC_RW_GAIN,
-        })),
-        low_rw_cases: lowRWList.map(c => ({
-            an:        c.an,
-            ward:      c.ward_name || c.ward,
-            los:       Number(c.los || 0),
-            rw:     Number(c.rw || 0),
-            drg:       c.drg,
-            los_per_rw: Number(c.los_per_rw || 0),
-            issue:     'low_rw_vs_los',
-            potential_rw_gain: LOW_RW_GAIN,
-        })),
+      total_cases: Number(totalCases?.total || 0),
+      no_cc_mcc_count: actualNoCCCount,
+      low_rw_count: actualLowRWCount,
+      total_estimated_loss,
+      estimated_rw_loss: totalRWLoss,
+      rw_price_used: RW_PRICE,
+      by_ward: wardList.map(w => ({
+        ward: w.ward,
+        case_count: Number(w.case_count || 0),
+        total_rw: Number(w.total_rw || 0),
+        estimated_rw_loss: Number(w.estimated_rw_loss || 0),
+        estimated_baht_loss: Number(w.estimated_baht_loss || 0),
+      })),
+      no_cc_mcc_cases: noCCList.map(c => ({
+        an: c.an,
+        ward: c.ward_name || c.ward,
+        los: Number(c.los || 0),
+        rw: Number(c.rw || 0),
+        drg: c.drg,
+        pdx: c.pdx,
+        pdx_name: c.pdx_name || c.pdx,
+        issue: 'no_cc_mcc',
+        potential_rw_gain: CC_RW_GAIN,
+      })),
+      low_rw_cases: lowRWList.map(c => ({
+        an: c.an,
+        ward: c.ward_name || c.ward,
+        los: Number(c.los || 0),
+        rw: Number(c.rw || 0),
+        drg: c.drg,
+        los_per_rw: Number(c.los_per_rw || 0),
+        issue: 'low_rw_vs_los',
+        potential_rw_gain: LOW_RW_GAIN,
+      })),
     };
 
     // Claude AI narrative — non-blocking: return cached or generate in background
     const cachedDRGNarrative = _narrativeCache.get('drgLeakage');
     if (!cachedDRGNarrative || Date.now() - cachedDRGNarrative.ts > 300000) {
-        generateDRGLeakageNarrative(leakageData)
-            .then(n => _narrativeCache.set('drgLeakage', { text: n, ts: Date.now() }))
-            .catch(() => {});
+      generateDRGLeakageNarrative(leakageData)
+        .then(n => _narrativeCache.set('drgLeakage', { text: n, ts: Date.now() }))
+        .catch(() => {});
     }
 
     return {
-        data_source: 'HOSxP XE + DRG Algorithm + Claude AI',
-        generated_at: new Date().toISOString(),
-        methodology: 'CC/MCC absence detection + LOS/RW ratio outlier analysis',
-        rw_price_note: `ราคา RW ≈ ฿${RW_PRICE.toLocaleString()} (Global Budget 2569 — ประมาณการ)`,
-        ...leakageData,
-        narrative: cachedDRGNarrative?.text || null,
+      data_source: 'HOSxP XE + DRG Algorithm + Claude AI',
+      generated_at: new Date().toISOString(),
+      methodology: 'CC/MCC absence detection + LOS/RW ratio outlier analysis',
+      rw_price_note: `ราคา RW ≈ ฿${RW_PRICE.toLocaleString()} (Global Budget 2569 — ประมาณการ)`,
+      ...leakageData,
+      narrative: cachedDRGNarrative?.text || null,
     };
-}));
+  })
+);
 
 export default router;
