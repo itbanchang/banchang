@@ -106,7 +106,7 @@ export default function DataFreshnessBar({ onForceRefresh }) {
                     animation: freshness.level === 'fresh' ? 'pulse-dot 2s infinite' : 'none',
                 }} />
                 <span style={{
-                    fontSize: '8px', fontWeight: 900, color: freshness.color,
+                    fontSize: '11px', fontWeight: 900, color: freshness.color,
                     textTransform: 'uppercase', letterSpacing: '0.08em',
                 }}>
                     {freshness.label}
@@ -125,14 +125,14 @@ export default function DataFreshnessBar({ onForceRefresh }) {
                 gap: '0px', lineHeight: 1,
             }}>
                 <span style={{
-                    fontSize: '9px', fontWeight: 700,
+                    fontSize: '11px', fontWeight: 700,
                     color: 'var(--md-text-primary)',
                     fontFamily: "'JetBrains Mono', monospace",
                 }}>
                     {lastTimeStr}
                 </span>
                 <span style={{
-                    fontSize: '7px', fontWeight: 600,
+                    fontSize: '11px', fontWeight: 600,
                     color: 'var(--md-text-tertiary)',
                 }}>
                     {elapsedText}
@@ -141,7 +141,7 @@ export default function DataFreshnessBar({ onForceRefresh }) {
 
             {/* Countdown to next refresh */}
             <div style={{
-                fontSize: '7px', fontWeight: 700,
+                fontSize: '11px', fontWeight: 700,
                 color: 'var(--md-text-tertiary)',
                 fontFamily: "'JetBrains Mono', monospace",
                 minWidth: '22px', textAlign: 'center',

@@ -56,16 +56,19 @@
     --md-chart-tick: #9ca3af;
     --md-chart-grid: rgba(203, 213, 225, 0.45);
 
-    /* Typography Scale - Increased for readability and elegance */
-    --fs-2xs: 0.75rem;    /* 12px (was 10px) */
-    --fs-xs: 0.8125rem;   /* 13px (was 11px) */
-    --fs-sm: 0.875rem;    /* 14px (was 12px) */
-    --fs-base: 0.9375rem; /* 15px (was 13px) */
-    --fs-md: 1rem;        /* 16px (was 14px) */
-    --fs-lg: 1.125rem;    /* 18px (was 16px) */
-    --fs-xl: 1.25rem;     /* 20px (was 18px) */
-    --fs-2xl: 1.625rem;   /* 26px (was 22px) */
-    --fs-3xl: 2rem;       /* 32px (was 26px) */
+    /* Typography Scale — Professional Dashboard Standard (base 14px)
+       Minimum readable: 11px. No element should go below --fs-micro. */
+    --fs-micro: 0.6875rem; /* ~10px — ONLY for uppercase badges/tags */
+    --fs-2xs: 0.7857rem;   /* 11px — metadata, captions, source labels */
+    --fs-xs: 0.857rem;     /* 12px — table cells, descriptions */
+    --fs-sm: 0.928rem;     /* 13px — body secondary, hints */
+    --fs-base: 1rem;       /* 14px — default body text */
+    --fs-md: 1.071rem;     /* 15px — subheadings, card labels */
+    --fs-lg: 1.143rem;     /* 16px — section titles */
+    --fs-xl: 1.286rem;     /* 18px — card titles */
+    --fs-2xl: 1.43rem;     /* 20px — KPI values (small) */
+    --fs-3xl: 2rem;        /* 28px — KPI values (large) */
+    --fs-hero: 3rem;       /* 42px — hero headline numbers */
 }
 
 /* ================================================================

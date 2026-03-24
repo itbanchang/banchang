@@ -17,14 +17,14 @@ export function cached(key, ttl, fn) {
         // HIT — still fresh → return pre-serialized JSON instantly
         if (entry && now - entry.t < ttl) {
             return res.set('X-Cache', 'HIT')
-                .set('Cache-Control', `public, max-age=${Math.round(ttl / 1000)}`)
+                .set('Cache-Control', 'private, no-cache')
                 .type('json').end(entry.json);
         }
 
         // STALE — expired but exists → return stale immediately, refresh in background
         if (entry && now - entry.t < ttl * 3) {
             res.set('X-Cache', 'STALE')
-                .set('Cache-Control', `public, max-age=${Math.round(ttl / 1000)}, stale-while-revalidate=${Math.round(ttl / 500)}`)
+                .set('Cache-Control', 'private, no-cache')
                 .type('json').end(entry.json);
             // Background refresh — deduplicated
             if (!inflight.has(k)) {
@@ -44,7 +44,7 @@ export function cached(key, ttl, fn) {
                 const fresh = cache[k];
                 if (fresh) {
                     return res.set('X-Cache', 'DEDUP')
-                        .set('Cache-Control', `public, max-age=${Math.round(ttl / 1000)}`)
+                        .set('Cache-Control', 'private, no-cache')
                         .type('json').end(fresh.json);
                 }
             } catch { /* fall through to fetch ourselves */ }
@@ -60,7 +60,7 @@ export function cached(key, ttl, fn) {
             const json = await p;
             inflight.delete(k);
             res.set('X-Cache', 'MISS')
-                .set('Cache-Control', `public, max-age=${Math.round(ttl / 1000)}`)
+                .set('Cache-Control', 'private, no-cache')
                 .type('json').end(json);
         } catch (err) {
             inflight.delete(k);

@@ -1,0 +1,21 @@
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "usernamehw.errorlens",
+    "dsznajder.es7-react-js-snippets",
+    "bradlc.vscode-tailwindcss",
+    "formulahendry.auto-rename-tag",
+    "humao.rest-client",
+    "cweijan.vscode-mysql-client2",
+    "qwtel.sqlite-viewer",
+    "eamodio.gitlens",
+    "mhutchie.git-graph",
+    "rangav.vscode-thunder-client",
+    "mikestead.dotenv",
+    "christian-kohler.path-intellisense",
+    "wix.vscode-import-cost",
+    "emilast.logfilehighlighter",
+    "gruntfuggly.todo-tree"
+  ]
+}

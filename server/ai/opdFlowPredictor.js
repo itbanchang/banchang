@@ -5,6 +5,7 @@
 // Data: ovst + service_time (MIL milestones) — 90 days
 // ============================================================
 import { dbQuery, dbQueryOne, dbQueryHeavy } from '../db/mysql.js';
+import logger from '../logger.js';
 
 /**
  * #14 AI OPD Patient Flow Predictor
@@ -24,21 +25,19 @@ export async function getOPDFlowPrediction() {
     // Parallel: 90-day DOW-Hour matrix + today's actual + clinic distribution + 7-day daily totals
     const [dowHourly, todayHourly, todayTotal, clinicLoad, dailyTotals7d, avgServiceTime] = await Promise.all([
         // 1. DOW-Hour average matrix (90 days)
-        dbQueryHeavy('aiOpdDowHourly', 30, `
-      SELECT DAYOFWEEK(vstdate) as dow, HOUR(vsttime) as hr,
-        COUNT(*) as total,
-        COUNT(DISTINCT vstdate) as num_days,
-        ROUND(COUNT(*) / GREATEST(COUNT(DISTINCT vstdate), 1)) as avg_per_day,
-        STDDEV(cnt_per_day.cnt) as stddev_cnt
-      FROM ovst o
-      INNER JOIN (
-        SELECT vstdate, HOUR(vsttime) as hr2, COUNT(*) as cnt
-        FROM ovst
-        WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) AND vstdate < CURDATE() AND vsttime IS NOT NULL
+        dbQueryHeavy('aiOpdDowHourly', 120, `
+      SELECT DAYOFWEEK(date_val) as dow, hr,
+        SUM(cnt) as total,
+        COUNT(*) as num_days,
+        ROUND(AVG(cnt)) as avg_per_day,
+        ROUND(STDDEV(cnt)) as stddev_cnt
+      FROM (
+        SELECT vstdate as date_val, HOUR(vsttime) as hr, COUNT(*) as cnt
+        FROM ovst FORCE INDEX (ix_vstdate)
+        WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND vstdate < CURDATE() AND vsttime IS NOT NULL
         GROUP BY vstdate, HOUR(vsttime)
-      ) cnt_per_day ON o.vstdate = cnt_per_day.vstdate AND HOUR(o.vsttime) = cnt_per_day.hr2
-      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) AND o.vstdate < CURDATE() AND o.vsttime IS NOT NULL
-      GROUP BY DAYOFWEEK(o.vstdate), HOUR(o.vsttime)
+      ) AS daily_counts
+      GROUP BY DAYOFWEEK(date_val), hr
     `).catch(() => []),
 
         // 2. Today's hourly actual
@@ -76,10 +75,10 @@ export async function getOPDFlowPrediction() {
     `).catch(() => []),
 
         // 5. Past 7 days daily totals (for trend)
-        dbQueryHeavy('aiOpd7dDaily', 30, `
-      SELECT vstdate, COUNT(*) as total,
+        dbQueryHeavy('aiOpd7dDaily', 60, `
+      SELECT o.vstdate, COUNT(o.vn) as total,
         SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END) as completed
-      FROM ovst o
+      FROM ovst o FORCE INDEX (ix_vstdate)
       LEFT JOIN service_time st ON o.vn = st.vn
       LEFT JOIN rcpt_print r ON o.vn = r.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND o.vstdate < CURDATE()
@@ -92,7 +91,7 @@ export async function getOPDFlowPrediction() {
         WHEN st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(o.vsttime)
         THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(o.vsttime)) / 60
         ELSE NULL END)) as avg_service_min
-      FROM ovst o
+      FROM ovst o FORCE INDEX (ix_vstdate)
       INNER JOIN service_time st ON o.vn = st.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND o.vstdate < CURDATE()
     `).catch(() => ({ avg_service_min: 30 }))
@@ -230,7 +229,7 @@ export async function getOPDFlowPrediction() {
 
     const avgServiceMin = Number(avgServiceTime?.avg_service_min || 30);
 
-    console.log(`🧠 AI #14 OPD Flow Predictor: ${Date.now() - start}ms (surge=${surgeIndex}, forecast=${forecastTotal})`);
+    logger.debug('OPD Flow Predictor AI computed', { duration: Date.now() - start, surgeIndex, forecastTotal });
 
     return {
         ai_module: 'OPD Flow Predictor',

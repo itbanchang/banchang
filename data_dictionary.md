@@ -961,3 +961,1135 @@ Database: bchhosxpxe (10.1.0.3)
 | service20_dep | char(3) | YES |  |  |  |  |
 | hos_guid | varchar(38) | YES | MUL |  |  |  |
 
+---
+
+# Development Phases - 360° Intelligence Dashboard
+
+## Overview
+
+This document outlines the structured development roadmap divided into 3 phases:
+- **Phase 1 (Security & Stabilization):** 2-3 weeks - Critical security fixes, foundation hardening
+- **Phase 2 (Core Enhancement):** 4-6 weeks - Feature development, data structures, real-time capabilities
+- **Phase 3 (Advanced Features):** 8-12 weeks - Population health, predictive analytics, TypeScript migration
+
+---
+
+## 🔴 PHASE 1: Security Hardening & Stabilization (2-3 weeks)
+
+**Objective:** Remove production-blocking security vulnerabilities and establish solid foundation for Phase 2-3
+
+### 1.1 Remove Authentication Bypass [CRITICAL - BLOCKER]
+
+**File:** `server/middleware/rbac.js` (lines 29-33)
+
+**Problem:** Anonymous users without JWT tokens get director-level access via fallback assignment
+
+**Current Code (BROKEN):**
+```javascript
+if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    req.user = { id: 'demo', username: 'demo', role: 'director', full_name: 'Demo User' };
+    return next();  // ← SECURITY HOLE: Anyone gets director access!
+}
+```
+
+**Fixed Code:**
+```javascript
+if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ 
+        error: 'Authentication required',
+        message: 'Missing or invalid JWT token'
+    });
+}
+```
+
+**Testing:** All unauthenticated REST endpoints must return 401 Unauthorized
+
+**Acceptance Criteria:**
+- [ ] Curl `curl -X GET http://localhost:4000/api/finance/monthly-summary` returns 401
+- [ ] Valid JWT tokens still work correctly
+- [ ] Role assignments work as expected for authenticated users
+
+---
+
+### 1.2 Migrate User Passwords to Database [CRITICAL - BLOCKER]
+
+**Files to Update:**
+- `server/routes/auth.js` (lines 12-31: remove USERS array)
+- `server/db/migrations/001_migrate_default_users.sql` (new file)
+
+**Problem:** 5 hardcoded user credentials stored in code: BCH@dm1n2026!, BCHd1r3ct0r!, etc.
+
+**Current Code (BROKEN):**
+```javascript
+const USERS = [
+    { username: 'admin', password_hash: bcrypt.hashSync('BCH@dm1n2026!', 10) },
+    { username: 'director', password_hash: bcrypt.hashSync('BCHd1r3ct0r!', 10) },
+    // ... 3 more hardcoded passwords
+];
+```
+
+**Fixed Code Pattern:**
+```javascript
+// server/routes/auth.js - Updated login route
+router.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password required' });
+    }
+    
+    // Query from opduser table instead of hardcoded array
+    const user = await dbQueryOne(
+        'SELECT loginname, password, name, doctorcode, accessright FROM opduser WHERE loginname = ?',
+        [username]
+    );
+    
+    if (!user) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Verify password (needs to be hashed in database)
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Check if password change required on first login
+    if (user.password_change_required === 'Y') {
+        return res.status(403).json({ 
+            error: 'Password change required',
+            requiresPasswordChange: true,
+            tempToken: jwt.sign({ username: user.loginname }, process.env.JWT_SECRET, { expiresIn: '15m' })
+        });
+    }
+    
+    // Generate JWT token
+    const token = jwt.sign(
+        { 
+            username: user.loginname, 
+            name: user.name,
+            role: mapAccessRightToRole(user.accessright)
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '8h' }
+    );
+    
+    res.json({ token, user: { username: user.loginname, name: user.name } });
+});
+```
+
+**Migration File:** `server/db/migrations/001_migrate_default_users.sql`
+```sql
+-- Alter opduser table to support password change requirement
+ALTER TABLE opduser ADD COLUMN password_change_required CHAR(1) DEFAULT 'Y' AFTER password;
+
+-- Update existing default users with hashed passwords
+UPDATE opduser SET password = ?, password_change_required = 'N' WHERE loginname = 'admin';  -- Hash: BCH@dm1n2026!
+UPDATE opduser SET password = ?, password_change_required = 'N' WHERE loginname = 'director';  -- Hash: BCHd1r3ct0r!
+-- ... update other 3 default users
+
+-- Add index for faster login lookups
+CREATE INDEX idx_opduser_loginname ON opduser(loginname);
+```
+
+**Subtask 1.2.1: Force Password Change on First Login**
+- Add POST `/api/auth/change-password` endpoint
+- Check `password_change_required` flag after successful login
+- Return 403 with temp token if flag set
+- Temp token valid only for password change endpoint (15 min expiry)
+
+**Acceptance Criteria:**
+- [ ] Login endpoint queries opduser table (not hardcoded USERS array)
+- [ ] Old passwords still work after migration (backward compatible)
+- [ ] First-time users forced to change password
+- [ ] Passwords properly bcrypt-hashed in database
+- [ ] Migration script runs without errors
+
+---
+
+### 1.3 Implement HTTPS/TLS [CRITICAL]
+
+**File:** `server/server.js` (lines 56-60)
+
+**Current Code (HTTP ONLY):**
+```javascript
+const server = createServer(app);  // ← No SSL/TLS
+server.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
+```
+
+**Fixed Code:**
+```javascript
+const isProduction = process.env.NODE_ENV === 'production';
+
+let server;
+if (isProduction) {
+    // Production: Use HTTPS with certificates
+    const fs = require('fs');
+    const https = require('https');
+    
+    const sslKeyPath = process.env.SSL_KEY_PATH;
+    const sslCertPath = process.env.SSL_CERT_PATH;
+    
+    if (!sslKeyPath || !sslCertPath) {
+        console.error('ERROR: SSL_KEY_PATH and SSL_CERT_PATH required in production');
+        process.exit(1);
+    }
+    
+    const options = {
+        key: fs.readFileSync(sslKeyPath),
+        cert: fs.readFileSync(sslCertPath)
+    };
+    
+    server = https.createServer(options, app);
+    
+    // Redirect HTTP to HTTPS
+    const httpServer = createServer((req, res) => {
+        res.writeHead(301, { 'Location': `https://${req.headers.host}${req.url}` });
+        res.end();
+    });
+    httpServer.listen(80, () => {
+        console.log('HTTP → HTTPS redirect listening on port 80');
+    });
+} else {
+    // Development: Use HTTP
+    server = createServer(app);
+}
+
+server.listen(port, () => {
+    console.log(`Server running on ${isProduction ? 'HTTPS' : 'HTTP'} port ${port}`);
+});
+```
+
+**Environment Setup for Production:**
+```bash
+# Generate self-signed certificate (for development/testing)
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+
+# Or use Let's Encrypt certificate for production
+# Set environment variables:
+export NODE_ENV=production
+export SSL_KEY_PATH=/etc/ssl/private/key.pem
+export SSL_CERT_PATH=/etc/ssl/certs/cert.pem
+export JWT_SECRET=<long-random-string-min-32-chars>
+```
+
+**Testing:**
+- [ ] `curl https://localhost:4000` works (HTTPS connection)
+- [ ] `curl http://localhost:4000` redirects to HTTPS
+- [ ] Development server still uses HTTP without SSL vars
+
+**Acceptance Criteria:**
+- [ ] All production deployments require HTTPS
+- [ ] HTTP connections redirected to HTTPS (port 80 → 443)
+- [ ] Certificate paths loaded from environment variables
+- [ ] Development mode uses HTTP (no HTTPS required)
+
+---
+
+### 1.4 Implement Data Masking Middleware [PDPA Compliance]
+
+**New File:** `server/middleware/dataMasking.js`
+
+**Purpose:** Enforce role-based data filtering for patient information (PDPA compliance)
+
+```javascript
+// server/middleware/dataMasking.js
+
+/**
+ * Masks patient data based on user role and PDPA requirements
+ * - Clinical staff: Full patient data + vitals
+ * - Finance: Only HN + demographics (no personal identifiers)
+ * - Director/Admin: Aggregated data only
+ */
+
+function maskPatientData(patient, userRole) {
+    if (!patient) return null;
+    
+    switch(userRole) {
+        case 'clinical':
+        case 'nursing':
+            // Clinical staff can see all patient data including vitals
+            return {
+                hn: patient.hn,
+                fname: patient.fname,
+                lname: patient.lname,
+                age_y: patient.age_y,
+                sex: patient.sex,
+                bloodgrp: patient.bloodgrp,
+                birthday: patient.birthday,
+                pttype: patient.pttype,
+                g6pd: patient.g6pd,
+                allergies: patient.drugallergy,
+                // NO: cid, contact info, full cid
+            };
+            
+        case 'finance':
+            // Finance staff can see HN, age, pttype, and debt info only
+            return {
+                hn: patient.hn,
+                age_y: patient.age_y,
+                sex: patient.sex,
+                pttype: patient.pttype,
+                cid_last4: patient.cid ? patient.cid.slice(-4) : null,  // Last 4 digits only
+                // NO: name, contact info, address, medical data
+            };
+            
+        case 'director':
+        case 'admin':
+            // Directors can see aggregated data only, not individual records
+            // Individual patient records should go through aggregation endpoints
+            return {
+                hn: patient.hn,
+                age_bucket: Math.floor(patient.age_y / 10) * 10 + '-' + (Math.floor(patient.age_y / 10) + 1) * 10,  // Bucketed age
+                sex: patient.sex,
+                pttype: patient.pttype,
+                // NO: any identifiable data
+            };
+            
+        default:
+            // Unknown role - return empty object (deny by default)
+            return null;
+    }
+}
+
+function maskPatientList(patients, userRole) {
+    return patients.map(p => maskPatientData(p, userRole)).filter(p => p !== null);
+}
+
+module.exports = {
+    maskPatientData,
+    maskPatientList
+};
+```
+
+**Routes to Update (add masking before response):**
+
+1. `server/routes/clinical.js`
+```javascript
+router.get('/patients/:hn', authenticate, async (req, res) => {
+    const patient = await dbQueryOne('SELECT * FROM patient WHERE hn = ?', [req.params.hn]);
+    const masked = maskPatientData(patient, req.user.role);
+    res.json(masked);
+});
+```
+
+2. `server/routes/ipd.js`
+```javascript
+router.get('/occupancy', authenticate, async (req, res) => {
+    const patients = await dbQuery(`
+        SELECT i.an, p.hn, p.fname, p.lname, p.age_y, p.sex, i.ward
+        FROM ipt i
+        JOIN patient p ON i.hn = p.hn
+        WHERE i.dchdate IS NULL
+    `);
+    const masked = maskPatientList(patients, req.user.role);
+    res.json(masked);
+});
+```
+
+**Acceptance Criteria:**
+- [ ] Clinical staff see full patient data in charts
+- [ ] Finance staff cannot see patient names or contact info
+- [ ] Directors only see aggregated summary data
+- [ ] All /api/clinic/* endpoints apply masking
+- [ ] All /api/ipd/* endpoints apply masking
+- [ ] All /api/opd/* endpoints apply masking
+
+---
+
+### 1.5 Hardened Environment Validation [Startup Check]
+
+**File:** `server/server.js` - Add at top before app initialization
+
+```javascript
+// server/server.js - Environment validation
+
+const requiredEnvVars = [
+    'JWT_SECRET',
+    'MYSQL_HOST',
+    'MYSQL_USER',
+    'MYSQL_PASS',
+    'MYSQL_DB',
+    'SERVER_IP',
+    'NODE_ENV'
+];
+
+// Check production-specific requirements
+if (process.env.NODE_ENV === 'production') {
+    requiredEnvVars.push('SSL_KEY_PATH', 'SSL_CERT_PATH');
+}
+
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+    console.error(`❌ FATAL: Missing required environment variables:`);
+    missingVars.forEach(v => console.error(`   - ${v}`));
+    process.exit(1);
+}
+
+// Validate JWT_SECRET strength
+if (process.env.JWT_SECRET.length < 32) {
+    console.error(`❌ FATAL: JWT_SECRET must be at least 32 characters (currently ${process.env.JWT_SECRET.length})`);
+    process.exit(1);
+}
+
+console.log(`✅ Environment validation passed`);
+console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`   MYSQL: ${process.env.MYSQL_HOST}:3306/${process.env.MYSQL_DB}`);
+console.log(`   SSL: ${process.env.NODE_ENV === 'production' ? 'ENABLED' : 'DISABLED (dev only)'}`);
+```
+
+**Acceptance Criteria:**
+- [ ] Server exits with error message if any required env var missing
+- [ ] JWT_SECRET must be 32+ characters
+- [ ] Production mode requires SSL certificates
+- [ ] Development mode can run without SSL
+- [ ] Clear console message showing environment validation status
+
+---
+
+### 1.6 Add Structured Logging with Winston [Best Practice]
+
+**New File:** `server/logger.js`
+
+```javascript
+// server/logger.js
+
+const winston = require('winston');
+const path = require('path');
+
+const logger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: winston.format.combine(
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+    ),
+    defaultMeta: { service: 'bch-360-api' },
+    transports: [
+        // File transportation
+        new winston.transports.File({
+            filename: path.join('logs', 'error.log'),
+            level: 'error',
+            maxsize: 5242880,  // 5MB
+            maxFiles: 5
+        }),
+        new winston.transports.File({
+            filename: path.join('logs', 'combined.log'),
+            maxsize: 5242880,
+            maxFiles: 10
+        })
+    ]
+});
+
+// Console output in development
+if (process.env.NODE_ENV !== 'production') {
+    logger.add(new winston.transports.Console({
+        format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+        )
+    }));
+}
+
+module.exports = logger;
+```
+
+**Update Files:** Replace all `console.log()` calls with `logger.info()`, etc.
+
+```javascript
+// Before:
+console.log('Database connected');
+console.error('Query failed:', error);
+
+// After:
+logger.info('Database connected', { host: process.env.MYSQL_HOST });
+logger.error('Query failed', { error: error.message, query: sql });
+```
+
+**Acceptance Criteria:**
+- [ ] INFO logs: API requests, database operations, authentication events
+- [ ] ERROR logs: Failed queries, authentication failures, system errors
+- [ ] Log files created in `logs/` directory (5MB rotation)
+- [ ] Console output in development, file output in production
+- [ ] Structured JSON logs for ELK/monitoring integration
+
+---
+
+## Summary: Phase 1 Deliverables
+
+| Task | File(s) | Duration | Risk | Status |
+|------|---------|----------|------|--------|
+| Remove auth bypass | rbac.js | 30 min | 🔴 Critical | ⏳ Blocked |
+| Migrate passwords to DB | auth.js, migration SQL | 4h | 🔴 Critical | ⏳ Blocked |
+| Implement HTTPS | server.js | 2h | 🔴 Critical | ⏳ Blocked |
+| Add data masking | dataMasking.js, (6 routes) | 6h | 🟡 High | ⏳ Blocked |
+| Environment validation | server.js | 1h | 🟡 High | ⏳ Blocked |
+| Structured logging | logger.js, (12 files) | 3h | 🟢 Medium | ⏳ Blocked |
+| **TOTAL** | | **16.5h / ~2-3 weeks** | | |
+
+---
+
+## 🟡 PHASE 2: Core Features Enhancement (4-6 weeks)
+
+**Objective:** Add vital signs time-series, debt aging, real-time occupancy, and input validation
+
+*Dependencies: Phase 1 must be complete*
+
+### 2.1 Create Vital Signs Time-Series Table [Clinical Safety]
+
+**Problem:** AN_STAT only stores LAST vital signs snapshot (last_bps, last_bpd, last_temperature), no history for EWS trending
+
+**New Table:** `ipt_vitals`
+
+```sql
+-- server/db/migrations/002_create_ipt_vitals.sql
+
+CREATE TABLE ipt_vitals (
+    ipt_vital_id INT AUTO_INCREMENT PRIMARY KEY,
+    an VARCHAR(9) NOT NULL,
+    hn VARCHAR(9),
+    check_datetime DATETIME NOT NULL,
+    
+    -- Vital signs (NEWS2 parameters)
+    rr DOUBLE,           -- Respiratory rate
+    spo2 DOUBLE,         -- Oxygen saturation
+    bps INT,            -- Systolic BP
+    bpd INT,            -- Diastolic BP
+    pulse INT,          -- Heart rate
+    temperature DOUBLE,  -- Body temperature
+    
+    -- AI/Risk scoring
+    news2_score INT,
+    news2_risk_level VARCHAR(20),  -- 'low', 'medium', 'high', 'critical'
+    
+    -- Audit
+    created_by VARCHAR(25),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Indexes for performance
+    KEY idx_an_datetime (an, check_datetime),
+    KEY idx_risk_level (news2_risk_level, check_datetime),
+    KEY idx_hn (hn),
+    
+    FOREIGN KEY (an) REFERENCES ipt(an)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Create view for last 24h vitals per patient
+CREATE VIEW ipt_vital_last24h AS
+SELECT 
+    an, hn,
+    MAX(check_datetime) as last_check_time,
+    COUNT(*) as check_count,
+    MIN(news2_score) as min_news2,
+    MAX(news2_score) as max_news2,
+    AVG(news2_score) as avg_news2,
+    MAX(IF(news2_risk_level='critical', 1, 0)) as had_critical
+FROM ipt_vitals
+WHERE check_datetime > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+GROUP BY an, hn;
+```
+
+**New Endpoints:**
+
+1. **POST** `/api/ipd/vitals` - Log new vital signs
+```javascript
+router.post('/vitals', authenticate, async (req, res) => {
+    const { an, hn, rr, spo2, bps, bpd, pulse, temperature } = req.body;
+    
+    // Validate input
+    if (!an || rr == null || spo2 == null || bps == null || bpd == null || 
+        pulse == null || temperature == null) {
+        return res.status(400).json({ error: 'Missing required vital signs' });
+    }
+    
+    // Calculate NEWS2 score
+    const news2 = calculateNEWS2({ rr, spo2, bps, bpd, pulse, temperature });
+    
+    // Insert into ipt_vitals
+    await dbQuery(`
+        INSERT INTO ipt_vitals 
+        (an, hn, check_datetime, rr, spo2, bps, bpd, pulse, temperature, 
+         news2_score, news2_risk_level, created_by)
+        VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [an, hn, rr, spo2, bps, bpd, pulse, temperature, 
+        news2.total_score, news2.risk_level, req.user.username]);
+    
+    // Alert if critical
+    if (news2.risk_level === 'critical') {
+        io.emit('clinical_alert', {
+            type: 'HIGH_EWS',
+            an: an,
+            hn: hn,
+            news2_score: news2.total_score,
+            timestamp: new Date()
+        });
+    }
+    
+    res.json({ success: true, news2_score: news2.total_score, risk_level: news2.risk_level });
+});
+```
+
+2. **GET** `/api/ipd/:an/vitals-history` - 24h vital trend
+```javascript
+router.get('/:an/vitals-history', authenticate, async (req, res) => {
+    const vitals = await dbQuery(`
+        SELECT check_datetime, rr, spo2, bps, bpd, pulse, temperature, 
+               news2_score, news2_risk_level
+        FROM ipt_vitals
+        WHERE an = ? AND check_datetime > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        ORDER BY check_datetime ASC
+    `, [req.params.an]);
+    
+    res.json(vitals);
+});
+```
+
+3. **GET** `/api/ipd/high-risk-patients` - Filter by latest NEWS2
+```javascript
+router.get('/high-risk-patients', authenticate, async (req, res) => {
+    const patients = await dbQuery(`
+        SELECT DISTINCT i.an, p.hn, p.fname, p.lname, p.age_y,
+               iv.check_datetime, iv.news2_score, iv.news2_risk_level
+        FROM ipt i
+        JOIN patient p ON i.hn = p.hn
+        JOIN ipt_vitals iv ON i.an = iv.an
+        WHERE i.dchdate IS NULL
+        AND (iv.news2_score >= 5 OR iv.news2_risk_level IN ('high', 'critical'))
+        AND iv.check_datetime = (
+            SELECT MAX(check_datetime) FROM ipt_vitals iv2 WHERE iv2.an = i.an
+        )
+        ORDER BY iv.news2_score DESC
+    `);
+    
+    res.json(maskPatientList(patients, req.user.role));
+});
+```
+
+**Integration with NEWS2 Engine:**
+```javascript
+// server/ai/ewsEngine.js - Already implemented
+function calculateNEWS2(vitals) {
+    let score = 0;
+    let breakdown = {};
+    
+    // Respiratory rate scoring (3 points max)
+    if (vitals.rr <= 8 || vitals.rr >= 25) score += 3;
+    else if (vitals.rr >= 21 && vitals.rr <= 24) score += 2;
+    else if (vitals.rr >= 9 && vitals.rr <= 11) score += 1;
+    
+    // ... other vital sign scoring ...
+    
+    const risk_level = score >= 7 ? 'critical' : 
+                       score >= 5 ? 'high' : 
+                       score >= 3 ? 'medium' : 'low';
+    
+    return { total_score: score, risk_level, breakdown };
+}
+```
+
+**Acceptance Criteria:**
+- [ ] ipt_vitals table created and indexed
+- [ ] POST endpoint logs vital signs with NEWS2 calculation
+- [ ] GET history endpoint returns 24h trend data
+- [ ] High-risk patients filterable by NEWS2 score
+- [ ] Critical alerts trigger WebSocket notifications
+- [ ] Role-based data masking applied to patient names
+
+---
+
+### 2.2 Add Debt Aging Analysis [Financial Management]
+
+**Problem:** No visibility into aging of accounts receivable; remain_money in vn_stat/an_stat doesn't show timing
+
+**New Table:** `patient_debt_history`
+
+```sql
+-- server/db/migrations/003_create_debt_history.sql
+
+CREATE TABLE patient_debt_history (
+    debt_id INT AUTO_INCREMENT PRIMARY KEY,
+    an VARCHAR(9),
+    vn VARCHAR(13),
+    hn VARCHAR(9) NOT NULL,
+    
+    -- Debt tracking
+    original_amount DOUBLE(15, 3),
+    remain_amount DOUBLE(15, 3),
+    due_date DATE NOT NULL,
+    
+    -- Timeline
+    created_date DATE NOT NULL DEFAULT CURDATE(),
+    paid_date DATE,
+    payment_amount DOUBLE(15, 3),
+    payment_method VARCHAR(20),  -- 'cash', 'installment', 'waived', 'written_off'
+    
+    -- Aging calculation
+    days_overdue INT GENERATED ALWAYS AS (
+        CASE 
+            WHEN paid_date IS NOT NULL THEN 0
+            ELSE DATEDIFF(CURDATE(), due_date)
+        END
+    ) STORED,
+    
+    aging_bucket VARCHAR(20) GENERATED ALWAYS AS (
+        CASE
+            WHEN paid_date IS NOT NULL THEN 'paid'
+            WHEN DATEDIFF(CURDATE(), due_date) < 0 THEN 'not_due'
+            WHEN DATEDIFF(CURDATE(), due_date) <= 30 THEN '0-30_days'
+            WHEN DATEDIFF(CURDATE(), due_date) <= 60 THEN '31-60_days'
+            WHEN DATEDIFF(CURDATE(), due_date) <= 90 THEN '61-90_days'
+            ELSE '>90_days'
+        END
+    ) STORED,
+    
+    -- Audit
+    created_by VARCHAR(25),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Indexes
+    KEY idx_hn (hn),
+    KEY idx_due_date (due_date),
+    KEY idx_aging_bucket (aging_bucket),
+    KEY idx_created_date (created_date),
+    KEY idx_unpaid (paid_date, remain_amount),
+    
+    FOREIGN KEY (hn) REFERENCES patient(hn)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Create summary view for aging dashboard
+CREATE VIEW debt_aging_summary AS
+SELECT 
+    aging_bucket,
+    COUNT(DISTINCT hn) as patient_count,
+    COUNT(*) as debt_incident_count,
+    SUM(remain_amount) as total_debt_amount,
+    MIN(due_date) as oldest_debt_date,
+    AVG(remain_amount) as avg_debt_amount
+FROM patient_debt_history
+WHERE paid_date IS NULL
+GROUP BY aging_bucket;
+```
+
+**New Endpoints:**
+
+1. **GET** `/api/finance/debt-aging` - Aging analysis
+```javascript
+router.get('/debt-aging', authenticate, requireRole('finance'), async (req, res) => {
+    const summary = await dbQuery(`
+        SELECT aging_bucket, patient_count, debt_incident_count, 
+               total_debt_amount, oldest_debt_date, avg_debt_amount
+        FROM debt_aging_summary
+    `);
+    
+    res.json(summary);
+});
+```
+
+2. **GET** `/api/finance/debt-aging/details` - Detailed patient list
+```javascript
+router.get('/debt-aging/details', authenticate, requireRole('finance'), async (req, res) => {
+    const bucket = req.query.bucket || '>90_days';  // Filter by aging bucket
+    
+    const details = await dbQuery(`
+        SELECT pdh.debt_id, pdh.hn, p.fname, p.lname, pdh.remain_amount,
+               pdh.due_date, pdh.days_overdue, pdh.aging_bucket,
+               pdh.created_date, pdh.payment_method
+        FROM patient_debt_history pdh
+        JOIN patient p ON pdh.hn = p.hn
+        WHERE pdh.aging_bucket = ? AND pdh.paid_date IS NULL
+        ORDER BY pdh.days_overdue DESC
+        LIMIT 100
+    `, [bucket]);
+    
+    res.json(maskPatientList(details, req.user.role));
+});
+```
+
+3. **POST** `/api/finance/debt-aging/record-payment` - Log debt payment
+```javascript
+router.post('/debt-aging/record-payment', authenticate, requireRole('finance'), async (req, res) => {
+    const { debt_id, payment_amount, payment_method, payment_date } = req.body;
+    
+    const updated = await dbQuery(`
+        UPDATE patient_debt_history 
+        SET paid_date = ?, payment_amount = ?, payment_method = ?
+        WHERE debt_id = ?
+    `, [payment_date || new Date(), payment_amount, payment_method, debt_id]);
+    
+    res.json({ success: true, updated_debt_id: debt_id });
+});
+```
+
+**Acceptance Criteria:**
+- [ ] patient_debt_history table tracks all outstanding debts
+- [ ] Aging buckets (0-30, 31-60, 61-90, >90 days) calculated automatically
+- [ ] Debt aging summary endpoint returns pie chart data
+- [ ] Finance staff can view detailed patient debt list by aging bucket
+- [ ] Payment recording updates paid_date and payment_amount
+- [ ] Dashboard chart shows debt distribution by aging bracket
+
+---
+
+### 2.3 Real-Time Occupancy Synchronization [Bed Management]
+
+**Problem:** Occupancy dashboard static; requires manual refresh to see bed changes
+
+**Solution:** Cache occupancy every 30 minutes with WebSocket updates
+
+```javascript
+// server/jobs/syncOccupancy.js - New file
+
+const cron = require('node-cron');
+const db = require('../db/mysql.js');
+
+// Run every 30 minutes
+const job = cron.schedule('*/30 * * * *', async () => {
+    console.log('[OCCUPANCY] Syncing IPD occupancy...');
+    
+    try {
+        const currentOccupancy = await db.dbQuery(`
+            SELECT 
+                i.an, i.ward, i.cur_bedno,
+                DATEDIFF(NOW(), i.regdate) as stay_days,
+                p.hn, p.fname, p.lname, p.age_y, p.sex,
+                i.drg, ans.last_sos_score as risk_flag,
+                ans.last_bps, ans.last_bpd, ans.last_temperature
+            FROM ipt i
+            JOIN patient p ON i.hn = p.hn
+            LEFT JOIN an_stat ans ON i.an = ans.an
+            WHERE i.dchdate IS NULL
+            ORDER BY i.ward, CAST(i.cur_bedno AS UNSIGNED)
+        `);
+        
+        // Group by ward
+        const occupancyByWard = {};
+        currentOccupancy.forEach(occ => {
+            if (!occupancyByWard[occ.ward]) {
+                occupancyByWard[occ.ward] = [];
+            }
+            occupancyByWard[occ.ward].push(occ);
+        });
+        
+        // Cache in memory/Redis
+        global.occupancyCache = {
+            lastUpdated: new Date(),
+            data: occupancyByWard,
+            totalOccupied: currentOccupancy.length
+        };
+        
+        console.log(`[OCCUPANCY] Updated ${currentOccupancy.length} beds across ${Object.keys(occupancyByWard).length} wards`);
+        
+        // Broadcast via WebSocket
+        if (global.io) {
+            global.io.emit('occupancy_updated', {
+                timestamp: new Date(),
+                totalOccupied: currentOccupancy.length,
+                byWard: Object.keys(occupancyByWard).map(ward => ({
+                    ward,
+                    occupied: occupancyByWard[ward].length
+                }))
+            });
+        }
+        
+    } catch(error) {
+        logger.error('[OCCUPANCY] Sync failed', { error: error.message });
+    }
+});
+
+module.exports = { job };
+```
+
+**New Endpoint:**
+
+```javascript
+// server/routes/ipd.js - Add occupancy endpoint
+
+router.get('/occupancy-now', authenticate, (req, res) => {
+    // Return cached occupancy (instant response)
+    if (!global.occupancyCache) {
+        return res.status(503).json({ error: 'Occupancy data not yet cached' });
+    }
+    
+    res.json({
+        lastUpdated: global.occupancyCache.lastUpdated,
+        totalOccupied: global.occupancyCache.totalOccupied,
+        byWard: global.occupancyCache.data
+    });
+});
+```
+
+**Acceptance Criteria:**
+- [ ] syncOccupancy.js runs every 30 minutes
+- [ ] Occupancy cached in memory for instant API response
+- [ ] WebSocket event emitted after each sync
+- [ ] Frontend updates occupancy map without full page refresh
+- [ ] Timestamp shows when data was last updated
+
+---
+
+### 2.4 Input Validation on All Query Parameters [Security]
+
+**File:** Create/expand `server/middleware/validate.js`
+
+```javascript
+// server/middleware/validate.js
+
+const z = require('zod');
+
+/**
+ * Middleware factory for query/body parameter validation
+ * @param {z.ZodSchema} schema - Zod validation schema
+ * @returns {Function} Express middleware
+ */
+function validate(schema) {
+    return (req, res, next) => {
+        try {
+            const validated = schema.parse(req.query);  // or req.body for POST
+            req.validated = validated;
+            next();
+        } catch(error) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({
+                    error: 'Invalid parameters',
+                    details: error.errors.map(e => ({
+                        field: e.path.join('.'),
+                        message: e.message
+                    }))
+                });
+            }
+            res.status(500).json({ error: 'Validation error' });
+        }
+    };
+}
+
+module.exports = { validate };
+```
+
+**Apply to Routes:**
+
+```javascript
+// server/routes/finance.js - Example application
+
+const { validate } = require('../middleware/validate.js');
+const z = require('zod');
+
+// Validation schemas
+const monthlyQuerySchema = z.object({
+    year: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+
+const claimsQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(1000).default(100),
+    offset: z.coerce.number().int().min(0).default(0),
+    dateFrom: z.string().date().optional(),
+    dateTo: z.string().date().optional(),
+});
+
+const debtAging QuerySchema = z.object({
+    bucket: z.enum(['0-30_days', '31-60_days', '61-90_days', '>90_days']).optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+// Routes with validation
+router.get('/monthly-summary', authenticate, validate(monthlyQuerySchema), async (req, res) => {
+    // req.validated now contains sanitized params
+    const { year } = req.validated;
+    // ... route logic
+});
+
+router.get('/claims', authenticate, validate(claimsQuerySchema), async (req, res) => {
+    const { limit, offset, dateFrom, dateTo } = req.validated;
+    // ... route logic
+});
+
+router.get('/debt-aging/details', authenticate, validate(debtAgingQuerySchema), async (req, res) => {
+    const { bucket } = req.validated;
+    // ... route logic
+});
+```
+
+**Acceptance Criteria:**
+- [ ] All routes with query params use Zod validation
+- [ ] Invalid parameters return 400 with clear error messages
+- [ ] Number ranges enforced (e.g., year 2000-2100)
+- [ ] Date formats validated (ISO 8601)
+- [ ] Enum fields restrict to allowed values
+- [ ] No SQL injection possible through invalid params
+
+---
+
+### 2.5 Add Request ID Tracking [Observability]
+
+**File:** `server/server.js` - Add early middleware
+
+```javascript
+// server/server.js
+
+const { v4: uuidv4 } = require('uuid');
+
+// Add request ID tracking
+app.use((req, res, next) => {
+    req.id = req.headers['x-request-id'] || uuidv4();
+    res.setHeader('X-Request-ID', req.id);
+    
+    logger.info(`${req.method} ${req.path}`, {
+        requestId: req.id,
+        ip: req.ip,
+        user: req.user?.username || 'anonymous'
+    });
+    
+    // Track response time
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        logger.info(`${req.method} ${req.path} completed`, {
+            requestId: req.id,
+            statusCode: res.statusCode,
+            duration: `${duration}ms`
+        });
+    });
+    
+    next();
+});
+```
+
+**Acceptance Criteria:**
+- [ ] Every request gets unique X-Request-ID header
+- [ ] Header preserved through distributed tracing
+- [ ] Request IDs logged with all output
+- [ ] Response times tracked and logged
+- [ ] Dashboard can filter logs by request ID
+
+---
+
+### 2.6 Enable Content-Security-Policy [Security]
+
+**File:** `server/server.js` - Replace helmet CSP configuration
+
+```javascript
+// server/server.js - Line 72
+
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],  // React requires unsafe-inline for dev
+            connectSrc: [
+                "'self'", 
+                "ws://localhost:*",  // WebSocket for development
+                "wss://localhost:*"  // WebSocket secure for production
+            ],
+            imgSrc: ["'self'", "data:"],
+            styleSrc: ["'self'", "'unsafe-inline'"],  // Tailwind requires unsafe-inline
+            fontSrc: ["'self'"],
+            frameSrc: ["'none'"],  // Prevent click-jacking
+            objectSrc: ["'none'"]  // Prevent plugin-based attacks
+        }
+    }
+}));
+```
+
+**Acceptance Criteria:**
+- [ ] CSP headers present in all responses
+- [ ] No inline scripts allowed (except React)
+- [ ] WebSocket connections work for real-time features
+- [ ] External resources restricted to localhost in dev
+- [ ] Browser console shows no CSP violations
+
+---
+
+## Summary: Phase 2 Deliverables
+
+| Task | File(s) | Duration | Dependencies |
+|------|---------|----------|---|
+| Vital signs time-series | ipt_vitals table, 3 endpoints | 8h | Phase 1 ✅ |
+| Debt aging analysis | patient_debt_history table, 3 endpoints | 6h | Phase 1 ✅ |
+| Real-time occupancy sync | syncOccupancy.js, 1 endpoint | 4h | Phase 1 ✅ |
+| Input validation | validate.js middleware, apply to 6 routes | 5h | Phase 1 ✅ |
+| Request ID tracking | Middleware, logging integration | 2h | Phase 1 ✅ |
+| Content-Security-Policy | helmet config in server.js | 1h | Phase 1 ✅ |
+| **TOTAL** | | **26h / ~4-6 weeks** | |
+
+---
+
+## 🟢 PHASE 3: Advanced Features & Optimization (8-12 weeks)
+
+**Objective:** Population health management, predictive analytics, code modernization
+
+*Dependencies: Phase 2 must be complete*
+
+### 3.1 NCD Chronic Disease Registry [Population Health]
+
+Build comprehensive chronic disease tracking for DM, HT, CKD, COPD, IHD, Stroke
+
+**New Tables:**
+```sql
+CREATE TABLE ncd_patient (
+    ncd_reg_id INT AUTO_INCREMENT PRIMARY KEY,
+    hn VARCHAR(9) NOT NULL,
+    ncd_type VARCHAR(10) NOT NULL,  -- 'DM', 'HT', 'CKD', 'COPD', 'IHD', 'STROKE'
+    registration_date DATE DEFAULT CURDATE(),
+    last_visit_date DATE,
+    status VARCHAR(20),  -- 'active', 'lost_to_followup', 'discharged', 'deceased'
+    risk_level INT,
+    KEY (hn, ncd_type), KEY (registration_date), KEY (status)
+);
+
+CREATE TABLE ncd_follow_up (
+    followup_id INT AUTO_INCREMENT PRIMARY KEY,
+    ncd_reg_id INT NOT NULL,
+    hn VARCHAR(9),
+    visit_date DATE,
+    visit_type VARCHAR(20),  -- 'routine', 'urgent', 'teleconsult'
+    fbs DOUBLE, hba1c DOUBLE, bps INT, bpd INT,
+    weight DOUBLE, ldl DOUBLE,
+    medication_adherence INT,  -- 0-100%
+    complication_flag CHAR(1),
+    next_visit_date DATE,
+    created_by VARCHAR(25),
+    FOREIGN KEY (ncd_reg_id) REFERENCES ncd_patient(ncd_reg_id)
+);
+
+CREATE TABLE ncd_risk_score (
+    risk_id INT AUTO_INCREMENT PRIMARY KEY,
+    hn VARCHAR(9),
+    calculated_date DATE DEFAULT CURDATE(),
+    cvd_risk_percent INT,  -- 10-year CVD risk
+    ckd_risk_stage INT,    -- CKD eGFR stage
+    mortality_risk_percent INT,
+    KEY (hn, calculated_date)
+);
+```
+
+**New Endpoints:**
+- GET /api/ncd/registry - All patients with NCD
+- GET /api/ncd/overdue-followup - Patients >30 days since visit
+- GET /api/ncd/risk-stratification - High/medium/low risk breakdown
+- POST /api/ncd/register - Enroll new patient
+- POST /api/ncd/followup - Log visit
+
+### 3.2 Pregnancy Follow-Up Registry [Maternal Health]
+
+Track continuum of maternal care from OPD through IPD delivery
+
+### 3.3 TypeScript Migration [Code Quality]
+
+Gradual migration to TypeScript:
+- Phase 3a: db/, middleware/, ai/ modules (Week 1-2)
+- Phase 3b: routes/ modules (Week 3-4)
+- Phase 3c: React components to .tsx (Week 5+)
+
+### 3.4 Community Health Center Integration [Scalability]
+
+Link primary care follow-ups to community health volunteers
+
+### 3.5 Advanced Analytics Dashboard [Executive Insights]
+
+Add 30/90-day trends, YoY comparisons, predictions
+
+---
+
+End of Development Phases
+

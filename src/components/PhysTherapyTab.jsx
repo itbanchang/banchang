@@ -8,9 +8,247 @@ import {
     Cell, ComposedChart, Area, Line, PieChart, Pie
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
+import AIInsightCard from './shared/AIInsightCard.jsx';
+import MetricsStrip from './shared/MetricsStrip.jsx';
 
-export default function PhysTherapyTab() {
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Module-level components (defined outside main export to prevent remount)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function PTWaitlistPanel({ today, analytics, loading }) {
+    if (loading) return (
+        <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div className="skeleton" style={{ height: '12px', width: '120px' }} />
+                <div className="skeleton" style={{ height: '60px', borderRadius: '10px' }} />
+            </div>
+        </div>
+    );
+
+    const total = today?.total ?? 0;
+    const completed = today?.completed ?? 0;
+    const waiting = today?.waiting ?? 0;
+    const avgWait = analytics?.avg_wait_time ?? 0;
+    const peakHour = analytics?.peak_hour;
+    const currentHour = new Date().getHours();
+    const isPeak = peakHour && Math.abs(peakHour.hour - currentHour) <= 1;
+    const estWaitNext = isPeak ? Math.round(avgWait * 1.3) : avgWait;
+
+    const queueStatus = waiting === 0 ? 'empty' : waiting <= 3 ? 'normal' : waiting <= 8 ? 'busy' : 'critical';
+    const queueConfig = {
+        empty:    { color: '#10b981', label: 'ว่าง', icon: '✅' },
+        normal:   { color: '#0ea5e9', label: 'ปกติ', icon: '🟢' },
+        busy:     { color: '#f59e0b', label: 'ยุ่ง', icon: '🟡' },
+        critical: { color: '#f43f5e', label: 'วิกฤต', icon: '🔴' },
+    };
+    const qc = queueConfig[queueStatus];
+
+    const hourly = (today?.hourly || []).filter(h => h.count > 0);
+    const maxCount = Math.max(...hourly.map(h => h.count), 1);
+
+    return (
+        <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ width: '3px', height: '16px', background: `linear-gradient(180deg, ${qc.color}, ${qc.color}88)`, borderRadius: '99px' }} />
+                    <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--md-text-primary)' }}>⏳ Waitlist Management — วันนี้</span>
+                </div>
+                <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 10px', borderRadius: '99px', background: `${qc.color}15`, color: qc.color, border: `1px solid ${qc.color}25` }}>
+                    {qc.icon} {qc.label} · {waiting} รอ
+                </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px', marginBottom: '1rem' }}>
+                {[
+                    { label: 'รับบริการทั้งหมด', value: total, color: '#0ea5e9', unit: 'ราย' },
+                    { label: 'เสร็จสิ้นแล้ว', value: completed, color: '#10b981', unit: 'ราย' },
+                    { label: 'รอรับบริการ', value: waiting, color: qc.color, unit: 'ราย' },
+                    { label: 'เวลารอ Est.', value: estWaitNext, color: estWaitNext <= 20 ? '#10b981' : estWaitNext <= 30 ? '#f59e0b' : '#f43f5e', unit: 'min' },
+                ].map((m, i) => (
+                    <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: `${m.color}08`, border: `1px solid ${m.color}20`, textAlign: 'center' }}>
+                        <p style={{ margin: '0 0 3px', fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{m.label}</p>
+                        <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: m.color, lineHeight: 1 }}>{m.value}</p>
+                        <p style={{ margin: '2px 0 0', fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{m.unit}</p>
+                    </div>
+                ))}
+            </div>
+
+            {total > 0 && (
+                <div style={{ marginBottom: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981' }}>✅ สำเร็จ {completed} ({Math.round(completed / total * 100)}%)</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: qc.color }}>⏳ รอ {waiting} ราย</span>
+                    </div>
+                    <div style={{ height: '8px', borderRadius: '99px', overflow: 'hidden', background: `${qc.color}15`, display: 'flex' }}>
+                        <div style={{ width: `${Math.min(100, completed / total * 100)}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
+                        <div style={{ flex: 1, background: `${qc.color}20`, borderRadius: '0 99px 99px 0' }} />
+                    </div>
+                </div>
+            )}
+
+            {hourly.length > 0 && (
+                <div>
+                    <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>
+                        🕐 รูปแบบผู้ป่วยวันนี้ (รายชั่วโมง)
+                        {isPeak && <span style={{ marginLeft: '8px', color: '#f43f5e', fontWeight: 800 }}>⚡ ช่วง Peak ตอนนี้!</span>}
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '44px' }}>
+                        {hourly.map((h, i) => {
+                            const heightPct = Math.max((h.count / maxCount) * 100, 4);
+                            const isNow = h.hour === currentHour;
+                            const isPeakBar = peakHour && h.hour === peakHour.hour;
+                            return (
+                                <div key={i} title={`${h.label}: ${h.count} ราย`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: '2px' }}>
+                                    <div style={{ width: '100%', height: `${heightPct}%`, background: isNow ? '#0ea5e9' : isPeakBar ? '#f43f5e' : 'rgba(14,165,233,.3)', borderRadius: '2px 2px 0 0', transition: 'height 0.6s ease' }} />
+                                    <span style={{ fontSize: '8px', color: isNow ? '#0ea5e9' : 'var(--md-text-tertiary)', fontWeight: isNow ? 800 : 500 }}>{h.hour}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {isPeak && (
+                <div style={{ marginTop: '10px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.2)' }}>
+                    <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>
+                        ⚡ ขณะนี้อยู่ช่วง Peak Hour ({peakHour.label}) — เฉลี่ย {peakHour.avg} ราย/วัน · เวลารอ Est. ≈ {estWaitNext} min
+                    </p>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function PTAIInsightPanel({ analytics, loading }) {
+    if (loading || !analytics) return null;
+
+    const a = analytics;
+    const avgWait = a.avg_wait_time ?? 0;
+    const completionRate = a.completion_rate ?? 0;
+    const dropoutCount = a.dropout_count ?? 0;
+    const revisitRate = a.revisit_rate ?? 0;
+    const avgRevenue = a.avg_revenue_per_visit ?? 0;
+    const totalRevenue = a.total_revenue ?? 0;
+    const avgDaily = a.avg_daily_visits ?? 0;
+    const ppi = a.ppi ?? 0;
+    const waitSlaPct = a.wait_sla_pct ?? 0;
+    const waitOver30 = a.wait_over_30m ?? 0;
+    const peakHour = a.peak_hour?.label || '—';
+    const monthlyTrend = a.monthly_trend || [];
+
+    const lastM = monthlyTrend[monthlyTrend.length - 1];
+    const prevM = monthlyTrend[monthlyTrend.length - 2];
+    const trendVisits = lastM && prevM ? (lastM.visits || 0) - (prevM.visits || 0) : 0;
+    const trendRev = lastM && prevM ? (lastM.total_rev || 0) - (prevM.total_rev || 0) : 0;
+    const trendLabel = trendVisits > 0 ? '📈 เพิ่มขึ้น' : trendVisits < 0 ? '📉 ลดลง' : '➡️ คงที่';
+
+    const dropoutRevLoss = dropoutCount * avgRevenue;
+
+    const insights = [
+        {
+            title: 'PT Operational Intelligence',
+            icon: '⚙️',
+            priority: avgWait > 30 ? 'HIGH' : avgWait > 20 ? 'MEDIUM' : 'LOW',
+            summary: avgWait > 20
+                ? `เวลารอ ${avgWait} min เกินมาตรฐาน — SLA ≤30min ผ่านเพียง ${waitSlaPct}% · Peak: ${peakHour}`
+                : `Flow ดี — เวลารอ ${avgWait} min · SLA pass ${waitSlaPct}% · Peak: ${peakHour}`,
+            analysis: `ผู้ป่วยเฉลี่ย ${avgDaily} ราย/วัน · ${waitOver30} ครั้งรอ >30min · Trend: ${trendLabel} (${Math.abs(trendVisits)} ราย MoM) · PPI ${ppi}/100`,
+            recommendation: avgWait > 20
+                ? `(1) Appointment scheduling แทน Walk-in (2) Buffer time ระหว่าง session (3) เพิ่ม Physio ช่วง Peak ${peakHour} เป้าหมาย: Wait ≤15 min`
+                : `(1) Monitor SLA weekly (2) Appointment system ต่อเนื่อง (3) Capacity plan ล่วงหน้า 1 เดือน`,
+            confidence: avgWait > 20 ? 91 : 87,
+            gradient: '#0ea5e9',
+            gradientFrom: 'rgba(14,165,233,.08)',
+            gradientTo: 'rgba(2,132,199,.03)',
+            borderColor: 'rgba(14,165,233,.25)',
+        },
+        {
+            title: 'Rehab Quality Intelligence',
+            icon: '🏥',
+            priority: completionRate < 85 ? 'HIGH' : completionRate < 95 ? 'MEDIUM' : 'LOW',
+            summary: completionRate < 90
+                ? `Completion ${completionRate}% ต่ำกว่าเป้า 95% — Dropout ${dropoutCount} ราย · Revisit ${revisitRate}%`
+                : `Completion ${completionRate}% ดีเยี่ยม — Dropout เพียง ${dropoutCount} ราย · Revisit ${revisitRate}%`,
+            analysis: `Dropout ${dropoutCount} ราย × ฿${avgRevenue.toLocaleString()}/visit = Revenue loss ≈ ฿${dropoutRevLoss.toLocaleString()} · Revisit ${revisitRate}% (แยก Planned vs Unplanned)`,
+            recommendation: completionRate < 90
+                ? `(1) SMS เตือนก่อนนัด 24h (2) Home exercise program ทดแทน session สั้น (3) Flexible schedule บ่าย/เย็น (4) เป้าหมาย: Completion ≥95%`
+                : `(1) Patient satisfaction survey (2) Audit Revisit cases (3) Outcome measurement: ROM/Pain score ก่อน-หลัง treatment`,
+            confidence: 88,
+            gradient: '#10b981',
+            gradientFrom: 'rgba(16,185,129,.08)',
+            gradientTo: 'rgba(5,150,105,.03)',
+            borderColor: 'rgba(16,185,129,.25)',
+        },
+        {
+            title: 'PT Financial Intelligence',
+            icon: '💰',
+            // PT_REV_TARGET = 400 THB/visit (basic PT session minimum)
+            priority: avgRevenue < 400 ? 'HIGH' : avgRevenue < 600 ? 'MEDIUM' : 'LOW',
+            summary: avgRevenue < 400
+                ? `Revenue/Visit ฿${avgRevenue.toLocaleString()} ต่ำกว่าเกณฑ์ (≥฿400) — ตรวจสอบ billing ครบถ้วน`
+                : `Revenue/Visit ฿${avgRevenue.toLocaleString()} · รายได้รวม ฿${(totalRevenue / 1000).toFixed(0)}k/30d · ${trendRev >= 0 ? '+' : ''}฿${(Math.abs(trendRev) / 1000).toFixed(0)}k MoM`,
+            analysis: `รายได้รวม ฿${(totalRevenue / 1000).toFixed(0)}k / 30 วัน · ${(a.total_visits || 0).toLocaleString()} visits · Max ฿${(a.max_revenue || 0).toLocaleString()}/visit · Daily ฿${(a.daily_revenue || 0).toLocaleString()}`,
+            recommendation: avgRevenue < 400
+                ? `(1) Audit ทุก Modality charge (TENS/US/Laser) (2) Rehab packages: PT+Hydro+Equipment (3) Verify procedure coding (4) เป้าหมาย: Rev/Visit ≥฿500`
+                : `(1) Sports medicine program (2) Specialized packages: Neuro/Ortho/Sports (3) Referral ขยาย จาก Ortho/Neuro/Surgery (4) Extended hours`,
+            confidence: 84,
+            gradient: '#f59e0b',
+            gradientFrom: 'rgba(245,158,11,.08)',
+            gradientTo: 'rgba(217,119,6,.03)',
+            borderColor: 'rgba(245,158,11,.25)',
+        },
+        {
+            title: 'Patient Demographics Intelligence',
+            icon: '👥',
+            priority: (a.elderly_pct ?? 0) > 50 ? 'MEDIUM' : 'LOW',
+            summary: `Unique patients ${a.unique_patients ?? 0} (30d) · Avg ${avgDaily} ราย/วัน · ${(a.elderly_pct ?? 0) > 40 ? 'ผู้สูงอายุสัดส่วนสูง ต้องปรับ Protocol' : 'สัดส่วนผู้ป่วยสมดุล'}`,
+            analysis: `${a.unique_patients ?? 0} unique patients จาก ${(a.total_visits ?? 0).toLocaleString()} visits · Revisit ${revisitRate}% · ${(a.elderly_pct ?? 0) > 40 ? 'Elderly-dominant group ต้องการ Gentle exercises + Longer sessions' : 'Mixed age group — จัดกลุ่ม Treatment protocol ตาม Age'} · Dropout ${dropoutCount} ราย (${avgRevenue > 0 ? `Rev loss ≈ ฿${dropoutRevLoss.toLocaleString()}` : '—'})`,
+            recommendation: (a.elderly_pct ?? 0) > 40
+                ? '(1) Elderly-adapted PT protocol (2) Home exercise video program (3) Caregiver training (4) Priority queue สำหรับผู้สูงอายุ (5) Fall prevention program'
+                : '(1) Segment patients by condition: Ortho/Neuro/Sports (2) Group exercise class ลดต้นทุนต่อหัว (3) Outcome tracking: ROM/Pain score per visit',
+            confidence: 82,
+            gradient: '#8b5cf6',
+            gradientFrom: 'rgba(139,92,246,.08)',
+            gradientTo: 'rgba(109,40,217,.03)',
+            borderColor: 'rgba(139,92,246,.25)',
+        },
+    ];
+
+    return (
+        <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #6d28d9)', borderRadius: '99px' }} />
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                    🧠 AI Intelligence Module — กายภาพบำบัด
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                    Rule-based · 30d data
+                </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                {insights.map((ins, i) => (
+                    <AIInsightCard
+                        key={i}
+                        title={ins.title}
+                        icon={ins.icon}
+                        priority={ins.priority}
+                        summary={ins.summary}
+                        analysis={ins.analysis}
+                        recommendation={ins.recommendation}
+                        confidence={ins.confidence}
+                        lastUpdated="30d avg"
+                        gradient={ins.gradient}
+                        gradientFrom={ins.gradientFrom}
+                        gradientTo={ins.gradientTo}
+                        borderColor={ins.borderColor}
+                    />
+                ))}
+            </div>
+        </>
+    );
+}
+
+function PhysTherapyTab() {
     const { state, fetchData } = useDashboard();
     const ptToday = state.ptToday;
     const ptAnalytics = state.ptAnalytics;
@@ -26,6 +264,171 @@ export default function PhysTherapyTab() {
 
     return (
         <div className="space-y-4 animate-fade-in pb-8">
+            {/* ━━━ Premium MetricsStrip — 8 KPIs ━━━ */}
+            {!loading.ptToday && ptToday && (() => {
+                const t = ptToday;
+                const total = t.total ?? 0;
+                const completed = t.completed ?? 0;
+                const waiting = t.waiting ?? 0;
+                const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+                const yesterdayTotal = t.yesterday_total ?? t.yesterday ?? 0;
+                const dayChange = yesterdayTotal > 0 ? Math.round(((total - yesterdayTotal) / yesterdayTotal) * 100) : 0;
+
+                return (
+                    <MetricsStrip columns={4} gap="10px" metrics={[
+                        { label: 'ผู้ป่วยวันนี้', value: total, icon: '🏋️', status: total > 0 ? 'success' : 'neutral', trend: dayChange !== 0 ? `${dayChange > 0 ? '+' : ''}${dayChange}% vs เมื่อวาน` : undefined },
+                        { label: 'เสร็จสิ้น', value: `${pct}%`, icon: '✅', status: pct >= 80 ? 'success' : pct >= 50 ? 'warning' : 'danger' },
+                        { label: 'รอรับบริการ', value: waiting, unit: 'ราย', icon: '⏳', status: waiting <= 3 ? 'success' : waiting <= 8 ? 'warning' : 'danger' },
+                        { label: 'Unique Patients', value: t.unique_patients ?? 0, unit: 'คน', icon: '👥', status: 'info' },
+                        { label: 'ผู้สูงอายุ', value: t.elderly ?? 0, unit: 'ราย', icon: '👴', status: (t.elderly ?? 0) > 10 ? 'warning' : 'success' },
+                        { label: 'เพศชาย', value: t.male ?? 0, unit: 'คน', icon: '♂️', status: 'info' },
+                        { label: 'เพศหญิง', value: t.female ?? 0, unit: 'คน', icon: '♀️', status: 'info' },
+                        { label: 'สัดส่วนเสร็จ', value: `${completed}/${total}`, icon: '📊', status: pct >= 80 ? 'success' : 'warning' },
+                    ]} />
+                );
+            })()}
+
+            {/* ━━━ Revenue Fiscal Summary Cards ━━━ */}
+            {!loading.ptRevenueFiscal && state.ptRevenueFiscal && (() => {
+                const fd = state.ptRevenueFiscal;
+                const years = fd?.fiscal_years || [];
+                if (years.length < 2) return null;
+
+                const latestYear = years[years.length - 1];
+                const prevYear = years[years.length - 2];
+                const totalRev = latestYear.total_revenue || 0;
+                const prevRev = prevYear.total_revenue || 0;
+
+                const compRevLatest = latestYear.comparable_revenue ?? totalRev;
+                const compRevPrev = prevYear.comparable_revenue ?? prevRev;
+
+                const yoyGrowth = compRevPrev > 0 ? ((compRevLatest - compRevPrev) / compRevPrev) * 100 : 0;
+                const avgRevPerVisit = latestYear.avg_revenue_per_visit || 0;
+
+                let growthStatus = '';
+                let recommendations = [];
+
+                if (yoyGrowth >= 5) {
+                    growthStatus = '🟢 แนวโน้มการเติบโตดีเยี่ยม โอกาสขยาย Service Line';
+                    recommendations = [
+                        { tag: 'Sports Medicine', text: 'ขยายบริการ Sports PT clinic สำหรับนักกีฬา/ออกกำลังกาย มี Margin สูง' },
+                        { tag: 'Premium Rehab', text: 'เพิ่มบริการ Hydrotherapy / Robotic-assisted PT สำหรับกลุ่ม Premium' },
+                        { tag: 'Wellness Packages', text: 'จัดทำ Rehab packages รวม PT+Equipment+Home program เพิ่มรายได้' }
+                    ];
+                } else if (yoyGrowth >= 0) {
+                    growthStatus = '🟡 การเติบโตทรงตัว เน้นเพิ่ม Revenue per Visit';
+                    recommendations = [
+                        { tag: 'Modality Upsell', text: 'เสนอ Modality เพิ่มเติม (US/TENS/Laser/IPC) ในทุก Session เพื่อเพิ่ม Rev/Visit' },
+                        { tag: 'Recall System', text: 'ระบบนัดหมาย PT ต่อเนื่อง SMS/LINE อัตโนมัติ ลด Dropout rate' },
+                        { tag: 'Cross-Referral', text: 'เพิ่ม Referral จาก Ortho/Neuro/Surgery → PT เพิ่ม Volume' }
+                    ];
+                } else {
+                    growthStatus = '🔴 รายได้หดตัว ต้องการแผนกระตุ้นและลดรอยรั่วทันที';
+                    recommendations = [
+                        { tag: 'Billing Audit', text: 'ตรวจสอบ Missing charges — Modality/Equipment ที่ทำแล้วไม่ได้ Charge' },
+                        { tag: 'Throughput', text: 'ลดคอขวด — จัด Fast Track PT สำหรับ Follow-up sessions' },
+                        { tag: 'Patient Acquisition', text: 'โปรโมท PT clinic ผ่าน Social Media + Corporate wellness contracts' }
+                    ];
+                }
+
+                return (
+                    <div style={{ marginTop: '0.5rem', marginBottom: '1.25rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                            <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #0ea5e9, #0284c7)', borderRadius: '99px' }} />
+                            <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                                🧠 Revenue Intelligence Hub
+                            </span>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                EXECUTIVE ADVISORY
+                            </span>
+                        </div>
+
+                        <div className="glass-card" style={{ padding: '1.5rem', background: 'linear-gradient(135deg, rgba(14,165,233,.05) 0%, rgba(2,132,199,.02) 100%)', border: '1px solid rgba(14,165,233,.2)' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.25rem' }}>
+                                {/* Status Bar */}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '12px', borderBottom: '1px solid rgba(203,213,225,.2)' }}>
+                                    <div>
+                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            AI Revenue Growth Diagnosis
+                                        </p>
+                                        <p style={{ margin: '4px 0 0', fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--md-text-primary)' }}>
+                                            {growthStatus}
+                                        </p>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>YoY Growth</p>
+                                        <p style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e', letterSpacing: '-0.02em' }}>
+                                            {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth.toFixed(1)}%
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Insight & Actions */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '1.5rem', alignItems: 'start' }}>
+                                    {/* Left: Deep Insight */}
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                            <span style={{ fontSize: '16px' }}>👁️</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Financial Deep Insight</span>
+                                        </div>
+                                        <p style={{ fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500, background: 'var(--md-surface-2)', padding: '10px 12px', borderRadius: '8px', margin: 0, border: '1px solid var(--md-border)' }}>
+                                            {avgRevPerVisit < 400
+                                                ? `⚠️ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} สะท้อนกลุ่มผู้ป่วยที่ทำ Basic exercise เท่านั้น — เสนอให้เพิ่ม Modality (US/TENS/Laser) ทุก session`
+                                                : avgRevPerVisit > 800
+                                                    ? `✅ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} แสดงถึง Service mix ที่ดี — พิจารณา VIP Rehab membership`
+                                                    : `📊 Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} อยู่ในเกณฑ์มาตรฐาน — เพิ่ม Specialized packages เพื่ออัปยอด`}
+                                        </p>
+                                    </div>
+
+                                    {/* Right: Director Actions */}
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                            <span style={{ fontSize: '16px' }}>🎯</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Recommended Actions for Director</span>
+                                        </div>
+                                        <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11.5px', color: 'var(--md-text-secondary)', fontWeight: 500, lineHeight: 1.5 }}>
+                                            {recommendations.map((rec, i) => (
+                                                <li key={i}>
+                                                    <strong style={{ color: '#0ea5e9' }}>{rec.tag}: </strong>
+                                                    {rec.text}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ━━━ Top Diagnoses (Today) ━━━ */}
+            {!loading.ptToday && ptToday?.top_diagnoses && ptToday.top_diagnoses.length > 0 && (
+                <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                        <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #0ea5e9, #0284c7)', borderRadius: '99px' }} />
+                        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                            🏷️ Top Diagnoses วันนี้ — กายภาพบำบัด
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                            Real-time · HOSxP XE
+                        </span>
+                    </div>
+                    <div className="glass-card" style={{ padding: '1rem 1.25rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
+                            {(ptToday.top_diagnoses || []).slice(0, 10).map((d, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 8px', borderRadius: '8px', background: i === 0 ? 'rgba(14,165,233,.06)' : i < 3 ? 'rgba(14,165,233,.02)' : 'transparent' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: i < 3 ? '#0ea5e9' : '#94a3b8', width: '18px', textAlign: 'center', flexShrink: 0 }}>{i + 1}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '52px', flexShrink: 0 }}>{d.icd10 || d.code || '—'}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || d.diagnosis || '—'}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#0ea5e9', flexShrink: 0 }}>{d.count ?? d.visits ?? 0}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
+
             {/* ━━━ Hero KPI Strip — Professional Design ━━━ */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))', gap: '12px' }}>
 
@@ -54,24 +457,33 @@ export default function PhysTherapyTab() {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#0ea5e9', margin: 0 }}>
+                                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#0ea5e9', margin: 0 }}>
                                         🏋️ กายภาพบำบัดวันนี้
                                     </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                         Real-time
                                     </span>
                                 </div>
 
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                                     <span style={{ fontSize: '42px', fontWeight: 900, color: '#0ea5e9', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(14,165,233,.3)' }}>
-                                        {total}
+                                        {total.toLocaleString('th-TH')}
                                     </span>
                                     <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>ราย</span>
+                                    {today.today_vs_yesterday_pct !== undefined && today.today_vs_yesterday_pct !== 0 && (
+                                        <span style={{
+                                            fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
+                                            background: today.today_vs_yesterday_pct > 0 ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)',
+                                            color: today.today_vs_yesterday_pct > 0 ? '#10b981' : '#ef4444',
+                                        }}>
+                                            {today.today_vs_yesterday_pct > 0 ? '▲' : '▼'} {Math.abs(today.today_vs_yesterday_pct)}% vs เมื่อวาน
+                                        </span>
+                                    )}
                                     <span style={{
                                         fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
                                         background: 'rgba(16,185,129,.1)', color: '#10b981',
                                     }}>
-                                        ✅ {completed} เสร็จ ({pct}%)
+                                        ✅ {completed.toLocaleString('th-TH')} เสร็จ ({pct}%)
                                     </span>
                                     {waiting > 0 && (
                                         <span style={{
@@ -89,11 +501,11 @@ export default function PhysTherapyTab() {
                                 {/* Completion bar */}
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed} ({pct}%)</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f59e0b' }}>รอรับบริการ {waiting}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed.toLocaleString('th-TH')} ({pct}%)</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>รอรับบริการ {waiting.toLocaleString('th-TH')}</span>
                                     </div>
                                     <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(245,158,11,.12)', display: 'flex' }}>
-                                        <div style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
+                                        <div style={{ width: `${Math.min(100, pct)}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
                                         <div style={{ flex: 1, background: 'rgba(245,158,11,.2)', borderRadius: '0 99px 99px 0' }} />
                                     </div>
                                 </div>
@@ -105,15 +517,16 @@ export default function PhysTherapyTab() {
                 {/* ── Mini KPI Cards ── */}
                 {[
                     {
-                        title: 'รอเฉลี่ย', value: `${today.avg_wait_time || 0} min`, icon: '⏱️', unit: '',
-                        grad: (today.avg_wait_time ?? 0) > 30 ? ['#f43f5e', '#dc2626'] : (today.avg_wait_time ?? 0) > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
-                        glow: 'rgba(14,165,233,.2)',
+                        title: 'Unique Patients', value: today.unique_patients ?? 0, icon: '👥', unit: 'คน',
+                        grad: ['#0ea5e9', '#0284c7'], glow: 'rgba(14,165,233,.2)',
                         loading: loading.ptToday,
                     },
                     {
-                        title: 'รอรับบริการ', value: today.waiting ?? 0, icon: '⏳', unit: 'ราย',
-                        grad: (today.waiting ?? 0) > 10 ? ['#f43f5e', '#dc2626'] : ['#f59e0b', '#d97706'],
-                        glow: 'rgba(245,158,11,.2)',
+                        title: 'สำเร็จวันนี้',
+                        value: (today.total ?? 0) > 0 ? `${Math.round((today.completed ?? 0) / today.total * 100)}%` : '—',
+                        icon: '✅', unit: '',
+                        grad: (today.total > 0 && (today.completed / today.total) >= 0.8) ? ['#10b981', '#059669'] : ['#f59e0b', '#d97706'],
+                        glow: 'rgba(16,185,129,.2)',
                         loading: loading.ptToday,
                     },
                     {
@@ -146,7 +559,7 @@ export default function PhysTherapyTab() {
                         ) : (
                             <>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
                                         {kpi.title}
                                     </span>
                                     <span style={{ fontSize: '18px' }}>{kpi.icon}</span>
@@ -163,13 +576,16 @@ export default function PhysTherapyTab() {
                 ))}
             </div>
 
+            {/* ━━━ Waitlist Management ━━━ */}
+            <PTWaitlistPanel today={ptToday} analytics={ptAnalytics} loading={loading.ptToday} />
+
             {/* ━━━━━ PPI + Advanced Physical Therapy Analytics Panel ━━━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                 <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #0ea5e9, #0284c7)', borderRadius: '99px' }} />
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     🏋️ Advanced Analytics — Physical Therapy
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>30d · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>30d · HOSxP XE</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
@@ -316,16 +732,16 @@ export default function PhysTherapyTab() {
                                         <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>PT Performance Index</div>
                                     </div>
                                     <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>PPI Components</p>
+                                        <p style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>PPI Components</p>
                                         {ppiRadar.map((c, i) => {
                                             const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
                                                     <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
                                                 </div>
                                             );
                                         })}
@@ -351,22 +767,22 @@ export default function PhysTherapyTab() {
                                                             <span style={{ fontSize: '18px', flexShrink: 0 }}>{k.icon}</span>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</p>
-                                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
+                                                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
                                                             </div>
                                                             <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
                                                             </div>
                                                         </div>
                                                         {k.problem && (
                                                             <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
                                                             </div>
                                                         )}
                                                         {k.recommend && (
                                                             <div style={{ marginTop: '4px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.recommend}</p>
                                                             </div>
                                                         )}
@@ -449,11 +865,11 @@ export default function PhysTherapyTab() {
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
                                     {(a.top_diagnoses || []).slice(0, 8).map((d, i) => (
                                         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '8px', background: i === 0 ? 'rgba(14,165,233,.06)' : 'transparent' }}>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#0ea5e9', width: '16px', textAlign: 'center' }}>{i + 1}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#0ea5e9', flexShrink: 0 }}>{d.count}</span>
-                                            <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>฿{d.avg_rev?.toLocaleString()}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#0ea5e9', width: '16px', textAlign: 'center' }}>{i + 1}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#0ea5e9', flexShrink: 0 }}>{d.count}</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>฿{d.avg_rev?.toLocaleString()}</span>
                                         </div>
                                     ))}
                                 </div>
@@ -462,6 +878,9 @@ export default function PhysTherapyTab() {
                     );
                 })()}
             </div>
+
+            {/* ━━━ AI Intelligence Module ━━━ */}
+            <PTAIInsightPanel analytics={ptAnalytics} loading={loading.ptAnalytics} />
 
             {/* ━━━━━━ 🔥 Deep Root-Cause Analysis Panel — Physical Therapy ━━━━━━ */}
             {!loading.ptAnalytics && ptAnalytics && (() => {
@@ -550,14 +969,14 @@ export default function PhysTherapyTab() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                             <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #f43f5e, #f59e0b)', borderRadius: '99px' }} />
                             <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>🔥 Deep Root-Cause Analysis</span>
-                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis PT</span>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis PT</span>
                         </div>
                         <div className={`glass-card ${urgencyScore >= 7 ? 'alert-critical' : urgencyScore >= 4 ? 'alert-warning' : ''}`} style={{ padding: '1.5rem', border: `1.5px solid ${urgencyColor}25` }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '1.5rem', alignItems: 'center', padding: '1rem 1.25rem', borderRadius: '14px', background: `linear-gradient(135deg, ${urgencyColor}08, ${urgencyColor}03)`, border: `1px solid ${urgencyColor}20`, marginBottom: '1.25rem' }}>
                                 <div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                                         <span style={{ fontSize: '11px', fontWeight: 800, color: urgencyColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ระดับความเร่งด่วนรวม — กายภาพบำบัด</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px', border: `1px solid ${urgencyColor}25` }}>{urgencyLabel}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px', border: `1px solid ${urgencyColor}25` }}>{urgencyLabel}</span>
                                     </div>
                                     <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>
                                         พบ <strong style={{ color: '#f43f5e' }}>{critCount} วิกฤต</strong>
@@ -568,14 +987,14 @@ export default function PhysTherapyTab() {
                                         <div style={{ height: '100%', width: `${urgencyScore * 10}%`, background: 'linear-gradient(90deg, #10b981, #f59e0b, #f43f5e)', borderRadius: '99px', transition: 'width 1s ease' }} />
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
-                                        <span style={{ fontSize: '9px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
-                                        <span style={{ fontSize: '9px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
-                                        <span style={{ fontSize: '9px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
+                                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
+                                        <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
+                                        <span style={{ fontSize: '11px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
                                     </div>
                                 </div>
                                 <div style={{ textAlign: 'center' }}>
                                     <div className="urgency-score-pulse" style={{ fontSize: '36px', fontWeight: 900, color: urgencyColor, lineHeight: 1 }}>{Math.round(urgencyScore)}<span style={{ fontSize: '16px', fontWeight: 700 }}>/10</span></div>
-                                    <div style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
+                                    <div style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
                                 </div>
                             </div>
 
@@ -585,21 +1004,21 @@ export default function PhysTherapyTab() {
                                         <div style={{ padding: '10px 16px', background: `linear-gradient(90deg, ${p.color}12, transparent)`, borderBottom: `1px solid ${p.color}15`, display: 'flex', alignItems: 'center', gap: '10px' }}>
                                             {p.priority > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%', background: p.color, color: '#fff', fontSize: '11px', fontWeight: 900, flexShrink: 0 }}>{p.priority}</span>}
                                             <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--md-text-primary)', lineHeight: 1.4 }}>{p.title}</span>
-                                            <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: '999px', background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25` }}>
+                                            <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: '999px', background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25` }}>
                                                 {p.severity === 'critical' ? '🔴 CRITICAL' : p.severity === 'warning' ? '🟡 WARNING' : '🟢 GOOD'}
                                             </span>
                                         </div>
                                         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔍 ปัญหาที่แท้จริง (Root Cause)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔍 ปัญหาที่แท้จริง (Root Cause)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.rootCause}</p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ผลกระทบลูกโซ่ (Cascade Effect)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ผลกระทบลูกโซ่ (Cascade Effect)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.cascadeEffect}</p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.fixFirst}</p>
                                             </div>
                                         </div>
@@ -641,7 +1060,7 @@ export default function PhysTherapyTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     💰 รายได้โดยประมาณ กายภาพบำบัด — ปีงบประมาณ (3 ปีย้อนหลัง)
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
             </div>
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
                 {loading.ptRevenueFiscal ? (
@@ -674,17 +1093,17 @@ export default function PhysTherapyTab() {
                                         <div key={fi} style={{ padding: '0.75rem 1rem', borderRadius: '12px', background: isLatest ? `linear-gradient(135deg, ${color}12, ${color}05)` : `${color}06`, border: `1px solid ${color}${isLatest ? '30' : '15'}` }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                                                 <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color }} />
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fy.fiscal_label}</span>
-                                                {isLatest && <span style={{ fontSize: '9px', fontWeight: 700, color: '#0ea5e9', background: 'rgba(14,165,233,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>}
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fy.fiscal_label}</span>
+                                                {isLatest && <span style={{ fontSize: '11px', fontWeight: 700, color: '#0ea5e9', background: 'rgba(14,165,233,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>}
                                             </div>
                                             <p style={{ fontSize: '22px', fontWeight: 900, color, margin: '0 0 2px', letterSpacing: '-0.02em' }}>฿{(fy.total_revenue / 1e6).toFixed(1)}M</p>
-                                            <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
+                                            <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
                                             </p>
                                             {isLatest && prevYear && (
                                                 <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>{yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%</span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
+                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
                                                 </div>
                                             )}
                                         </div>
@@ -720,3 +1139,5 @@ export default function PhysTherapyTab() {
         </div>
     );
 }
+
+export default React.memo(PhysTherapyTab);

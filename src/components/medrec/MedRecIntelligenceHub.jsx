@@ -1,100 +1,172 @@
 // ============================================================
-// MedRecIntelligenceHub — AI Medical Records Intelligence Hub
-// Revenue Recovery, Quality Monitoring, Productivity Benchmark
+// MedRecIntelligenceHub — Executive AI Command Center
+// Premium glassmorphism with data-driven insight cards
 // ============================================================
 import React from 'react';
 
-/**
- * AI Medical Records Intelligence Hub
- * 
- * Top-level executive summary with 3 strategic KPI cards:
- * 1. Revenue Recovery Target — pending revenue from uncoded VN/AN (30d)
- * 2. Documentation Quality — OPD coding completeness (today)
- * 3. Coder Productivity — coding throughput score (30d)
- * 
- * Each card includes: formula, meaning, benchmark (HA/สปสช.), and AI recommendation.
- * 
- * @param {Object} today - Today's MedRec data
- * @param {Object} analytics - Analytics data with AI insights
- */
 export default function MedRecIntelligenceHub({ today, analytics }) {
+    const opdRate = today.quality_score || 0;
+    const pendingCodes = today.pending_codes || 0;
+    const prodScore = analytics.ai_insights?.coding_productivity?.score || 0;
+    const pendingCount = analytics.ai_insights?.coding_productivity?.pending_count || 0;
+    const totalPending = analytics.ai_insights?.revenue_impact?.total_pending || 0;
+    const opdPending = analytics.ai_insights?.revenue_impact?.opd_pending || 0;
+    const ipdPending = analytics.ai_insights?.revenue_impact?.ipd_pending || 0;
+    const totalRW = Number(today.ipd_total_rw || 0);
+    const avgRW = Number(today.ipd_avg_rw || 0);
+    const estRevenue = Math.round(totalRW * 8350);
+
+    // Revenue risk level
+    const revenueRisk = totalPending > 200000 ? 'CRITICAL' : totalPending > 50000 ? 'WARNING' : 'NORMAL';
+    const revenueRiskColor = { CRITICAL: '#ef4444', WARNING: '#f59e0b', NORMAL: '#10b981' }[revenueRisk];
+
+    const cards = [
+        {
+            gradient: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+            accent: '#818cf8',
+            icon: '💰',
+            title: 'ภาพรวมรายได้ DRG',
+            badge: 'REVENUE INTELLIGENCE',
+            mainValue: `฿${estRevenue.toLocaleString()}`,
+            mainLabel: 'รายได้ประมาณการ (ปีงบฯ)',
+            metrics: [
+                { label: 'Total RW', value: totalRW.toLocaleString(), color: '#a5b4fc' },
+                { label: 'Avg RW', value: avgRW.toFixed(2), color: '#818cf8' },
+                { label: 'อัตรา', value: `฿${(8350).toLocaleString()}/RW`, color: '#6366f1' },
+            ],
+            insight: avgRW >= 2.0
+                ? '💡 RW สูง — เคสซับซ้อน ควรตรวจสอบ CC/MCC ให้ครบถ้วนเพื่อไม่ให้สูญเสียรายได้'
+                : '💡 มีโอกาสเพิ่ม Revenue จาก CDI Review — ตรวจสอบ Secondary Diagnosis',
+            bottomLabel: `📊 สปสช. Base Rate ≈฿8,350/RW · ข้อมูล 30 วันล่าสุด`,
+        },
+        {
+            gradient: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+            accent: revenueRiskColor,
+            icon: '🔍',
+            title: 'Revenue Leakage Monitor',
+            badge: revenueRisk === 'CRITICAL' ? '🚨 CRITICAL' : revenueRisk === 'WARNING' ? '⚠️ WARNING' : '✅ NORMAL',
+            mainValue: `฿${totalPending.toLocaleString()}`,
+            mainLabel: 'รายได้ค้างเบิก (30 วัน)',
+            metrics: [
+                { label: 'OPD ค้าง', value: `฿${opdPending.toLocaleString()}`, color: '#38bdf8' },
+                { label: 'IPD ค้าง', value: `฿${ipdPending.toLocaleString()}`, color: '#34d399' },
+                { label: 'เคสค้าง Code', value: `${pendingCodes}`, color: pendingCodes > 200 ? '#ef4444' : '#f59e0b' },
+            ],
+            insight: analytics.ai_insights?.revenue_impact?.recommendation || '💡 เร่งตรวจสอบเวชระเบียนเพื่อปิดยอดเบิกจ่าย',
+            bottomLabel: `🎯 เป้า: ≤ ฿50,000 · สูตร: income จาก VN/AN ที่ยังไม่มี ICD-10`,
+        },
+        {
+            gradient: 'linear-gradient(135deg, #0c1821 0%, #1b2a38 100%)',
+            accent: prodScore >= 90 ? '#10b981' : prodScore >= 70 ? '#f59e0b' : '#ef4444',
+            icon: '⚡',
+            title: 'Team Performance Index',
+            badge: prodScore >= 90 ? '🏆 EXCELLENT' : prodScore >= 70 ? '📈 GOOD' : '⚠️ NEEDS REVIEW',
+            mainValue: `${prodScore}%`,
+            mainLabel: 'Productivity Score (30 วัน)',
+            metrics: [
+                { label: 'Audit Score', value: `${opdRate}%`, color: opdRate >= 90 ? '#10b981' : '#f59e0b' },
+                { label: 'Backlog', value: `${pendingCount}`, color: pendingCount > 500 ? '#ef4444' : '#10b981' },
+                { label: 'Coders', value: `${(today.ipd_coders_fiscal || []).length} คน`, color: '#38bdf8' },
+            ],
+            insight: pendingCount > 500
+                ? `⚠️ Backlog สะสม ${pendingCount} cases — ควรจัดเวรเร่งด่วนและเกลี่ยงานให้สมดุล`
+                : '✅ ปริมาณงานสมดุล — ทีม Coder ทำงานได้ตามเกณฑ์',
+            bottomLabel: `📊 Benchmark: Best Practice ≥95% · HA ≥90%`,
+        },
+    ];
+
     return (
-        <div className="glass-card" style={{ padding: '1.25rem', border: '1px solid rgba(16,185,129,.25)', background: 'linear-gradient(135deg, rgba(16,185,129,.08), rgba(5,150,105,.04))' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem' }}>
-                <div style={{ width: '4px', height: '20px', background: 'linear-gradient(180deg, #059669, #059669)', borderRadius: '99px' }} />
-                <div>
-                    <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        🧠 Medical Records Intelligence <span style={{ fontSize: '10px', background: 'rgba(16,185,129,.15)', color: '#059669', padding: '1px 6px', borderRadius: '4px' }}>AI AUDIT LIVE</span>
-                    </h3>
-                    <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>Strategic Monitoring for Revenue Recovery & Clinical Documentation Quality</p>
+        <div style={{
+            background: 'linear-gradient(135deg, rgba(17,24,39,0.98) 0%, rgba(30,41,59,0.96) 100%)',
+            borderRadius: '24px', padding: '1.5rem',
+            border: '1px solid rgba(255,255,255,0.06)',
+            position: 'relative', overflow: 'hidden',
+        }}>
+            {/* Aurora Background */}
+            <div style={{ position: 'absolute', top: '-30%', left: '20%', width: '300px', height: '300px', background: 'radial-gradient(ellipse, rgba(99,102,241,0.08) 0%, transparent 70%)', filter: 'blur(60px)', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', bottom: '-20%', right: '10%', width: '250px', height: '250px', background: 'radial-gradient(circle, rgba(16,185,129,0.06) 0%, transparent 70%)', filter: 'blur(50px)', pointerEvents: 'none' }} />
+
+            {/* Header */}
+            <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{
+                        width: '40px', height: '40px', borderRadius: '14px',
+                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '20px', boxShadow: '0 4px 15px rgba(99,102,241,0.3)',
+                    }}>🧠</div>
+                    <div>
+                        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 900, color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            Medical Records Intelligence
+                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,0.15)', padding: '2px 8px', borderRadius: '99px', letterSpacing: '0.05em' }}>AI AUDIT LIVE</span>
+                        </h3>
+                        <p style={{ margin: 0, fontSize: '10.5px', color: 'rgba(255,255,255,0.4)', fontWeight: 500 }}>
+                            ระบบ AI วิเคราะห์รายได้ · Revenue Leakage · ประสิทธิภาพทีม Coder แบบ Real-time
+                        </p>
+                    </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', animation: 'pulse 2s infinite' }} />
+                    <span style={{ fontSize: '10px', fontWeight: 600, color: 'rgba(255,255,255,0.4)' }}>
+                        UPDATE: {today.timestamp ? new Date(today.timestamp).toLocaleTimeString('th-TH') : '—'}
+                    </span>
                 </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
-                {/* Revenue Leakage */}
-                <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #e11d48' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '11px', fontWeight: 800, color: '#e11d48', textTransform: 'uppercase' }}>💸 Revenue Recovery Target</span>
-                        <span style={{ fontSize: '9px', background: 'rgba(225,29,72,0.1)', color: '#e11d48', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>REVENUE KPI</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
-                        พบรายได้ค้างสรุป (30 วัน): ฿{(analytics.ai_insights?.revenue_impact?.total_pending || 0).toLocaleString()}
-                    </p>
-                    <div style={{ display: 'flex', gap: '8px', margin: '4px 0 6px' }}>
-                        <span style={{ fontSize: '10px', color: '#0284c7', background: 'rgba(2,132,199,0.1)', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>OPD: ฿{(analytics.ai_insights?.revenue_impact?.opd_pending || 0).toLocaleString()}</span>
-                        <span style={{ fontSize: '10px', color: '#059669', background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>IPD: ฿{(analytics.ai_insights?.revenue_impact?.ipd_pending || 0).toLocaleString()}</span>
-                    </div>
-                    <p style={{ margin: '0 0 4px', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
-                        {analytics.ai_insights?.revenue_impact?.recommendation || '💡 เร่งตรวจสอบความสมบูรณ์ของเวชระเบียนเพื่อเบิกจ่าย'}
-                    </p>
-                    <div style={{ fontSize: '8px', color: 'var(--md-text-tertiary)', lineHeight: 1.6, borderTop: '1px dashed rgba(0,0,0,0.06)', paddingTop: '4px' }}>
-                        <div>📐 <strong>สูตร:</strong> รวม income จาก VN/AN ที่ยังไม่มีรหัสโรค (30 วันล่าสุด)</div>
-                        <div>💡 <strong>ความหมาย:</strong> เงินที่รพ.ควรได้รับแต่ยังเบิกไม่ได้เพราะ Code ไม่สมบูรณ์</div>
-                        <div>🎯 <strong>เป้า:</strong> ≤ ฿50,000 | 🤖 AI: เร่ง Code เคส OPD ที่มี income สูงก่อน</div>
-                    </div>
-                </div>
+            {/* Cards Grid */}
+            <div style={{ position: 'relative', zIndex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: '14px' }}>
+                {cards.map((c, i) => (
+                    <div key={i} style={{
+                        background: c.gradient,
+                        borderRadius: '18px', padding: '1.25rem',
+                        border: `1px solid ${c.accent}25`,
+                        position: 'relative', overflow: 'hidden',
+                        transition: 'transform 0.3s ease, box-shadow 0.3s ease',
+                    }}>
+                        {/* Card Glow */}
+                        <div style={{ position: 'absolute', top: '-20px', right: '-20px', width: '100px', height: '100px', background: `radial-gradient(circle, ${c.accent}15 0%, transparent 70%)`, filter: 'blur(20px)', pointerEvents: 'none' }} />
 
-                {/* Quality & Audit */}
-                <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #0ea5e9' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '11px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase' }}>⚖️ Documentation Quality</span>
-                        <span style={{ fontSize: '9px', background: 'rgba(14,165,233,0.1)', color: '#0ea5e9', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>QUALITY KPI</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
-                        Audit Quality Score: {today.quality_score || 0}% — {today.quality_score >= 90 ? 'ดีเยี่ยม' : 'ควรเร่งปรับปรุง'}
-                    </p>
-                    <p style={{ margin: '6px 0 4px', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
-                        💡 มีชาร์ตค้างสรุปรหัสโรค {today.pending_codes || 0} รายการ — {today.pending_codes > 200 ? 'เสี่ยงต่อการเบิกจ่ายล่าช้า' : 'อยู่ในเกณฑ์ปกติ'}
-                    </p>
-                    <div style={{ fontSize: '8px', color: 'var(--md-text-tertiary)', lineHeight: 1.6, borderTop: '1px dashed rgba(0,0,0,0.06)', paddingTop: '4px' }}>
-                        <div>📐 <strong>สูตร:</strong> (VN ที่มี ovstdiag ÷ VN ทั้งหมดวันนี้) × 100</div>
-                        <div>💡 <strong>ความหมาย:</strong> วัดความครบถ้วนของการลงรหัสโรค OPD ในแต่ละวัน</div>
-                        <div>🎯 <strong>เป้า:</strong> ≥ 90% | 📊 <strong>Benchmark:</strong> HA ≥80% | สปสช. ≥90%</div>
-                        <div>🤖 <strong>AI:</strong> {today.quality_score >= 90 ? 'ผ่านเกณฑ์ HA/สปสช. — รักษาระดับ' : 'ต่ำกว่าเกณฑ์ เร่ง Code ก่อนปิด Shift'}</div>
-                    </div>
-                </div>
+                        {/* Title Row */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', position: 'relative', zIndex: 1 }}>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: c.accent, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                {c.icon} {c.title}
+                            </span>
+                            <span style={{ fontSize: '9px', background: `${c.accent}15`, color: c.accent, padding: '2px 8px', borderRadius: '99px', fontWeight: 700 }}>{c.badge}</span>
+                        </div>
 
-                {/* Productivity Benchmark */}
-                <div className="inner-glass" style={{ padding: '1rem', borderLeft: '4px solid #0f766e' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '11px', fontWeight: 800, color: '#0f766e', textTransform: 'uppercase' }}>📈 Coder Productivity</span>
-                        <span style={{ fontSize: '9px', background: 'rgba(15,118,110,0.1)', color: '#0f766e', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>EFFICIENCY KPI</span>
+                        {/* Main Value */}
+                        <div style={{ marginBottom: '10px', position: 'relative', zIndex: 1 }}>
+                            <div style={{ fontSize: '26px', fontWeight: 900, color: '#fff', lineHeight: 1 }}>{c.mainValue}</div>
+                            <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontWeight: 600, marginTop: '3px' }}>{c.mainLabel}</div>
+                        </div>
+
+                        {/* Metric Chips */}
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px', position: 'relative', zIndex: 1 }}>
+                            {c.metrics.map((m, mi) => (
+                                <div key={mi} style={{
+                                    padding: '4px 10px', borderRadius: '8px',
+                                    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)',
+                                    display: 'flex', alignItems: 'center', gap: '4px',
+                                }}>
+                                    <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.4)', fontWeight: 600 }}>{m.label}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: m.color }}>{m.value}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Insight */}
+                        <div style={{
+                            padding: '8px 10px', borderRadius: '10px',
+                            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)',
+                            marginBottom: '8px', position: 'relative', zIndex: 1,
+                        }}>
+                            <p style={{ margin: 0, fontSize: '10px', color: 'rgba(255,255,255,0.65)', fontWeight: 500, lineHeight: 1.6 }}>{c.insight}</p>
+                        </div>
+
+                        {/* Bottom */}
+                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.3)', fontWeight: 500, position: 'relative', zIndex: 1 }}>{c.bottomLabel}</div>
                     </div>
-                    <p style={{ margin: 0, fontSize: '13px', color: 'var(--md-text-primary)', fontWeight: 600, lineHeight: 1.5 }}>
-                        {analytics.ai_insights?.coding_productivity?.pending_count > 500
-                            ? `⚠️ ตรวจพบ backlog สะสม ${analytics.ai_insights.coding_productivity.pending_count} cases`
-                            : '✅ Coding Throughput อยู่ในเกณฑ์ปกติ'}
-                    </p>
-                    <p style={{ margin: '6px 0 4px', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
-                        💡 Productivity Score: {analytics.ai_insights?.coding_productivity?.score || 0}% (30 วันล่าสุด)
-                    </p>
-                    <div style={{ fontSize: '8px', color: 'var(--md-text-tertiary)', lineHeight: 1.6, borderTop: '1px dashed rgba(0,0,0,0.06)', paddingTop: '4px' }}>
-                        <div>📐 <strong>สูตร:</strong> (VN ที่ Code แล้ว 30 วัน ÷ VN ทั้งหมด 30 วัน) × 100</div>
-                        <div>💡 <strong>ความหมาย:</strong> วัดความเร็วและปริมาณงานของ Coder เทียบกับจำนวนเคสที่ต้อง Code</div>
-                        <div>🎯 <strong>เป้า:</strong> ≥ 90% | 📊 <strong>Benchmark:</strong> Best Practice ≥95%</div>
-                        <div>🤖 <strong>AI:</strong> {(analytics.ai_insights?.coding_productivity?.score || 0) >= 90 ? 'ประสิทธิภาพดี — จัดสรรงานสมดุล' : 'ต่ำกว่าเป้า — ตรวจสอบ Workload Balance ระหว่าง Coder'}</div>
-                    </div>
-                </div>
+                ))}
             </div>
         </div>
     );

@@ -5,10 +5,41 @@ import { dbQuery } from '../db/mysql.js';
 
 const MONTH_TH_FISCAL = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
-export function getFiscalConfig() {
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function getFiscalConfig(customStart, customEnd) {
     const now = new Date();
     const cm = now.getMonth() + 1, cy = now.getFullYear();
     const cfs = cm >= 10 ? cy : cy - 1;
+
+    if (customStart && customEnd && DATE_RE.test(customStart) && DATE_RE.test(customEnd)) {
+        // Anchor fiscal year from end date, always produce 3 fiscal years for comparison
+        const s = new Date(customStart), e = new Date(customEnd);
+        const eFY = e.getMonth() >= 9 ? e.getFullYear() : e.getFullYear() - 1;
+
+        // Calculate month/day offsets relative to anchor FY for clipping each FY
+        const sYearOff = s.getFullYear() - eFY;
+        const sMo = String(s.getMonth() + 1).padStart(2, '0');
+        const sDay = String(s.getDate()).padStart(2, '0');
+        const eYearOff = e.getFullYear() - eFY;
+        const eMo = String(e.getMonth() + 1).padStart(2, '0');
+        const eDay = String(e.getDate()).padStart(2, '0');
+
+        const fiscalYears = [];
+        for (let o = 2; o >= 0; o--) {
+            const sy = eFY - o;
+            // queryStart/queryEnd: same month-day window shifted to this FY
+            const qStart = `${sy + sYearOff}-${sMo}-${sDay}`;
+            const qEnd = `${sy + eYearOff}-${eMo}-${eDay}`;
+            fiscalYears.push({
+                startYear: sy, startDate: `${sy}-10-01`, endDate: `${sy + 1}-09-30`,
+                fiscalBE: sy + 543 + 1,
+                queryStart: qStart, queryEnd: qEnd,
+            });
+        }
+        return { fiscalYears, globalStart: fiscalYears[0].queryStart, globalEnd: customEnd };
+    }
+
     const fiscalYears = [];
     for (let o = 2; o >= 0; o--) {
         const sy = cfs - o;
@@ -57,15 +88,136 @@ export function buildFiscalResult(rows, fiscalYears, dataSource) {
 }
 
 // AI-4: Parameterized SQL — no more string interpolation
-export async function getRevenueFiscal(mainDep, dataSource) {
-    const { fiscalYears, globalStart, globalEnd } = getFiscalConfig();
+import { dbQueryHeavy } from '../db/mysql.js';
+
+export async function getRevenueFiscal(mainDep, dataSource, customStart, customEnd) {
+    const { fiscalYears, globalStart, globalEnd } = getFiscalConfig(customStart, customEnd);
+    const cacheKey = `revenueFiscal_${Array.isArray(mainDep) ? mainDep.join('_') : (mainDep || 'all')}`;
+    const ttl = 60; // 1 hour cache for historical data
+
     if (mainDep) {
-        const sql = `SELECT YEAR(o.vstdate) AS yr, MONTH(o.vstdate) AS mo, SUM(v.income) AS revenue, COUNT(DISTINCT o.vn) AS visit_count, COUNT(DISTINCT o.hn) AS patient_count
-       FROM ovst o INNER JOIN vn_stat v ON o.vn = v.vn WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE()) AND o.main_dep = ? AND v.income > 0
-       GROUP BY YEAR(o.vstdate), MONTH(o.vstdate) ORDER BY yr, mo`;
-        return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd, mainDep]), fiscalYears, dataSource);
+        const isArray = Array.isArray(mainDep);
+        const depParams = isArray ? mainDep : [mainDep];
+        const placeholders = isArray ? mainDep.map(() => '?').join(',') : '?';
+
+        // FAST PATH: Do the join in Javascript to bypass MariaDB query planner timeouts on heavy 3 year cross-table joins
+        const ovstRows = await dbQueryHeavy(`dental_ovst_vns_${cacheKey}`, 360,
+            `SELECT vn, hn FROM ovst WHERE vstdate BETWEEN ? AND LEAST(?, CURDATE()) AND main_dep IN (${placeholders})`,
+            [globalStart, globalEnd, ...depParams], { timeoutMs: 25000 });
+
+        const vns = new Set(ovstRows.map(r => r.vn));
+
+        const vnStatRows = await dbQueryHeavy(`dental_vnstat_${cacheKey}`, 360,
+            `SELECT vn, hn, vstdate, income FROM vn_stat WHERE vstdate BETWEEN ? AND LEAST(?, CURDATE()) AND income > 0`,
+            [globalStart, globalEnd], { timeoutMs: 25000 });
+
+        // Filter vnStat locally
+        const filtered = vnStatRows.filter(r => vns.has(r.vn));
+
+        // Aggregate into yr/mo structure locally
+        const aggMap = {};
+        for (const row of filtered) {
+            const dt = new Date(row.vstdate);
+            const key = `${dt.getFullYear()}-${dt.getMonth() + 1}`;
+            if (!aggMap[key]) aggMap[key] = { yr: dt.getFullYear(), mo: dt.getMonth() + 1, revenue: 0, vns: new Set(), hns: new Set() };
+            aggMap[key].revenue += Number(row.income) || 0;
+            aggMap[key].vns.add(row.vn);
+            aggMap[key].hns.add(row.hn);
+        }
+
+        const finalRows = Object.values(aggMap).map(v => ({ yr: v.yr, mo: v.mo, revenue: v.revenue, visit_count: v.vns.size, patient_count: v.hns.size }));
+        finalRows.sort((a, b) => a.yr - b.yr || a.mo - b.mo);
+
+        return buildFiscalResult(finalRows, fiscalYears, dataSource);
     }
     const sql = `SELECT YEAR(vstdate) AS yr, MONTH(vstdate) AS mo, SUM(income) AS revenue, COUNT(DISTINCT vn) AS visit_count, COUNT(DISTINCT hn) AS patient_count
      FROM vn_stat WHERE vstdate BETWEEN ? AND LEAST(?, CURDATE()) GROUP BY YEAR(vstdate), MONTH(vstdate) ORDER BY yr, mo`;
-    return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd]), fiscalYears, dataSource);
+    return buildFiscalResult(await dbQueryHeavy(cacheKey, ttl, sql, [globalStart, globalEnd], { timeoutMs: 25000 }), fiscalYears, dataSource);
+}
+
+/**
+ * รายได้แยกตามสิทธิ์ ระดับปีงบประมาณ (3 ปี × top payers)
+ */
+export async function getRevenueFiscalByPayer(customStart, customEnd) {
+    const { fiscalYears, globalStart, globalEnd } = getFiscalConfig(customStart, customEnd);
+
+    // Step 1: ดึง payer mapping (เล็ก ~50 rows)
+    const payerMap = {};
+    const ptRows = await dbQueryHeavy('ptypeMap', 1440, `SELECT pttype, name FROM pttype`, [], { timeoutMs: 5000 });
+    for (const r of (ptRows || [])) payerMap[r.pttype] = r.name;
+
+    // Step 2: ดึงจาก vn_stat.pttype โดยตรง (ไม่ JOIN ovst — เร็วกว่ามาก)
+    const allRows = [];
+    for (const fy of fiscalYears) {
+        const qStart = fy.queryStart || fy.startDate;
+        const qEnd = fy.queryEnd || fy.endDate;
+        const fyRows = await dbQueryHeavy(`revByPayer_v_${fy.fiscalBE}_${qStart}_${qEnd}`, 120, `
+            SELECT YEAR(v.vstdate) AS yr, MONTH(v.vstdate) AS mo,
+                   COALESCE(v.pttype, '??') AS payer_code,
+                   SUM(v.income) AS revenue,
+                   COUNT(DISTINCT v.vn) AS visit_count
+            FROM vn_stat v
+            WHERE v.vstdate BETWEEN ? AND LEAST(?, CURDATE()) AND v.income > 0
+            GROUP BY YEAR(v.vstdate), MONTH(v.vstdate), v.pttype
+        `, [qStart, qEnd], { timeoutMs: 25000 }).catch(() => []);
+        allRows.push(...(fyRows || []));
+    }
+    const rows = allRows;
+
+    // Map payer_code → name in JS (avoid slow JOIN)
+    for (const r of (rows || [])) {
+        r.payer = payerMap[r.payer_code] || 'ไม่ระบุสิทธิ์';
+    }
+
+    // Normalize key function
+    const pKey = (code) => code && code !== '??' ? code : '_none_';
+
+    // Aggregate by payer across all months → get top payers by total revenue
+    const payerTotals = {};
+    for (const r of (rows || [])) {
+        const key = pKey(r.payer_code);
+        if (!payerTotals[key]) payerTotals[key] = { payer: r.payer, payer_code: r.payer_code, revenue: 0, visits: 0 };
+        payerTotals[key].revenue += Number(r.revenue || 0);
+        payerTotals[key].visits += Number(r.visit_count || 0);
+    }
+    const topPayers = Object.values(payerTotals).sort((a, b) => b.revenue - a.revenue).slice(0, 15);
+    const topPayerKeys = new Set(topPayers.map(p => pKey(p.payer_code)));
+
+    // Build fiscal year structure per payer
+    const result = fiscalYears.map(fy => {
+        const payerData = {};
+        for (const tp of topPayers) {
+            payerData[pKey(tp.payer_code)] = { payer: tp.payer, payer_code: tp.payer_code, total_revenue: 0, total_visits: 0, months: {} };
+        }
+
+        for (let i = 0; i < 12; i++) {
+            const mNum = ((9 + i) % 12) + 1;
+            const yNum = mNum >= 10 ? fy.startYear : fy.startYear + 1;
+
+            for (const r of (rows || [])) {
+                if (Number(r.yr) !== yNum || Number(r.mo) !== mNum) continue;
+                const key = pKey(r.payer_code);
+                if (!topPayerKeys.has(key)) continue;
+                if (!payerData[key]) continue;
+                payerData[key].total_revenue += Number(r.revenue || 0);
+                payerData[key].total_visits += Number(r.visit_count || 0);
+                payerData[key].months[mNum] = Number(r.revenue || 0);
+            }
+        }
+
+        return {
+            fiscal_year_be: fy.fiscalBE,
+            fiscal_label: `ปีงบ ${fy.fiscalBE}`,
+            query_start: fy.queryStart || fy.startDate,
+            query_end: fy.queryEnd || fy.endDate,
+            payers: Object.values(payerData).sort((a, b) => b.total_revenue - a.total_revenue),
+        };
+    });
+
+    return {
+        data_source: 'HOSxP XE · vn_stat + pttype',
+        fiscal_years: result,
+        top_payers: topPayers,
+        timestamp: new Date().toISOString(),
+    };
 }

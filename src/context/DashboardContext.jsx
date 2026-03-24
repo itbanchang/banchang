@@ -2,7 +2,51 @@
 // BCH 360° Intelligence V.10 - Dashboard Context
 // Optimized — Parallel fetch, deduplication, stale-while-revalidate
 // ============================================================
-import React, { createContext, useContext, useReducer, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
+import { useAuth } from '../hooks/useAuth.js';
+import { fetchWithTokenRefresh } from '../utils/fetchWithTokenRefresh.js';
+
+// Lightweight FNV-1a hash — replaces JSON.stringify comparison for deduplication
+function fnv1aHash(obj) {
+    const str = typeof obj === 'string' ? obj : quickFingerprint(obj);
+    let hash = 0x811c9dc5; // FNV offset basis
+    for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = (hash * 0x01000193) >>> 0; // FNV prime, keep 32-bit unsigned
+    }
+    return hash;
+}
+
+// Build a lightweight fingerprint string from an object's structure + leaf values
+// Much cheaper than JSON.stringify for large payloads
+function quickFingerprint(obj, depth = 0) {
+    if (depth > 4) return '…';
+    if (obj === null || obj === undefined) return 'N';
+    const t = typeof obj;
+    if (t === 'number' || t === 'boolean') return String(obj);
+    if (t === 'string') return obj.length > 64 ? obj.length + ':' + obj.slice(0, 32) + obj.slice(-16) : obj;
+    if (Array.isArray(obj)) {
+        // Sample first, middle, last items + length for arrays
+        const len = obj.length;
+        if (len === 0) return '[]';
+        const parts = [len];
+        const indices = len <= 3 ? [0, 1, 2].filter(i => i < len) : [0, Math.floor(len / 2), len - 1];
+        for (const i of indices) parts.push(quickFingerprint(obj[i], depth + 1));
+        return '[' + parts.join('|') + ']';
+    }
+    if (t === 'object') {
+        const keys = Object.keys(obj);
+        const parts = [keys.length];
+        // Use all keys for small objects, sample for large ones
+        const selectedKeys = keys.length <= 8 ? keys : keys.filter((_, i) => i % Math.ceil(keys.length / 8) === 0);
+        for (const k of selectedKeys) parts.push(k + '=' + quickFingerprint(obj[k], depth + 1));
+        return '{' + parts.join('|') + '}';
+    }
+    return String(obj);
+}
+
+const CACHE_MAX_AGE = 60000;   // 60s — fresh cache, skip network
+const CACHE_STALE_AGE = 300000; // 5min — serve stale, revalidate in background
 
 const DashboardContext = createContext(null);
 
@@ -31,6 +75,9 @@ const initialState = {
     erWaitTimeForecast: null,
     erBottlenecks: null,
     erSurge: null,
+    erResusAlert: null,
+    erDiversionStatus: null,
+    ncdGoalAttainment: null,
     medRecToday: null,
     medRecAnalytics: null,
     loading: {},
@@ -127,6 +174,9 @@ function reducer(state, action) {
 }
 
 export function DashboardProvider({ children }) {
+    // ── Get authentication tokens for API calls ──
+    const { tokens, refreshAccessToken } = useAuth();
+
     const [state, dispatch] = useReducer(reducer, initialState);
     const inflightRef = useRef({}); // Prevent duplicate fetches
     const dataCacheRef = useRef({}); // Client-side data cache with timestamps
@@ -135,41 +185,29 @@ export function DashboardProvider({ children }) {
         dispatch({ type: 'SET_TAB', payload: tab });
     }, []);
 
-    // Optimized fetch with deduplication + client-side SWR cache
-    const fetchData = useCallback(async (key, url) => {
-        // If already fetching the same key, return existing promise
-        if (inflightRef.current[key]) return inflightRef.current[key];
-
-        // Client-side cache: if data is fresh (<60s), skip network entirely
-        const cached = dataCacheRef.current[key];
-        if (cached && Date.now() - cached.t < 60000 && cached.data) {
-            // Data is still fresh — return immediately without network request
-            return cached.data;
-        }
-
-        dispatch({ type: 'SET_LOADING', key, payload: true });
-        dispatch({ type: 'SET_ERROR', key, payload: null });
-
-        // AbortController with 15s timeout
+    // Core network fetch — separated so SWR can call it without setting loading state
+    const _doFetch = useCallback((key, url, { silent = false } = {}) => {
+        // AbortController with 30s timeout (must be longer than backend 25s queries)
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+        const timeout = setTimeout(() => controller.abort(), 30000);
 
-        const promise = fetch(url, { signal: controller.signal })
+        const promise = fetchWithTokenRefresh(url, { signal: controller.signal }, () => tokens, refreshAccessToken)
             .then(res => {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 return res.json();
             })
             .then(data => {
                 const cached = dataCacheRef.current[key];
-                // ⚡ Frontend Optimization: Prevent React re-renders if data is identical
-                if (cached && JSON.stringify(cached.data) === JSON.stringify(data)) {
+                // Use lightweight hash instead of JSON.stringify for dedup comparison
+                const newHash = fnv1aHash(data);
+                if (cached && cached._hash === newHash) {
                     cached.t = Date.now(); // Extend cache TTL
-                    dispatch({ type: 'SET_LOADING', key, payload: false });
-                    return data;
+                    if (!silent) dispatch({ type: 'SET_LOADING', key, payload: false });
+                    return cached.data; // Return cached reference to avoid re-render
                 }
 
                 dispatch({ type: 'SET_DATA', key, payload: data });
-                dataCacheRef.current[key] = { data, t: Date.now() };
+                dataCacheRef.current[key] = { data, _hash: newHash, t: Date.now() };
                 dispatch({ type: 'SET_LAST_UPDATED', payload: Date.now() });
                 return data;
             })
@@ -183,17 +221,63 @@ export function DashboardProvider({ children }) {
             })
             .finally(() => {
                 clearTimeout(timeout);
-                dispatch({ type: 'SET_LOADING', key, payload: false });
+                if (!silent) dispatch({ type: 'SET_LOADING', key, payload: false });
                 delete inflightRef.current[key];
             });
 
+        return promise;
+    }, [tokens, refreshAccessToken]);
+
+    // Optimized fetch with deduplication + stale-while-revalidate + hash-based comparison
+    const fetchData = useCallback(async (key, url) => {
+        // If already fetching the same key, return existing promise
+        if (inflightRef.current[key]) return inflightRef.current[key];
+
+        const cached = dataCacheRef.current[key];
+        const age = cached ? Date.now() - cached.t : Infinity;
+
+        // Fresh cache (<60s): skip network entirely
+        if (cached && age < CACHE_MAX_AGE && cached.data) {
+            return cached.data;
+        }
+
+        // Stale-while-revalidate (<5min): return cached data immediately,
+        // kick off a silent background refresh
+        if (cached && age < CACHE_STALE_AGE && cached.data) {
+            const bgPromise = _doFetch(key, url, { silent: true });
+            inflightRef.current[key] = bgPromise;
+            return cached.data;
+        }
+
+        // No cache or expired: full fetch with loading state
+        dispatch({ type: 'SET_LOADING', key, payload: true });
+        dispatch({ type: 'SET_ERROR', key, payload: null });
+
+        const promise = _doFetch(key, url);
         inflightRef.current[key] = promise;
         return promise;
-    }, []);
+    }, [_doFetch]);
 
     // Fetch multiple URLs in parallel
     const fetchParallel = useCallback(async (requests) => {
         return Promise.all(requests.map(([key, url]) => fetchData(key, url)));
+    }, [fetchData]);
+
+    // Batch fetch: request multiple endpoints in one call, returns { key: data } map
+    // Tabs can call: batchFetch({ opdStats: '/api/opd/stats', opdQueue: '/api/opd/queue' })
+    const batchFetch = useCallback(async (endpointMap) => {
+        const entries = Object.entries(endpointMap);
+        const results = await Promise.allSettled(
+            entries.map(([key, url]) => fetchData(key, url).then(data => [key, data]))
+        );
+        const out = {};
+        for (const result of results) {
+            if (result.status === 'fulfilled' && result.value) {
+                const [key, data] = result.value;
+                out[key] = data;
+            }
+        }
+        return out;
     }, [fetchData]);
 
     const addAlert = useCallback((alert) => {
@@ -208,7 +292,8 @@ export function DashboardProvider({ children }) {
         dispatch({ type: 'OPEN_DRILL_DOWN', kpiId, title });
         if (endpoint) {
             try {
-                const res = await fetch(endpoint);
+                const res = await fetchWithTokenRefresh(endpoint, {}, () => tokens, refreshAccessToken);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 dispatch({ type: 'SET_DRILL_DOWN_DATA', payload: data });
             } catch (err) {
@@ -216,17 +301,22 @@ export function DashboardProvider({ children }) {
                 dispatch({ type: 'SET_DRILL_DOWN_DATA', payload: { error: err.message } });
             }
         }
-    }, []);
+    }, [tokens, refreshAccessToken]);
 
     const closeDrillDown = useCallback(() => {
         dispatch({ type: 'CLOSE_DRILL_DOWN' });
     }, []);
 
+    // Memoize context value to prevent unnecessary re-renders of consumers
+    // Only creates a new object when one of the dependencies actually changes
+    const contextValue = useMemo(() => ({
+        state, dispatch, setTab, fetchData, fetchParallel, batchFetch,
+        addAlert, dismissAlert, openDrillDown, closeDrillDown
+    }), [state, dispatch, setTab, fetchData, fetchParallel, batchFetch,
+         addAlert, dismissAlert, openDrillDown, closeDrillDown]);
+
     return (
-        <DashboardContext.Provider value={{
-            state, dispatch, setTab, fetchData, fetchParallel,
-            addAlert, dismissAlert, openDrillDown, closeDrillDown
-        }}>
+        <DashboardContext.Provider value={contextValue}>
             {children}
         </DashboardContext.Provider>
     );

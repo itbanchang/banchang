@@ -5,19 +5,45 @@
 const cache = new Map();
 const inflight = new Map(); // dedup: prevent thundering herd on cache miss
 
+// ── Cache Metrics ──
+const CACHE_METRICS = { hits: 0, misses: 0, sets: 0, deletes: 0, evictions: 0 };
+const MAX_CACHE_SIZE = 500; // prevent unbounded growth
+
 export function getCache(key) {
     const item = cache.get(key);
-    if (!item) return null;
-    if (Date.now() > item.expires) { cache.delete(key); return null; }
+    if (!item) { CACHE_METRICS.misses++; return null; }
+    if (Date.now() > item.expires) { cache.delete(key); CACHE_METRICS.misses++; return null; }
+    CACHE_METRICS.hits++;
     return item.data;
 }
 
 export function setCache(key, data, ttlSeconds = 120) {
+    // LRU eviction when cache exceeds max size
+    if (cache.size >= MAX_CACHE_SIZE && !cache.has(key)) {
+        const oldest = cache.keys().next().value;
+        cache.delete(oldest);
+        CACHE_METRICS.evictions++;
+    }
     cache.set(key, { data, expires: Date.now() + ttlSeconds * 1000 });
+    CACHE_METRICS.sets++;
 }
 
-export function deleteCache(key) { cache.delete(key); }
+export function deleteCache(key) { cache.delete(key); CACHE_METRICS.deletes++; }
 export function clearCache() { cache.clear(); }
+
+export function getCacheStats() {
+    const total = CACHE_METRICS.hits + CACHE_METRICS.misses;
+    return {
+        entries: cache.size,
+        max_size: MAX_CACHE_SIZE,
+        inflight: inflight.size,
+        hits: CACHE_METRICS.hits,
+        misses: CACHE_METRICS.misses,
+        sets: CACHE_METRICS.sets,
+        evictions: CACHE_METRICS.evictions,
+        hit_rate_pct: total > 0 ? Math.round((CACHE_METRICS.hits / total) * 100) : 0,
+    };
+}
 
 /**
  * Express middleware — cache route responses with request deduplication
@@ -51,6 +77,8 @@ export function cacheMiddleware(ttlSeconds = 120) {
             resolveInflight = resolve;
             rejectInflight = reject;
         });
+        // Suppress unhandled rejection when no dedup-waiter is listening
+        promise.catch(() => {});
         inflight.set(key, promise);
 
         const originalJson = res.json.bind(res);
@@ -76,4 +104,4 @@ export function cacheMiddleware(ttlSeconds = 120) {
     };
 }
 
-export default { getCache, setCache, deleteCache, clearCache, cacheMiddleware };
+export default { getCache, setCache, deleteCache, clearCache, cacheMiddleware, getCacheStats };

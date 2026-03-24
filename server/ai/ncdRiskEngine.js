@@ -5,6 +5,8 @@
 // Data: ovst + ovstdiag + opdscreen + lab_head/lab_order
 // ============================================================
 import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
+import logger from '../logger.js';
+import { getNcdCal } from './calibration.js';
 
 const NCD_ICD_WHERE = `(od.icd10 LIKE 'E1%' OR od.icd10 LIKE 'I1%' OR od.icd10 BETWEEN 'I20' AND 'I259'
   OR od.icd10 BETWEEN 'I60' AND 'I699' OR od.icd10 BETWEEN 'J40' AND 'J479' OR od.icd10 LIKE 'N18%')`;
@@ -69,7 +71,7 @@ export async function getNCDRiskStratification() {
       SELECT h.hn, i.lab_items_name_ref as lab_name, i.lab_order_result as result, h.order_date
       FROM lab_head h
       JOIN lab_order i ON h.lab_order_number = i.lab_order_number
-      WHERE h.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      WHERE h.order_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
         AND (
           i.lab_items_name_ref LIKE '%HbA1c%'
           OR i.lab_items_name_ref LIKE '%FBS%'
@@ -179,22 +181,23 @@ export async function getNCDRiskStratification() {
 
     let riskScore = 0;
     const riskFactors = [];
+    const W = getNcdCal(); // calibrated weights from real outcome data
 
     // === Lab Control Score (0-30) ===
     let labScore = 0;
     if (labs.hba1c != null && pt.diseases?.includes('DM')) {
-      if (labs.hba1c >= 9) { labScore += 12; riskFactors.push(`🔴 HbA1c สูงมาก (${labs.hba1c}%)`); }
-      else if (labs.hba1c >= 7) { labScore += 6; riskFactors.push(`🟡 HbA1c ไม่ถึงเป้า (${labs.hba1c}%)`); }
+      if (labs.hba1c >= 9) { labScore += W.hba1c_very_high; riskFactors.push(`🔴 HbA1c สูงมาก (${labs.hba1c}%)`); }
+      else if (labs.hba1c >= 7) { labScore += W.hba1c_above_target; riskFactors.push(`🟡 HbA1c ไม่ถึงเป้า (${labs.hba1c}%)`); }
     } else if (pt.diseases?.includes('DM')) {
-      labScore += 8; riskFactors.push('⚠️ ไม่มีผล HbA1c ใน 6 เดือน');
+      labScore += W.hba1c_missing; riskFactors.push('⚠️ ไม่มีผล HbA1c ใน 6 เดือน');
     }
 
     if (labs.egfr != null) {
-      if (labs.egfr < 30) { labScore += 10; riskFactors.push(`🔴 eGFR ต่ำมาก (${labs.egfr})`); }
-      else if (labs.egfr < 60) { labScore += 5; riskFactors.push(`🟡 eGFR ลดลง (${labs.egfr})`); }
+      if (labs.egfr < 30) { labScore += W.egfr_very_low; riskFactors.push(`🔴 eGFR ต่ำมาก (${labs.egfr})`); }
+      else if (labs.egfr < 60) { labScore += W.egfr_low; riskFactors.push(`🟡 eGFR ลดลง (${labs.egfr})`); }
     }
     if (labs.ldl != null && labs.ldl >= 160) {
-      labScore += 5; riskFactors.push(`🟡 LDL สูง (${labs.ldl})`);
+      labScore += W.ldl_high; riskFactors.push(`🟡 LDL สูง (${labs.ldl})`);
     }
     riskScore += Math.min(labScore, 30);
 
@@ -202,39 +205,39 @@ export async function getNCDRiskStratification() {
     let vitalScore = 0;
     const avgSBP = Number(vitals.avg_sbp || 0);
     const maxSBP = Number(vitals.max_sbp || 0);
-    if (avgSBP >= 160) { vitalScore += 15; riskFactors.push(`🔴 BP เฉลี่ยสูงมาก (${Math.round(avgSBP)}/${Math.round(Number(vitals.avg_dbp || 0))})`) }
-    else if (avgSBP >= 140) { vitalScore += 8; riskFactors.push(`🟡 BP เฉลี่ยไม่ถึงเป้า (${Math.round(avgSBP)}/${Math.round(Number(vitals.avg_dbp || 0))})`) }
-    if (maxSBP >= 180) { vitalScore += 10; riskFactors.push(`🔴 พบ BP สูงวิกฤต (max ${maxSBP})`); }
+    if (avgSBP >= 160) { vitalScore += W.bp_very_high; riskFactors.push(`🔴 BP เฉลี่ยสูงมาก (${Math.round(avgSBP)}/${Math.round(Number(vitals.avg_dbp || 0))})`) }
+    else if (avgSBP >= 140) { vitalScore += W.bp_above_target; riskFactors.push(`🟡 BP เฉลี่ยไม่ถึงเป้า (${Math.round(avgSBP)}/${Math.round(Number(vitals.avg_dbp || 0))})`) }
+    if (maxSBP >= 180) { vitalScore += W.bp_crisis; riskFactors.push(`🔴 พบ BP สูงวิกฤต (max ${maxSBP})`); }
     riskScore += Math.min(vitalScore, 25);
 
     // === Visit Compliance Score (0-20) ===
     let complianceScore = 0;
-    const expectedVisits = pt.diseases?.includes('DM') || pt.diseases?.includes('CKD') ? 6 : 3; // 3 months
+    const expectedVisits = pt.diseases?.includes('DM') || pt.diseases?.includes('CKD') ? W.visits_dm_ckd : W.visits_other;
     const actualVisits = Number(pt.visit_count_90d || 0);
     const compliancePct = Math.round((actualVisits / expectedVisits) * 100);
 
-    if (actualVisits === 0) { complianceScore += 20; riskFactors.push('🔴 ขาดนัด — ไม่มาตรวจ 90 วัน'); }
-    else if (compliancePct < 50) { complianceScore += 12; riskFactors.push(`🟡 มาตรวจน้อย (${actualVisits}/${expectedVisits} ครั้ง)`); }
-    else if (pt.days_since_last > 45) { complianceScore += 8; riskFactors.push(`⚠️ ห่างจากนัดล่าสุด ${pt.days_since_last} วัน`); }
+    if (actualVisits === 0) { complianceScore += W.missed_all; riskFactors.push('🔴 ขาดนัด — ไม่มาตรวจ 90 วัน'); }
+    else if (compliancePct < 50) { complianceScore += W.low_compliance; riskFactors.push(`🟡 มาตรวจน้อย (${actualVisits}/${expectedVisits} ครั้ง)`); }
+    else if (pt.days_since_last > 45) { complianceScore += W.overdue; riskFactors.push(`⚠️ ห่างจากนัดล่าสุด ${pt.days_since_last} วัน`); }
     riskScore += Math.min(complianceScore, 20);
 
     // === Comorbidity Load (0-15) ===
     const diseaseCount = (pt.diseases?.split(',') || []).length;
     let comorbidScore = 0;
-    if (diseaseCount >= 4) { comorbidScore = 15; riskFactors.push(`🔴 โรคร่วมสูง (${diseaseCount} โรค)`); }
-    else if (diseaseCount >= 3) { comorbidScore = 10; riskFactors.push(`🟡 หลายโรคร่วม (${diseaseCount} โรค)`); }
-    else if (diseaseCount >= 2) { comorbidScore = 5; }
+    if (diseaseCount >= 4) { comorbidScore = W.comorbid_4plus; riskFactors.push(`🔴 โรคร่วมสูง (${diseaseCount} โรค)`); }
+    else if (diseaseCount >= 3) { comorbidScore = W.comorbid_3; riskFactors.push(`🟡 หลายโรคร่วม (${diseaseCount} โรค)`); }
+    else if (diseaseCount >= 2) { comorbidScore = W.comorbid_2; }
     riskScore += comorbidScore;
 
-    // === Age & History (0-10) ===
+    // === Age & History (0-10) — calibrated from readmission outcomes ===
     let ageScore = 0;
-    if (pt.age >= 80) { ageScore = 10; riskFactors.push('🔴 อายุ ≥80 ปี — เสี่ยงภาวะแทรกซ้อนสูง'); }
-    else if (pt.age >= 70) { ageScore = 6; }
-    else if (pt.age >= 60) { ageScore = 3; }
+    if (pt.age >= 80) { ageScore = W.age_80plus; riskFactors.push('🔴 อายุ ≥80 ปี — เสี่ยงภาวะแทรกซ้อนสูง'); }
+    else if (pt.age >= 70) { ageScore = W.age_70_79; }
+    else if (pt.age >= 60) { ageScore = W.age_60_69; }
     riskScore += ageScore;
 
-    // === Classify Risk Level ===
-    const riskLevel = riskScore >= 60 ? 'critical' : riskScore >= 40 ? 'high' : riskScore >= 20 ? 'moderate' : 'low';
+    // === Classify Risk Level — calibrated thresholds ===
+    const riskLevel = riskScore >= W.critical_threshold ? 'critical' : riskScore >= W.high_threshold ? 'high' : riskScore >= W.moderate_threshold ? 'moderate' : 'low';
 
     // === Generate Intervention Recommendations ===
     let intervention = '';
@@ -320,7 +323,7 @@ export async function getNCDRiskStratification() {
     });
   }
 
-  console.log(`🧠 AI #15 NCD Risk Engine: ${Date.now() - start}ms (${scoredPatients.length} patients)`);
+  logger.debug('NCD Risk Engine AI computed', { duration: Date.now() - start, patientsScored: scoredPatients.length });
 
   return {
     ai_module: 'NCD Risk Stratification',

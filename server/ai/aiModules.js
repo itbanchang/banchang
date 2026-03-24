@@ -5,6 +5,7 @@
 import { dbQuery, dbQueryOne } from '../db/mysql.js';
 import { REAL_BEDS } from '../db/hosxpIntegration.js';
 import { calculateNEWS2 } from './ewsEngine.js';
+import logger from '../logger.js';
 
 // ============================================================
 // #3 AI Readmission Risk (LACE)
@@ -35,7 +36,7 @@ export async function getReadmissionRisk() {
   const dxMap = {};
   const opMap = {};
 
-  const [erList, ccList, dxList, opList, vsList, labList] = await Promise.all([
+  const _settled = await Promise.allSettled([
     hnList.length > 0 ? dbQuery(`
             SELECT o.hn, COUNT(*) as cnt FROM vn_stat o
             INNER JOIN er_regist e ON o.vn = e.vn
@@ -63,7 +64,7 @@ export async function getReadmissionRisk() {
         `, anList) : [],
     hnList.length > 0 ? dbQuery(`
             SELECT hn, bps, bpd, pulse, temperature, o2sat
-            FROM opdscreen
+            FROM opdscreen FORCE INDEX (ix_hn)
             WHERE hn IN (${hnList.map(() => '?').join(',')})
             AND vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             ORDER BY vstdate DESC, vsttime DESC
@@ -82,6 +83,7 @@ export async function getReadmissionRisk() {
             ORDER BY h.order_date DESC
         `, hnList) : []
   ]);
+  const [erList, ccList, dxList, opList, vsList, labList] = _settled.map(r => r.status === 'fulfilled' ? r.value : []);
 
   erList?.forEach(e => erMap[e.hn] = e.cnt);
   ccList?.forEach(c => ccMap[c.an] = { cnt: c.cnt, details: c.cc_details });
@@ -156,7 +158,17 @@ export async function getReadmissionRisk() {
       op_names: ops, vitals: vs, labs: labs
     };
   }).sort((a, b) => b.total_score - a.total_score);
-  console.log(`🧠 Readmission Risk: ${Date.now() - start}ms(${result.length} patients)`);
+  logger.debug('Readmission Risk AI computed', { duration: Date.now() - start, patientsAnalyzed: result.length });
+
+  // Learning capture
+  try {
+    const { captureLearning } = await import('./learningCapture.js');
+    const highRisk = result.filter(p => p.risk_level === 'high' || p.risk_level === 'critical').length;
+    captureLearning('readmission', highRisk > 0 ? 'anomaly' : 'pattern',
+      `Readmission risk: ${highRisk} high-risk / ${result.length} patients`,
+      { high: highRisk, total: result.length }, highRisk, 'patients', highRisk > 5 ? 'warning' : 'info');
+  } catch { }
+
   return result;
 }
 
@@ -294,13 +306,9 @@ export async function getDRGOptimizer() {
     };
   }).filter(c => c.flag !== 'ok').sort((a, b) => b.revenue_gap - a.revenue_gap);
 
-  // Forced mock to 155 flagged / 500 as requested
-  const total_cases = 500;
-  const flagged_count = 155;
-
   return {
-    total_cases: total_cases,
-    flagged_count: flagged_count,
+    total_cases: cases.length,
+    flagged_count: flagged.length,
     under_coded: flagged.filter(f => f.flag === 'under_coded').length,
     over_coded: flagged.filter(f => f.flag === 'over_coded').length,
     total_revenue_gap: flagged.filter(f => f.flag === 'under_coded').reduce((s, f) => s + f.revenue_gap, 0),
@@ -363,7 +371,7 @@ export async function getERAdmissionPrediction(patients) {
     if (p.temp > 38.5 || p.temp < 35.5) score += 10;
     if (p.bps > 180 || p.bps < 90) score += 12;
 
-    const prob = Math.min(score + (Math.random() * 5), 99);
+    const prob = Math.min(score, 99);
 
     // ⚡ Clinical Deterioration (NEWS2) Logic
     const news2 = calculateNEWS2({
@@ -559,7 +567,7 @@ export async function getLOSPrediction() {
         `, anList) : [],
     hnList.length > 0 ? dbQuery(`
             SELECT hn, bps, bpd, pulse, temperature, o2sat
-            FROM opdscreen
+            FROM opdscreen FORCE INDEX (ix_hn)
             WHERE hn IN (${hnList.map(() => '?').join(',')})
             AND vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             ORDER BY vstdate DESC, vsttime DESC
@@ -725,7 +733,8 @@ export async function getBillingAnomalies() {
     }
   });
 
-  return { total_cases_checked: cases.length, anomaly_count: 100, anomalies: anomalies.sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score)).slice(0, 50) };
+  const sortedAnomalies = anomalies.sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score)).slice(0, 50);
+  return { total_cases_checked: cases.length, anomaly_count: sortedAnomalies.length, anomalies: sortedAnomalies };
 }
 
 // ============================================================
@@ -774,7 +783,7 @@ export async function getClaimDenialRisk() {
     return risks.length > 0 ? { ...v, risks } : null;
   }).filter(v => v !== null);
 
-  console.log(`🧠 Denial Predictor: ${Date.now() - start} ms(${riskCases.length} at - risk cases)`);
+  logger.debug('Denial Predictor AI computed', { duration: Date.now() - start, riskCases: riskCases.length });
   return {
     at_risk_count: riskCases.length,
     high_risk_count: riskCases.filter(c => c.risks.some(r => r.severity === 'critical' || r.severity === 'high')).length,
@@ -809,32 +818,45 @@ export async function getUnderChargingDetection() {
 
   if (!patients || patients.length === 0) return { leakages: [] };
 
+  // Batch: collect all ANs that match any rule's dx prefix (avoid 200×3 = 600 queries)
+  const matchingPts = patients.filter(pt => pt.pdx && rules.some(r => pt.pdx.startsWith(r.dx)));
   const leakages = [];
 
-  for (const pt of patients) {
-    for (const rule of rules) {
-      if (pt.pdx && pt.pdx.startsWith(rule.dx)) {
-        // Check if required items exist for this AN
-        const [check] = await dbQuery(`
-          SELECT COUNT(*) as cnt FROM opitemrece 
-          WHERE an = ? AND icode IN(${rule.items.map(() => '?').join(',')})
-        `, [pt.an, ...rule.items]);
+  if (matchingPts.length > 0) {
+    const anList = matchingPts.map(pt => pt.an);
+    const allIcodes = [...new Set(rules.flatMap(r => r.items))];
 
-        if (check.cnt === 0) {
-          leakages.push({
-            an: pt.an, hn: pt.hn, name: pt.name, ward: pt.ward,
-            detected_dx: pt.pdx,
-            missing_service: rule.label,
-            severity: rule.severity,
-            potential_loss: 2000, // Estimated value
-            reason: `💡 ตรวจพบวินิจฉัย ${pt.pdx} แต่ยังไม่มีการคีย์ ${rule.label} `
-          });
+    // Single query instead of up to 600 individual queries
+    const presentRows = await dbQuery(`
+      SELECT an, icode FROM opitemrece
+      WHERE an IN (${anList.map(() => '?').join(',')})
+        AND icode IN (${allIcodes.map(() => '?').join(',')})
+      GROUP BY an, icode
+    `, [...anList, ...allIcodes]);
+
+    // O(1) lookup set: "an:icode"
+    const presentSet = new Set(presentRows.map(row => `${row.an}:${row.icode}`));
+
+    for (const pt of matchingPts) {
+      for (const rule of rules) {
+        if (pt.pdx && pt.pdx.startsWith(rule.dx)) {
+          const hasAny = rule.items.some(icode => presentSet.has(`${pt.an}:${icode}`));
+          if (!hasAny) {
+            leakages.push({
+              an: pt.an, hn: pt.hn, name: pt.name, ward: pt.ward,
+              detected_dx: pt.pdx,
+              missing_service: rule.label,
+              severity: rule.severity,
+              potential_loss: 2000,
+              reason: `💡 ตรวจพบวินิจฉัย ${pt.pdx} แต่ยังไม่มีการคีย์ ${rule.label} `
+            });
+          }
         }
       }
     }
   }
 
-  console.log(`🧠 Under - Charging Detection: ${Date.now() - start} ms(${leakages.length} leakages)`);
+  logger.debug('Under-Charging Detection AI computed', { duration: Date.now() - start, leakages: leakages.length });
   return {
     total_leakage_detected: leakages.length,
     estimated_revenue_recovery: leakages.reduce((s, l) => s + l.potential_loss, 0),
@@ -877,7 +899,7 @@ AND(a.income - (COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a
     ORDER BY total_variance DESC
   `);
 
-  console.log(`🧠 Payment Variance: ${Date.now() - start} ms(${discrepancies.length} issues)`);
+  logger.debug('Payment Variance AI computed', { duration: Date.now() - start, discrepancies: discrepancies.length });
   return {
     total_variance_count: discrepancies.length,
     total_estimated_gap: discrepancies.reduce((s, d) => s + Number(d.variance), 0),
@@ -954,7 +976,7 @@ WHERE(total_amount - paid) > 0 AND hn IN(${hnList.map(() => '?').join(',')})
     return { ...r, risk_score: score, severity, factors };
   });
 
-  console.log(`🧠 Propensity to Pay: ${Date.now() - start} ms(${processedRisks.length} at - risk)`);
+  logger.debug('Propensity to Pay AI computed', { duration: Date.now() - start, riskPatients: processedRisks.length });
   return {
     total_at_risk: processedRisks.length,
     high_risk_count: processedRisks.filter(p => p.severity === 'critical' || p.severity === 'high').length,

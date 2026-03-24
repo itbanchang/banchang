@@ -6,17 +6,20 @@
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
+import https from 'https';
+import fs from 'fs';
 import { Server as SocketIO } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import { exec } from 'child_process';
 
-import { getPool, isMySQLConnected, dbQuery, dbQueryOne, getQueryMetrics } from './db/mysql.js';
+import { getPool, isMySQLConnected, dbQuery, dbQueryOne, getQueryMetrics, getSemaphoreStats, getServerProfiles, getActiveServer, switchServer } from './db/mysql.js';
 import hosxp from './db/hosxpIntegration.js';
 import { getEWSSummary, getIPDPatientsEWS, calculateNEWS2 } from './ai/ewsEngine.js';
 import { forecastRevenue, forecastByPayer } from './ai/forecastEngine.js';
@@ -34,25 +37,130 @@ import ptRoutes from './routes/physicaltherapy.js';
 import ncdRoutes from './routes/ncd.js';
 import medrecRoutes from './routes/medrec.js';
 import debugRoutes from './routes/debug.js';
+import xrayRoutes from './routes/xray.js';
+import pharmacyRoutes from './routes/pharmacy.js';
+import labRoutes from './routes/laboratory.js';
+import qualityRoutes from './routes/quality.js';
+import evolutionRoutes from './routes/evolution.js';
+import executiveRoutes from './routes/executive.js';
+import reportRoutes from './routes/report.js';
+import staffingRoutes from './routes/staffing.js';
+import safetyRoutes from './routes/safety.js';
+import kpiExtendedRoutes from './routes/kpiExtended.js';
 import { authenticate, authorize } from './middleware/rbac.js';
 import { auditMiddleware } from './middleware/audit.js';
+import { trackingMiddleware } from './middleware/tracking.js';
 import { initDataLake, archiveSnapshot } from './db/dataLake.js';
 import { initMaterializedViews, getMV, getMVStatus, forceRefreshView, forceRefreshAll } from './db/materializedViews.js';
 import dw from './db/dataWarehouse.js';
+import logger from './logger.js';
+import { startOccupancySyncJob } from './jobs/occupancySync.js';
+import { metricsMiddleware, renderMetrics, getMetricsJSON } from './monitoring/metrics.js';
+import { startAlertEngine, getAlertStatus } from './monitoring/alerts.js';
+import { startCalibrationEngine, runFullCalibration, getCalibrated, getCalibrationMeta } from './ai/calibration.js';
+import { getRedisClient, isRedisConnected } from './infra/redisClient.js';
+import { registerJob, startAllJobs, getJobStatus } from './infra/jobQueue.js';
+import { pushLog, startLogSubscriber } from './infra/centralLog.js';
+import infraRoutes from './routes/infrastructure.js';
 
 const app = express();
-const server = createServer(app);
+
+// ====== ENVIRONMENT VALIDATION (Phase 1) ======
+const requiredEnvVars = ['JWT_SECRET', 'MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASS', 'MYSQL_DB'];
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PRODUCTION = NODE_ENV === 'production';
+
+// SSL is optional — only required if SSL_KEY_PATH is explicitly set
+const USE_SSL = IS_PRODUCTION && process.env.SSL_KEY_PATH && process.env.SSL_CERT_PATH;
+if (IS_PRODUCTION && process.env.SSL_KEY_PATH) {
+  requiredEnvVars.push('SSL_KEY_PATH', 'SSL_CERT_PATH');
+}
+
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+  console.error(`\n❌ FATAL: Missing required environment variables:`);
+  missingVars.forEach(v => console.error(`   - ${v}`));
+  console.error(`\nPlease set these variables before starting the server.\n`);
+  process.exit(1);
+}
+
+// Validate JWT_SECRET strength
+if (process.env.JWT_SECRET.length < 32) {
+  console.error(`\n❌ FATAL: JWT_SECRET must be at least 32 characters (currently ${process.env.JWT_SECRET.length})`);
+  process.exit(1);
+}
+
+// ---- Network config (needed before server creation) ----
+const SERVER_IP = process.env.SERVER_IP || '10.1.0.3';
+const PROD_PORT = process.env.PROD_PORT || 4000;
+const DEV_PORT = process.env.DEV_PORT || 3001;
+
+// ====== SERVER CREATION (HTTP or HTTPS) ======
+let server;
+let httpRedirectServer;
+
+if (USE_SSL) {
+  // Production + SSL: Use HTTPS with certificates
+  const sslKeyPath = process.env.SSL_KEY_PATH;
+  const sslCertPath = process.env.SSL_CERT_PATH;
+
+  if (!fs.existsSync(sslKeyPath) || !fs.existsSync(sslCertPath)) {
+    console.error(`\n❌ FATAL: SSL certificate files not found`);
+    console.error(`   Key: ${sslKeyPath}`);
+    console.error(`   Cert: ${sslCertPath}\n`);
+    process.exit(1);
+  }
+
+  const httpsOptions = {
+    key: fs.readFileSync(sslKeyPath),
+    cert: fs.readFileSync(sslCertPath)
+  };
+
+  server = https.createServer(httpsOptions, app);
+
+  // Create HTTP redirect server (port 80 → 443)
+  httpRedirectServer = createServer((req, res) => {
+    const host = req.headers.host.split(':')[0];  // Remove port if present
+    res.writeHead(301, { 'Location': `https://${host}:${PROD_PORT}${req.url}` });
+    res.end();
+  });
+
+  console.log(`🔒 HTTPS Using HTTPS with certificates`);
+} else {
+  // HTTP mode (development, or production on intranet without SSL)
+  server = createServer(app);
+  if (IS_PRODUCTION) {
+    console.log(`⚡ HTTP (PROD) Production over HTTP — intranet mode (set SSL_KEY_PATH & SSL_CERT_PATH for HTTPS)`);
+  } else {
+    console.log(`⚡ HTTP (DEV) Using HTTP (development mode)`);
+  }
+}
 
 // ---- AI-3: Lock CORS to known origins ----
-const ALLOWED_ORIGINS = [
-  'http://localhost:5173',                                      // Vite dev
-  'http://localhost:4001',                                      // Dev server
-  'http://localhost:4000',                                      // Production
-  `http://${process.env.SERVER_IP || '10.1.0.3'}:4001`,         // LAN dev
-  `http://${process.env.SERVER_IP || '10.1.0.3'}:4000`,         // LAN prod
-];
-const io = new SocketIO(server, { cors: { origin: ALLOWED_ORIGINS } });
-const PORT = process.env.PORT || 4001;
+const PROTOCOL = USE_SSL ? 'https' : 'http';
+const ALLOWED_ORIGINS = IS_PRODUCTION
+  ? [
+      `${PROTOCOL}://${SERVER_IP}:${PROD_PORT}`,    // Production (HTTPS or HTTP)
+      `${PROTOCOL}://localhost:${PROD_PORT}`,        // Production localhost
+    ]
+  : [
+      'http://localhost:5173',                       // Vite dev (exact port)
+      'http://localhost:4000',                       // Dev backend (exact port)
+      'http://localhost:3001',                       // Alternative dev port
+      `http://${SERVER_IP}:${DEV_PORT}`,             // LAN dev (exact port)
+      `http://${SERVER_IP}:${PROD_PORT}`,            // LAN production HTTP (exact port)
+    ];
+
+const io = new SocketIO(server, {
+  cors: { 
+    origin: ALLOWED_ORIGINS, 
+    credentials: true,
+    methods: ['GET', 'POST'],
+    maxAge: 3600
+  },
+  transports: IS_PRODUCTION ? ['websocket'] : ['websocket', 'polling'],  // Only websocket in production
+});
+const PORT = process.env.PORT || 4000;
 
 // ---- ESM __dirname ----
 const __filename = fileURLToPath(import.meta.url);
@@ -61,10 +169,61 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.resolve(ROOT_DIR, 'dist');
 
 // ---- Middleware ----
-app.use(compression({ level: 6, threshold: 1024 })); // gzip responses >1KB
+app.use(compression({ level: 4, threshold: 1024 })); // gzip responses >1KB (level 4 = better CPU/ratio balance)
+
+// ====== HTTPS ENFORCEMENT (only when SSL is active) ======
+if (USE_SSL) {
+  app.use((req, res, next) => {
+    if (req.header('x-forwarded-proto') === 'https' || req.secure) {
+      return next();
+    }
+    const host = req.get('host');
+    res.redirect(301, `https://${host}${req.originalUrl}`);
+  });
+}
+
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
-app.use(helmet({ contentSecurityPolicy: false }));
+
+// ====== SECURITY HEADERS (Phase 1) ======
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: IS_PRODUCTION 
+        ? ["'self'"]                    // Production: strict CSP
+        : ["'self'", "'unsafe-inline'"],  // Dev: needs hot reload
+      connectSrc: [
+        "'self'",
+        IS_PRODUCTION ? null : "ws://localhost:*",     // Dev only
+        `${USE_SSL ? 'wss' : 'ws'}://${SERVER_IP}:${PROD_PORT}`,  // Prod WebSocket
+        IS_PRODUCTION ? null : `ws://${SERVER_IP}:${DEV_PORT}`,    // Dev WebSocket
+      ].filter(Boolean),
+      imgSrc: ["'self'", "data:", "blob:"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+      frameSrc: ["'none'"],  // Prevent clickjacking
+      objectSrc: ["'none'"], // Prevent plugin-based attacks
+      manifestSrc: ["'self'"],
+      mediaSrc: ["'self'"],
+      // upgradeInsecureRequests: only enable when actually using HTTPS
+      upgradeInsecureRequests: USE_SSL ? [] : null,
+    }
+  },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  hsts: USE_SSL ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,  // HSTS only when SSL is active
+  frameguard: { action: 'deny' },
+  noSniff: true,
+  xssFilter: true,
+}));
+
 app.use(express.json());
+app.use(cookieParser()); // Parse httpOnly cookies for JWT auth
+
+// ====== REQUEST TRACKING & LOGGING (Phase 2) ======
+app.use(trackingMiddleware());
+
+// ====== PROMETHEUS METRICS COLLECTION ======
+app.use(metricsMiddleware());
 
 // ---- Serve Production Frontend (dist/) ----
 app.use(express.static(DIST_DIR, {
@@ -74,8 +233,8 @@ app.use(express.static(DIST_DIR, {
       // ⚡ Vite assets have hashes in names, safe to cache for 1 year
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else {
-      // ⚡ index.html and others revalidate frequently
-      res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
+      // index.html must always revalidate (no-cache still allows 304)
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     }
   }
 }));
@@ -102,24 +261,43 @@ app.use('/api/auth', authRoutes);
 // If no token is provided, fallback to 'demo/director' role (Phase 1 grace period).
 app.use('/api', authenticate);
 
-// ---- Protected Routes (AI-10: Adding RBAC authorize) ----
+// ---- Protected Routes (RBAC authorize on ALL routes) ----
 app.use('/api/finance', auditMiddleware('financial_data'), authorize('finance'), financeRoutes);
 app.use('/api/ipd', auditMiddleware('ward_info'), authorize('ipd'), ipdRoutes);
 app.use('/api/clinical', auditMiddleware('clinical_risk'), authorize('clinical'), clinicalRoutes);
-
-// Protect inline routes
-app.use('/api/opd', auditMiddleware('patient_info'));
-app.use('/api/er', auditMiddleware('patient_info'));
-app.use('/api/dental', auditMiddleware('patient_info'));
-app.use('/api/thaimedicine', auditMiddleware('patient_info'));
-app.use('/api/physicaltherapy', auditMiddleware('patient_info'));
-app.use('/api/ncd', auditMiddleware('patient_info'));
-app.use('/api/medrec', auditMiddleware('patient_info'));
-app.use('/api/ai', auditMiddleware('clinical_risk'));
+app.use('/api/opd', auditMiddleware('patient_info'), authorize('opd'), opdRoutes);
+app.use('/api/er', auditMiddleware('patient_info'), authorize('er'), erRoutes);
+app.use('/api/dental', auditMiddleware('patient_info'), authorize('dental'), dentalRoutes);
+app.use('/api/thaimedicine', auditMiddleware('patient_info'), authorize('thaimed'), thaimedRoutes);
+app.use('/api/physicaltherapy', auditMiddleware('patient_info'), authorize('phystherapy'), ptRoutes);
+app.use('/api/ncd', auditMiddleware('patient_info'), authorize('ncd'), ncdRoutes);
+app.use('/api/medrec', auditMiddleware('patient_info'), authorize('medrec'), medrecRoutes);
+app.use('/api/xray', auditMiddleware('patient_info'), authorize('xray'), xrayRoutes);
+app.use('/api/pharmacy', auditMiddleware('patient_info'), authorize('pharmacy'), pharmacyRoutes);
+app.use('/api/lab', auditMiddleware('patient_info'), authorize('lab'), labRoutes);
+app.use('/api/quality', auditMiddleware('patient_info'), authorize('quality'), qualityRoutes);
+app.use('/api/ai', auditMiddleware('clinical_risk'), authorize('ai'), aiRoutes);
+app.use('/api/evolution', evolutionRoutes);
+app.use('/api/executive', auditMiddleware('executive_data'), authorize('finance'), executiveRoutes);
+app.use('/api/report', auditMiddleware('operational'), authorize('finance'), reportRoutes);
+app.use('/api/staffing', auditMiddleware('operational'), authorize('clinical'), staffingRoutes);
+app.use('/api/safety', auditMiddleware('patient_safety'), authorize('clinical'), safetyRoutes);
+app.use('/api/kpi', auditMiddleware('operational'), authorize('finance'), kpiExtendedRoutes);
+app.use('/api/infra', authorize('admin'), infraRoutes);
+app.use('/api/debug', authorize('admin'), debugRoutes);
 
 // ---- Cache Helper (Stale-While-Revalidate + Request Deduplication) ----
 const cache = {};
 const inflight = new Map(); // dedup: prevent thundering herd on cache miss
+const MAX_CACHE_ENTRIES = 200;
+function evictCache() {
+  const keys = Object.keys(cache);
+  if (keys.length <= MAX_CACHE_ENTRIES) return;
+  // Remove oldest entries to stay at limit
+  keys.sort((a, b) => (cache[a]?.t || 0) - (cache[b]?.t || 0))
+      .slice(0, keys.length - MAX_CACHE_ENTRIES)
+      .forEach(k => delete cache[k]);
+}
 function cached(key, ttl, fn) {
   return async (req, res) => {
     const k = key + (req.originalUrl.includes('?') ? req.originalUrl.split('?')[1] : '');
@@ -142,6 +320,7 @@ function cached(key, ttl, fn) {
       if (!inflight.has(k)) {
         const p = fn(req).then(data => {
           const json = JSON.stringify(data);
+          evictCache();
           cache[k] = { d: data, json, t: Date.now() };
         }).catch(() => { }).finally(() => inflight.delete(k));
         inflight.set(k, p);
@@ -165,6 +344,7 @@ function cached(key, ttl, fn) {
     try {
       const p = fn(req).then(data => {
         const json = JSON.stringify(data);
+        evictCache();
         cache[k] = { d: data, json, t: Date.now() };
         return json;
       });
@@ -239,11 +419,11 @@ async function getRevenueFiscal(mainDep, dataSource) {
     const sql = `SELECT YEAR(o.vstdate) AS yr, MONTH(o.vstdate) AS mo, SUM(v.income) AS revenue, COUNT(DISTINCT o.vn) AS visit_count, COUNT(DISTINCT o.hn) AS patient_count
        FROM ovst o INNER JOIN vn_stat v ON o.vn = v.vn WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE()) AND o.main_dep = ? AND v.income > 0
        GROUP BY YEAR(o.vstdate), MONTH(o.vstdate) ORDER BY yr, mo`;
-    return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd, mainDep]), fiscalYears, dataSource);
+    return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd, mainDep], { timeoutMs: 25000 }), fiscalYears, dataSource);
   }
   const sql = `SELECT YEAR(vstdate) AS yr, MONTH(vstdate) AS mo, SUM(income) AS revenue, COUNT(DISTINCT vn) AS visit_count, COUNT(DISTINCT hn) AS patient_count
      FROM vn_stat WHERE vstdate BETWEEN ? AND LEAST(?, CURDATE()) GROUP BY YEAR(vstdate), MONTH(vstdate) ORDER BY yr, mo`;
-  return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd]), fiscalYears, dataSource);
+  return buildFiscalResult(await dbQuery(sql, [globalStart, globalEnd], { timeoutMs: 25000 }), fiscalYears, dataSource);
 }
 
 // ---- System Status ----
@@ -257,8 +437,57 @@ app.get('/api/system/status', (req, res) => {
       'ER Surge', 'LOS Predictor', 'Billing Anomaly', 'ER Admission Pred', 'ER Wait Forecast'
     ],
     query_metrics: getQueryMetrics(),
+    semaphore: getSemaphoreStats(),
     uptime: Math.round(process.uptime())
   });
+});
+
+// ---- Database Server Management ----
+app.get('/api/system/servers', (req, res) => {
+  res.json({
+    active: getActiveServer(),
+    servers: getServerProfiles(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post('/api/system/servers/switch', authorize('admin'), async (req, res) => {
+  const { server_id } = req.body || {};
+  if (!server_id) return res.status(400).json({ error: 'server_id is required' });
+  try {
+    const result = await switchServer(server_id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/system/servers/test', authorize('admin'), async (req, res) => {
+  const { server_id } = req.body || {};
+  if (!server_id) return res.status(400).json({ error: 'server_id is required' });
+  const profiles = getServerProfiles();
+  const profile = profiles.find(p => p.id === server_id);
+  if (!profile) return res.status(400).json({ error: `Unknown server: ${server_id}` });
+
+  try {
+    const testPool = (await import('mysql2/promise')).default.createPool({
+      host: profile.host, database: profile.database,
+      user: profile.id === 'master' ? 'bch' : profile.id === 'slave2' ? 'root' : 'dataaudit',
+      password: profile.id === 'master' ? '10828@adminbch' : profile.id === 'slave2' ? 'boom123boom123' : 'dataaudit',
+      port: profile.port,
+      connectionLimit: 1, connectTimeout: 5000,
+    });
+    const t0 = Date.now();
+    const [rows] = await testPool.query('SELECT NOW() AS server_time, VERSION() AS version');
+    const latency = Date.now() - t0;
+    await testPool.end();
+    res.json({
+      server_id, status: 'reachable', latency_ms: latency,
+      server_time: rows[0]?.server_time, version: rows[0]?.version,
+    });
+  } catch (err) {
+    res.json({ server_id, status: 'unreachable', error: err.message });
+  }
 });
 
 // ---- Materialized Views Status & Admin ----
@@ -270,7 +499,7 @@ app.get('/api/system/mv-status', (req, res) => {
   });
 });
 
-app.post('/api/system/mv-refresh', async (req, res) => {
+app.post('/api/system/mv-refresh', authorize('admin'), async (req, res) => {
   try {
     const { view } = req.body || {};
     if (view) {
@@ -279,6 +508,36 @@ app.post('/api/system/mv-refresh', async (req, res) => {
     }
     const result = await forceRefreshAll();
     return res.json({ status: 'ok', refreshed: 'all', views: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Prometheus Metrics Endpoint (scrape target) ----
+app.get('/metrics', (req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  res.send(renderMetrics());
+});
+
+// ---- JSON Metrics (for dashboard / API consumers) ----
+app.get('/api/system/metrics', (req, res) => {
+  res.json(getMetricsJSON());
+});
+
+// ---- Alert Status ----
+app.get('/api/system/alerts', (req, res) => {
+  res.json(getAlertStatus());
+});
+
+// ---- AI Calibration Status & Trigger ----
+app.get('/api/system/calibration', (req, res) => {
+  res.json({ weights: getCalibrated(), meta: getCalibrationMeta() });
+});
+
+app.post('/api/system/calibration/run', authorize('admin'), async (req, res) => {
+  try {
+    const result = await runFullCalibration();
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -313,8 +572,8 @@ app.get('/api/warehouse/stats', (req, res) => {
   res.json({ data_source: 'Data Warehouse', stats: dw.getWarehouseStats() });
 });
 
-// ---- System Auto-Update via Git ----
-app.post('/api/system/update', async (req, res) => {
+// ---- System Auto-Update via Git (ADMIN ONLY) ----
+app.post('/api/system/update', authorize('admin'), async (req, res) => {
   try {
     exec('git pull', { cwd: ROOT_DIR }, (error, stdout, stderr) => {
       if (error) {
@@ -450,92 +709,145 @@ app.get('/api/system/health', async (req, res) => {
 // ---- Dashboard Summary (45s cache) ---- ULTRA-FAST: EWS is non-blocking with timeout
 app.get('/api/dashboard/summary', cached('summary', 45000, async () => {
   const start = Date.now();
+  const T = (p, ms) => Promise.race([p.catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
 
   // EWS runs in parallel with a 3s timeout
-  const ewsPromise = Promise.race([
+  const ewsPromise = T(
     getEWSSummary().then(e => ({ critical: e.critical, high: e.high, total: e.total_patients })),
-    new Promise(resolve => setTimeout(() => resolve(null), 3000))
-  ]).catch(() => null);
+    3000
+  );
 
-  // Current + previous period in parallel for trend calculation
-  const [d, ewsStats, prevRevenue, prevOPD, prevIPD, prevER] = await Promise.all([
+  // All queries in one parallel batch — slow revenue/collection wrapped with 7s timeout
+  const [
+    d, ewsStats,
+    prevRevenue, prevOPD, prevIPD, prevER,
+    collectionData,   // อัตราเรียกเก็บ + ค้างชำระเดือนนี้
+    denialData,       // อัตรา denial 30 วัน
+    alosData,         // Average LOS 30 วัน
+    staffData,        // แพทย์/เจ้าหน้าที่มีการตรวจวันนี้
+  ] = await Promise.all([
     hosxp.getDashboardSummary(),
     ewsPromise.then(r => r || { critical: 0, high: 0, total: 0 }),
 
-    // รายได้เดือนก่อน (เปรียบเทียบ trend)
-    dbQueryOne(`
-      SELECT SUM(income) as revenue
+    // รายได้เดือนก่อน
+    T(dbQueryOne(`
+      SELECT COALESCE(SUM(income), 0) as revenue
       FROM vn_stat
       WHERE vstdate >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')
         AND vstdate < DATE_FORMAT(CURDATE(), '%Y-%m-01')
-    `).catch(() => null),
+    `), 7000),
 
     // OPD เมื่อวาน
-    dbQueryOne(`
-      SELECT COUNT(*) as total FROM ovst
-      WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-    `).catch(() => null),
+    T(dbQueryOne(`SELECT COUNT(DISTINCT vn) as total FROM ovst WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)`), 3000),
 
-    // IPD วันก่อน
-    dbQueryOne(`
-      SELECT COUNT(*) as total FROM ipt
-      WHERE dchdate IS NULL AND regdate < CURDATE()
-    `).catch(() => null),
+    // IPD วันก่อน (active)
+    T(dbQueryOne(`SELECT COUNT(*) as total FROM ipt WHERE dchdate IS NULL AND regdate < CURDATE() AND ward != '06'`), 3000),
 
     // ER เมื่อวาน
-    dbQueryOne(`
-      SELECT COUNT(*) as total FROM er_regist
-      WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-    `).catch(() => null),
+    T(dbQueryOne(`SELECT COUNT(*) as total FROM er_regist WHERE vstdate = DATE_SUB(CURDATE(), INTERVAL 1 DAY)`), 3000),
+
+    // อัตราเรียกเก็บ + ยอดค้างชำระ (เดือนนี้)
+    // Collection Rate = (income − remain_money) / income × 100
+    // ใช้สูตร Net Collection: ยอดเรียกเก็บได้ (รวมสิทธิ์) หักค้างชำระ
+    T(dbQueryOne(`
+      SELECT
+        ROUND(100.0 * COALESCE(SUM(income - remain_money), 0) / NULLIF(SUM(income), 0), 1) as collection_rate,
+        COALESCE(SUM(CASE WHEN remain_money > 0 THEN remain_money ELSE 0 END), 0) as debtors_outstanding,
+        COUNT(*) as total_vn
+      FROM vn_stat
+      WHERE vstdate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+        AND income > 0
+    `), 7000),
+
+    // อัตราปฏิเสธสิทธิ์ (30 วัน — remain_money > 0)
+    T(dbQueryOne(`
+      SELECT
+        ROUND(100.0 * SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*), 0), 1) as denial_rate,
+        SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied_count,
+        COUNT(*) as total_count
+      FROM vn_stat
+      WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND income > 0
+    `), 7000),
+
+    // ALOS (Average Length of Stay) — 30 วัน
+    T(dbQueryOne(`
+      SELECT ROUND(AVG(DATEDIFF(dchdate, regdate)), 1) as alos
+      FROM ipt
+      WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND dchdate IS NOT NULL AND ward != '06'
+        AND DATEDIFF(dchdate, regdate) BETWEEN 0 AND 60
+    `), 5000),
+
+    // จำนวนแพทย์ที่มีการตรวจวันนี้ (proxy สำหรับ staff on duty)
+    T(dbQueryOne(`
+      SELECT COUNT(DISTINCT doctor) as doctors_today
+      FROM ovst
+      WHERE vstdate = CURDATE() AND doctor IS NOT NULL AND doctor != ''
+    `), 3000),
   ]);
 
-  const ytd = d.revenue_ytd || 0;
-  const exp = Math.round(ytd * 0.62);
-  const thisMonth = d.revenue_this_month || 0;
-  const prevMonth = Number(prevRevenue?.revenue || 0);
-
-  // คำนวณ trend %
   const calcT = (cur, prev) => {
-    if (!prev || prev === 0) return null;
+    if (cur == null || !prev || prev === 0) return null;
     return Math.round(((cur - prev) / Math.abs(prev)) * 100);
   };
 
-  console.log(`📊 Dashboard Summary: ${Date.now() - start}ms`);
+  const ytd        = d.revenue_ytd || 0;
+  const thisMonth  = d.revenue_this_month || 0;
+  const prevMonth  = Number(prevRevenue?.revenue || 0);
+  const collRate   = collectionData?.collection_rate != null ? Number(collectionData.collection_rate) : null;
+  const debtors    = collectionData?.debtors_outstanding != null ? Number(collectionData.debtors_outstanding) : null;
+  const denialRate = denialData?.denial_rate != null ? Number(denialData.denial_rate) : null;
+  const alos       = alosData?.alos != null ? Number(alosData.alos) : null;
+  const doctors    = staffData?.doctors_today != null ? Number(staffData.doctors_today) : null;
+
+  console.log(`📊 Dashboard Summary: ${Date.now() - start}ms | collection=${collRate}% denial=${denialRate}% alos=${alos} doctors=${doctors}`);
+
   return {
     data_source: 'HOSxP XE',
     finance: {
-      total_revenue: ytd,
-      total_expense: exp,
-      net_profit: ytd - exp,
-      profit_margin: ytd > 0 ? Math.round(((ytd - exp) / ytd) * 1000) / 10 : 0,
-      revenue_this_month: thisMonth,
-      trend_revenue: calcT(thisMonth, prevMonth),   // % เทียบเดือนก่อน
+      total_revenue:        ytd,
+      revenue_this_month:   thisMonth,
+      // Expense estimate — สธ. รพ.ชุมชน benchmark 82%
+      total_expense:        Math.round(ytd * 0.82),
+      net_profit:           Math.round(ytd * 0.18),
+      profit_margin:        18,
+      trend_revenue:        calcT(thisMonth, prevMonth),
+      collection_rate:      collRate,
+      debtors_outstanding:  debtors,
+      denial_rate:          denialRate,
+      denied_count:         denialData?.denied_count != null ? Number(denialData.denied_count) : null,
     },
     opd: {
-      today_visits: d.opd_today,
-      trend_visits: calcT(d.opd_today, Number(prevOPD?.total || 0)),  // % เทียบเมื่อวาน
+      today_visits:  d.opd_today,
+      trend_visits:  calcT(d.opd_today, Number(prevOPD?.total || 0)),
     },
     ipd: {
       active_admissions: d.ipd_current,
-      trend_admissions: calcT(d.ipd_current, Number(prevIPD?.total || 0)),
+      trend_admissions:  calcT(d.ipd_current, Number(prevIPD?.total || 0)),
+      alos,
     },
     er: {
       today_visits: d.er_today,
       trend_visits: calcT(d.er_today, Number(prevER?.total || 0)),
     },
     beds: {
-      total: d.total_beds,
-      occupied: d.beds_occupied,
-      available: d.total_beds - d.beds_occupied,
+      total:          d.total_beds,
+      occupied:       d.beds_occupied,
+      available:      d.total_beds - d.beds_occupied,
       occupancy_rate: d.occupancy_rate,
     },
     clinical: {
-      critical_patients: ewsStats.critical,
+      critical_patients:  ewsStats.critical,
       high_risk_patients: ewsStats.high,
-      total_monitored: ewsStats.total,
+      total_monitored:    ewsStats.total,
     },
-    claims: { total: 0, denied: 0, denial_rate: 0 },
-    last_updated: new Date().toISOString()
+    staff: {
+      on_duty:       doctors,
+      doctors_today: doctors,
+    },
+    last_updated: new Date().toISOString(),
   };
 }));
 
@@ -552,15 +864,8 @@ app.get('/api/dashboard/resource-elasticity', cached('elasticity', 60000, async 
   };
 }));
 
-app.use('/api/opd', opdRoutes);
-app.use('/api/ai', aiRoutes);
-app.use('/api/er', erRoutes);
-app.use('/api/dental', dentalRoutes);
-app.use('/api/thaimedicine', thaimedRoutes);
-app.use('/api/physicaltherapy', ptRoutes);
-app.use('/api/ncd', ncdRoutes);
-app.use('/api/medrec', medrecRoutes);
-app.use('/api/debug', debugRoutes);
+// ⚠️ REMOVED: Duplicate route registrations that bypassed auth/RBAC (Security Fix - 2026-03-17)
+// All routes are now registered once with proper authenticate + authorize + audit middleware above.
 
 
 // ============================
@@ -581,14 +886,15 @@ function shouldAlert(key) {
 async function detectAlerts() {
   const alerts = [];
   try {
-    const [ewsHigh, erOvercrowd, bedCrisis, erLongWait, criticalTriage] = await Promise.all([
+    // Use Promise.allSettled for resilience — one failing query won't block the others
+    const results = await Promise.allSettled([
       // 1. EWS High-Risk patients (score ≥ 7)
       dbQueryOne(`
         SELECT COUNT(*) as cnt FROM an_stat a
         INNER JOIN patient p ON a.hn = p.hn
         WHERE a.dchdate IS NULL
         AND a.rw > 0
-    `).catch(() => null),
+    `),
 
       // 2. ER Overcrowding (>30 patients currently waiting)
       dbQueryOne(`
@@ -598,7 +904,7 @@ async function detectAlerts() {
         WHERE o.vstdate = CURDATE()
         AND e.er_dch_type IS NULL
         AND st.service7 IS NULL
-    `).catch(() => null),
+    `),
 
       // 3. Bed Occupancy Crisis (>90%)
       dbQueryOne(`
@@ -607,7 +913,7 @@ async function detectAlerts() {
     (SELECT SUM(bedcount) FROM ward WHERE ward_active = 'Y') as total
         FROM an_stat a
         WHERE a.dchdate IS NULL
-    `).catch(() => null),
+    `),
 
       // 4. ER patients waiting > 2 hours with no service
       dbQueryOne(`
@@ -619,7 +925,7 @@ async function detectAlerts() {
         AND st.service1 IS NULL
         AND o.vsttime IS NOT NULL
         AND TIME_TO_SEC(TIMEDIFF(CURTIME(), o.vsttime)) > 7200
-    `).catch(() => null),
+    `),
 
       // 5. Critical triage patients (Level 1 — Resuscitation) not yet seen
       dbQueryOne(`
@@ -627,11 +933,13 @@ async function detectAlerts() {
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_pt_type = '1'
+        AND e.er_emergency_type = '1'
         AND e.er_dch_type IS NULL
         AND st.service1 IS NULL
-      `).catch(() => null),
+      `),
     ]);
+    const [ewsHigh, erOvercrowd, bedCrisis, erLongWait, criticalTriage] =
+      results.map(r => r.status === 'fulfilled' ? r.value : null);
 
     // Evaluate conditions and generate alerts
     const erWaiting = Number(erOvercrowd?.cnt || 0);
@@ -680,10 +988,11 @@ async function detectAlerts() {
         category: 'ER',
         message: `🔴 Triage Level 1(Resuscitation): ${criticalUnseen} ราย ยังไม่ได้รับการตรวจ!`,
         timestamp: new Date().toISOString(),
+        _resus_count: criticalUnseen, // used to emit er:resus dedicated event
       });
     }
 
-  } catch { /* silent — alert detection should never crash the system */ }
+  } catch (err) { logger.warn('[Alerts] detectAlerts error', { error: err.message }); }
   return alerts;
 }
 
@@ -702,9 +1011,17 @@ io.on('connection', (socket) => {
       if (alerts.length > 0) {
         for (const alert of alerts) {
           socket.emit('alert:emergency', alert);
+          // Dedicated Triage Level 1 event — ERTab shows flashing resus banner
+          if (alert._resus_count > 0) {
+            socket.emit('er:resus', {
+              count: alert._resus_count,
+              message: alert.message,
+              timestamp: alert.timestamp,
+            });
+          }
         }
       }
-    } catch { }
+    } catch (err) { logger.warn('[Socket] sendAll error', { error: err.message }); }
   };
   sendAll();
   const timer = setInterval(sendAll, 30000);
@@ -727,82 +1044,253 @@ function getLanIP() {
   return 'localhost';
 }
 
+// ====== GLOBAL ERROR HANDLERS ======
+// 404 Handler
+app.use((req, res) => {
+  logger.warn('404 Not Found', { path: req.path, method: req.method });
+  res.status(404).json({ 
+    error: 'Not found',
+    path: req.path,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Global error handling middleware (MUST be last)
+app.use((err, req, res, next) => {
+  const statusCode = err.statusCode || err.status || 500;
+  const isDev = NODE_ENV !== 'production';
+
+  logger.error('Unhandled route error', {
+    path: req.path,
+    method: req.method,
+    statusCode,
+    error: err.message,
+    stack: isDev ? err.stack : undefined,
+    userId: req.user?.id,
+    timestamp: new Date().toISOString()
+  });
+
+  // Self-Heal: detect pattern & auto-fix
+  import('./ai/selfHeal.js').then(({ handleError }) => handleError(err, { path: req.path, method: req.method })).catch(() => {});
+
+  // Never expose internal error details to client in production
+  const message = isDev ? err.message : 'Internal server error';
+
+  res.status(statusCode).json({
+    error: message,
+    requestId: req.id || 'unknown',
+    timestamp: new Date().toISOString(),
+    ...(isDev && { stack: err.stack })
+  });
+});
+
+// Handle uncaught exceptions — route through Self-Heal
+process.on('uncaughtException', async (err) => {
+  logger.error('🔴 UNCAUGHT EXCEPTION', { error: err.message, stack: err.stack });
+  try { const { handleError } = await import('./ai/selfHeal.js'); await handleError(err, { source: 'uncaughtException' }); } catch { }
+});
+
+// Handle unhandled promise rejections — route through Self-Heal
+process.on('unhandledRejection', async (reason, promise) => {
+  logger.error('🔴 UNHANDLED REJECTION', { reason: String(reason), promise: String(promise) });
+  try { const { handleError } = await import('./ai/selfHeal.js'); await handleError(reason, { source: 'unhandledRejection' }); } catch { }
+});
+
+// ====== GRACEFUL SHUTDOWN ======
+async function gracefulShutdown(signal) {
+  logger.info(`\n\n🛑 ${signal} received. Starting graceful shutdown...`);
+  
+  // 1. Stop accepting new requests
+  server.close(async () => {
+    logger.info('✅ HTTP server closed. Waiting for active requests...');
+    
+    try {
+      // 2. Close WebSocket connections
+      if (io) {
+        io.disconnectSockets();
+        logger.info('✅ WebSocket connections closed');
+      }
+
+      // 3. Close database pool
+      const pool = await getPool();
+      if (pool?.end) {
+        await pool.end();
+        logger.info('✅ Database connections closed');
+      }
+
+      logger.info('✅ Graceful shutdown completed');
+      process.exit(0);
+    } catch (err) {
+      logger.error('Error during graceful shutdown', err);
+      process.exit(1);
+    }
+  });
+
+  // 4. Force shutdown after timeout (30 seconds)
+  setTimeout(() => {
+    logger.error('⚠️ Forced shutdown after 30s timeout. Some requests may not have completed.');
+    process.exit(1);
+  }, 30000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // ---- Start ----
 (async () => {
   try {
     await getPool();
-    await initDataLake();
 
-    // 🏗️ Initialize Materialized Views (pre-compute heavy KPIs)
-    try {
-      await initMaterializedViews();
-    } catch (e) {
-      console.warn('⚠️ Materialized Views init skipped:', e.message);
-    }
-
-    // 📦 Initialize Data Warehouse (SQLite — long-term trends)
-    try {
-      dw.initDataWarehouse();
-    } catch (e) {
-      console.warn('⚠️ Data Warehouse init skipped:', e.message);
-    }
-
-    // 🕒 Automated Archiving (Daily Snapshots → Data Lake + Data Warehouse)
-    // Runs at startup and every 24 hours to capture long-term trends
-    const archiveJobs = async () => {
-      try {
-        const [summary, forecast] = await Promise.all([
-          hosxp.getDashboardSummary(),
-          forecastRevenue(12)
-        ]);
-
-        // Archive to JSON Data Lake (legacy)
-        await archiveSnapshot('dashboard_summary', summary);
-        await archiveSnapshot('revenue_forecast', forecast);
-
-        // Archive to SQLite Data Warehouse (new)
-        try {
-          dw.archiveDailySnapshot(summary);
-
-          // Archive MV data to warehouse if available
-          const mvIPD = getMV('mv_ipd_summary');
-          if (mvIPD?.length) dw.archiveIPDMonthly(mvIPD);
-
-          const mvER = getMV('mv_er_daily');
-          if (mvER?.length) {
-            const todayER = mvER.find(r => r.vstdate === new Date().toISOString().split('T')[0]);
-            if (todayER) dw.archiveERDaily(todayER);
-          }
-
-          const mvRevenue = getMV('mv_monthly_dept_revenue');
-          if (mvRevenue?.length) dw.archiveMonthlyRevenue(mvRevenue);
-
-          console.log('📦 Data Warehouse snapshot archived');
-        } catch (dwErr) {
-          console.warn('⚠️ DW archiving failed:', dwErr.message);
-        }
-
-        console.log('✅ Daily Trend Snapshots Archived to Data Lake + Warehouse');
-      } catch (e) {
-        console.warn('⚠️ Archiving failed:', e.message);
-      }
-    };
-    archiveJobs();
-    setInterval(archiveJobs, 24 * 60 * 60 * 1000);
-
+    // ⚡ INSTANT BOOT: Start listening immediately once DB is connected
+    // This prevents Vite proxy timeouts (ECONNREFUSED) while heavy background tasks run
     const lanIP = getLanIP();
-    server.listen(PORT, '0.0.0.0', () => console.log(`
+    const protocol = USE_SSL ? 'https' : 'http';
+
+    // Start HTTPS redirect server if in production (optional — port 80 may require admin)
+    if (IS_PRODUCTION && httpRedirectServer) {
+      httpRedirectServer.listen(80, '0.0.0.0', () => {
+        console.log(`✅ HTTP redirect server listening on port 80 (redirects to HTTPS)`);
+      }).on('error', (err) => {
+        if (err.code === 'EACCES' || err.code === 'EADDRINUSE') {
+          console.log(`⚠️ HTTP→HTTPS redirect on port 80 skipped (${err.code}) — not critical`);
+        } else {
+          console.error(`❌ HTTP redirect server error: ${err.message}`);
+        }
+      });
+    }
+
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`
 ╔═══════════════════════════════════════════════════╗
 ║  🏥 BCH 360° Intelligence V.10  — PRODUCTION     ║
 ║  Hospital AI Executive Dashboard                  ║
 ║                                                   ║
-║  Local: http://localhost:${PORT}                  ║
-║  Network: http://${lanIP}:${PORT}               ║
+║  Protocol: ${USE_SSL ? '🔒 HTTPS' : IS_PRODUCTION ? '⚡ HTTP (PROD)' : '⚡ HTTP (DEV)'}${' '.repeat(28 - (USE_SSL ? '🔒 HTTPS' : IS_PRODUCTION ? '⚡ HTTP (PROD)' : '⚡ HTTP (DEV)').length)}║
+║  Local: ${protocol}://localhost:${PORT}${' '.repeat(38 - protocol.length - String(PORT).length)}║
+║  Network: ${protocol}://${lanIP}:${PORT}${' '.repeat(35 - protocol.length - lanIP.length - String(PORT).length)}║
 ║                                                   ║
 ║  Data: HOSxP XE(10.1.0.3)                       ║
 ║  🧠 AI: 11 Modules Active                         ║
-║  📊 MV: 10 Materialized Views                     ║
-║  📦 DW: SQLite Data Warehouse                     ║
-╚═══════════════════════════════════════════════════╝`));
-  } catch (err) { console.error('❌', err.message); process.exit(1); }
+║  🛡️ Phase 1 Security: HARDENED                    ║
+║  🕒 Server Status: LISTENING                      ║
+╚═══════════════════════════════════════════════════╝`);
+
+      console.log(`✅ Environment Validation: PASSED`);
+      console.log(`   - JWT_SECRET: [SET — ${process.env.JWT_SECRET.length} chars]`);
+      console.log(`   - Database: ${process.env.MYSQL_HOST}:3306/${process.env.MYSQL_DB}`);
+      console.log(`   - Authentication: Demo user bypass REMOVED ✓`);
+      console.log(`   - HTTPS/TLS: ${USE_SSL ? 'ENABLED ✓' : IS_PRODUCTION ? 'HTTP intranet mode' : 'Development mode'}`);
+      console.log(`   - Content-Security-Policy: ENABLED ✓`);
+      console.log(`   - Helmet security headers: ENABLED ✓`);
+      console.log(`   - Prometheus Metrics: /metrics ENABLED ✓`);
+      console.log(`   - Alert Engine: ENABLED (60s interval) ✓`);
+
+      // 📊 Start Alert Engine (checks every 60 seconds)
+      startAlertEngine(60_000);
+
+      // 🧠 Start AI Calibration Engine (auto-calibrate every 24 hours)
+      startCalibrationEngine(24 * 60 * 60 * 1000);
+
+      // 🔧 Initialize Distributed Infrastructure
+      //    Redis → Cache/Queue/PubSub (fallback: in-memory if unavailable)
+      try {
+        getRedisClient(); // Attempt Redis connection (non-blocking)
+        startLogSubscriber(); // Subscribe to centralized log channel
+        console.log(`   - Redis: ${isRedisConnected() ? 'CONNECTED ✓' : 'UNAVAILABLE (in-memory fallback)'}`);
+        console.log(`   - Job Queue: ${isRedisConnected() ? 'BullMQ (distributed)' : 'node-cron (local)'}`);
+        console.log(`   - Central Logging: ${isRedisConnected() ? 'Redis Pub/Sub ✓' : 'Local buffer'}`);
+      } catch (e) {
+        console.log(`   - Redis: UNAVAILABLE (${e.message}) — using in-memory fallback`);
+      }
+
+      // 🏗️ Background Initializations (Lazy Load)
+      // These are offloaded to background to keep the API responsive
+      setImmediate(async () => {
+        try {
+          await initDataLake();
+
+          // 🏗️ Materialized Views (Heavy KPIs)
+          initMaterializedViews().catch(e => {
+            logger.warn('MV Background Init Error', { error: e.message });
+          });
+
+          // 📦 Data Warehouse (SQLite Trend Storage)
+          try {
+            dw.initDataWarehouse();
+            // Seed evolution log with initial entries
+            const { seedEvolutionIfEmpty } = await import('./db/evolutionStore.js');
+            seedEvolutionIfEmpty();
+          } catch (e) {
+            logger.warn('DW Background Init Error', { error: e.message });
+          }
+
+          // 🔧 Self-Healing: periodic health check every 5 minutes
+          setInterval(async () => {
+            try {
+              const { runHealthCheck } = await import('./ai/selfHeal.js');
+              const health = await runHealthCheck();
+              if (health.status !== 'healthy') {
+                logger.warn(`🔧 [SelfHeal] Health: ${health.status}`, { issues: health.issues.length });
+              }
+            } catch { }
+          }, 5 * 60 * 1000);
+
+          // 🕒 Automated Archiving Jobs
+          const archiveJobs = () => {
+            // Wrap in setImmediate to avoid blocking the event loop during archival
+            setImmediate(async () => {
+              try {
+                const summary = await hosxp.getDashboardSummary();
+                await archiveSnapshot('dashboard_summary', summary);
+                try {
+                  dw.archiveDailySnapshot(summary);
+                  const mvIPD = getMV('mv_ipd_summary'); if (mvIPD?.length) dw.archiveIPDMonthly(mvIPD);
+                  const mvER = getMV('mv_er_daily'); if (mvER?.length) {
+                    const todayER = mvER.find(r => r.vstdate === new Date().toISOString().split('T')[0]);
+                    if (todayER) dw.archiveERDaily(todayER);
+                  }
+                  const mvRevenue = getMV('mv_monthly_dept_revenue'); if (mvRevenue?.length) dw.archiveMonthlyRevenue(mvRevenue);
+                } catch (dwErr) { }
+              } catch (e) { }
+            });
+          };
+          archiveJobs();
+          setInterval(archiveJobs, 24 * 60 * 60 * 1000);
+
+          // 🏥 PHASE 2: Start IPD Occupancy Sync Job (every 30 min)
+          try {
+            startOccupancySyncJob(io).catch(err => {
+              logger.warn('Occupancy sync startup error', { error: err.message });
+            });
+          } catch (occErr) {
+            logger.warn('Failed to start occupancy sync job', { error: String(occErr) });
+          }
+
+          // 📋 Register background jobs with distributed queue
+          registerJob('health_check', async () => {
+            const { runHealthCheck } = await import('./ai/selfHeal.js');
+            return runHealthCheck();
+          }, { cron: '*/5 * * * *', description: 'Self-healing health check', runOnStart: false });
+
+          registerJob('daily_archive', async () => {
+            const summary = await hosxp.getDashboardSummary();
+            await archiveSnapshot('dashboard_summary', summary);
+            dw.archiveDailySnapshot(summary);
+            return { archived: true };
+          }, { cron: '0 2 * * *', description: 'Daily data archival (2 AM)', runOnStart: false });
+
+          // Start all registered jobs (BullMQ if Redis, cron if not)
+          startAllJobs().catch(e => logger.warn('Job queue start error', { error: e.message }));
+
+          console.log('\n🚀 All background analytical processes started.');
+        } catch (initErr) {
+          console.error('⚠️ Lazy Boot Background Init Failed:', initErr.message);
+        }
+      });
+    });
+  } catch (err) {
+    console.error('❌ Critical Startup Failed:', err.message);
+    process.exit(1);
+  }
 })();

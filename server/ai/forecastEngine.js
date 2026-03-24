@@ -4,6 +4,7 @@
 // ข้อมูลจาก opitemrece 8.7M records
 // ============================================================
 import { dbQuery } from '../db/mysql.js';
+import { getForecastCal } from './calibration.js';
 
 /**
  * ดึงรายได้รายเดือนย้อนหลัง (จาก vn_stat — เร็วกว่า opitemrece 100x)
@@ -91,12 +92,19 @@ function calculateSeasonality(data) {
  * คำนวณ Confidence Interval
  */
 function calcConfidence(forecasts, historicalVariance, months) {
+    // Use 1.96σ for 95% CI, expanding with forecast horizon
+    const sigma = Math.sqrt(historicalVariance);
     return forecasts.map((f, i) => {
-        const spread = Math.sqrt(historicalVariance) * (1 + 0.15 * (i + 1));
+        // CI width = 1.5σ × (1 + 0.1 per month ahead) — narrower than raw σ
+        const zScore = 1.5;
+        const spread = sigma * zScore * (1 + 0.1 * i);
+        // Cap CI at ±40% of forecast for reasonableness
+        const maxSpread = f.forecast * 0.4;
+        const actualSpread = Math.min(spread, maxSpread);
         return {
             ...f,
-            upper: Math.round(f.forecast + spread),
-            lower: Math.max(0, Math.round(f.forecast - spread))
+            upper: Math.round(f.forecast + actualSpread),
+            lower: Math.max(0, Math.round(f.forecast - actualSpread))
         };
     });
 }
@@ -106,15 +114,27 @@ function calcConfidence(forecasts, historicalVariance, months) {
  */
 export async function forecastRevenue(forecastMonths = 6) {
     // 1. ดึงข้อมูลย้อนหลัง 3 ปี
-    const historical = await getHistoricalRevenue(3);
-    if (!historical || historical.length < 6) {
-        return { error: 'Insufficient data', min_required: 6, actual: historical?.length || 0 };
+    const rawHistorical = await getHistoricalRevenue(3);
+    if (!rawHistorical || rawHistorical.length < 3) {
+        return { error: 'Insufficient data', min_required: 3, actual: rawHistorical?.length || 0 };
+    }
+
+    // Filter out months with incomplete data (revenue too low = likely partial data)
+    // Use median as reference — months below 10% of median are likely incomplete
+    const allRevenues = rawHistorical.map(d => Number(d.revenue)).sort((a, b) => a - b);
+    const median = allRevenues[Math.floor(allRevenues.length / 2)] || 1;
+    const minThreshold = median * 0.1; // 10% of median — anything below is noise
+    const historical = rawHistorical.filter(d => Number(d.revenue) >= minThreshold);
+
+    if (historical.length < 3) {
+        return { error: 'Insufficient reliable data', min_required: 3, actual: historical.length, filtered_from: rawHistorical.length };
     }
 
     const revenues = historical.map(d => Number(d.revenue));
 
-    // 2. Holt-Winters Smoothing
-    const { level, trend } = holtWinters(revenues, 0.35, 0.15);
+    // 2. Holt-Winters Smoothing — calibrated alpha/beta from backtesting
+    const cal = getForecastCal();
+    const { level, trend } = holtWinters(revenues, cal.alpha, cal.beta);
 
     // 3. Seasonality Index
     const seasonalIndex = calculateSeasonality(historical);
@@ -142,7 +162,7 @@ export async function forecastRevenue(forecastMonths = 6) {
             month_name: getMonthName(currentMo),
             forecast: Math.max(0, forecast),
             seasonal_factor: Math.round(seasonal * 100) / 100,
-            confidence: Math.round((1 - 0.05 * i) * 100) // ลดลงตามระยะเวลา
+            confidence: Math.round((1 - cal.confidence_decay * i) * 100) // calibrated decay rate
         });
     }
 
@@ -182,6 +202,15 @@ export async function forecastRevenue(forecastMonths = 6) {
             type: 'forecast'
         });
     });
+
+    // Learning capture
+    try {
+        const { captureLearning } = await import('./learningCapture.js');
+        captureLearning('forecast', 'decision',
+            `Revenue forecast: ฿${(totalForecast / 1e6).toFixed(1)}M (${forecastMonths} months), YoY ${yoyGrowth}%`,
+            { totalForecast, avgMonthly, yoyGrowth, trend: trend > 0 ? 'increasing' : 'decreasing' },
+            Math.round(totalForecast), 'baht');
+    } catch { }
 
     return {
         model: 'Holt-Winters Double Exponential Smoothing',

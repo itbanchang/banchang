@@ -1,0 +1,4 @@
+dist/
+node_modules/
+data_lake/
+*.min.js

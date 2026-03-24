@@ -175,9 +175,19 @@ export async function getEWSSummary() {
         delete w.totalEws;
     });
 
+    const critLen = byRisk.critical.length, highLen = byRisk.high.length;
+
+    // Learning capture
+    try {
+        const { captureLearning } = await import('./learningCapture.js');
+        captureLearning('ews', critLen > 0 ? 'anomaly' : 'pattern',
+            `NEWS2 EWS: ${critLen} critical, ${highLen} high / ${patients.length} patients`,
+            { critical: critLen, high: highLen, total: patients.length }, critLen, 'alerts', critLen > 0 ? 'critical' : 'info');
+    } catch { }
+
     return {
         total_patients: patients.length,
-        critical: byRisk.critical.length, high: byRisk.high.length,
+        critical: critLen, high: highLen,
         medium: byRisk.medium.length, low: byRisk.low.length,
         avg_ews: patients.length > 0 ? Math.round(patients.reduce((s, p) => s + p.ews.score, 0) / patients.length * 10) / 10 : 0,
         alerts: byRisk.critical.concat(byRisk.high).slice(0, 10),

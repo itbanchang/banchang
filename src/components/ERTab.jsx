@@ -3,15 +3,22 @@
 // 🚑 AI Surge + Professional ER Analytics KPIs
 // ⏱️ Professional Data Analytics KPIs Edition
 // ============================================================
-import React, { useEffect, useMemo, useCallback } from 'react';
+import React, { useEffect, useMemo, useCallback, useState } from 'react';
 import { FixedSizeList as List } from 'react-window';
 import {
     ComposedChart, Area, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer, BarChart, ReferenceLine, Cell, PieChart, Pie, Legend
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
+import AIInsightCard from './shared/AIInsightCard.jsx';
+import StatusBadge from './shared/StatusBadge.jsx';
+import MetricCard from './shared/MetricCard.jsx';
+import MetricsStrip from './shared/MetricsStrip.jsx';
+import HealthGauge from './shared/HealthGauge.jsx';
+import AlertBanner from './shared/AlertBanner.jsx';
+import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
+import EmptyState from './shared/EmptyState.jsx';
 
 const TRIAGE_COLORS = {
     1: { name: 'Level 1', color: '#f43f5e', label: 'Resus' },
@@ -21,13 +28,25 @@ const TRIAGE_COLORS = {
     5: { name: 'Level 5', color: '#94a3b8', label: 'Non' }
 };
 
-export default function ERTab() {
+function ERTab() {
     const { state, fetchData } = useDashboard();
     const erSurge = state.erSurge;
     const erTodayPatients = state.erTodayPatients || [];
     const erTriageStats = state.erTriageStats || [];
     const erAnalytics = state.erAnalytics;
+    const erResusAlert = state.erResusAlert;
+    const erDiversionStatus = state.erDiversionStatus;
     const loading = state.loading;
+
+    // Resus banner auto-dismiss after 5 minutes
+    const [resusVisible, setResusVisible] = useState(true);
+    useEffect(() => {
+        if (erResusAlert) {
+            setResusVisible(true);
+            const t = setTimeout(() => setResusVisible(false), 5 * 60 * 1000);
+            return () => clearTimeout(t);
+        }
+    }, [erResusAlert]);
 
     useEffect(() => {
         fetchData('erSurge', '/api/ai/er-surge');
@@ -35,6 +54,7 @@ export default function ERTab() {
         fetchData('erBottlenecks', '/api/er/flow-bottlenecks');
         fetchData('erAnalytics', '/api/er/analytics');
         fetchData('erRevenueFiscal', '/api/er/revenue-fiscal');
+        fetchData('erDiversionStatus', '/api/er/diversion-status');
     }, [fetchData]);
 
     const hourlyChart = useMemo(() => {
@@ -207,7 +227,7 @@ export default function ERTab() {
                     <span style={{
                         display: 'inline-block',
                         padding: '2px 8px', borderRadius: '6px',
-                        fontSize: '10px', fontWeight: 700,
+                        fontSize: '11px', fontWeight: 700,
                         background: `${triage.color}15`, color: triage.color,
                     }}>
                         {triage.label}
@@ -221,7 +241,7 @@ export default function ERTab() {
                 </div>
                 <div style={{ width: '60px', textAlign: 'center' }}>
                     {p.news2?.score >= 5 ? (
-                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '2px 6px', borderRadius: '4px' }}>Critical</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '2px 6px', borderRadius: '4px' }}>Critical</span>
                     ) : (
                         <span style={{ fontSize: 'var(--fs-2xs)', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>Score: {p.news2?.score || 0}</span>
                     )}
@@ -238,8 +258,33 @@ export default function ERTab() {
         );
     }, [erTodayPatients]);
 
+    // ── Loading & Empty States ──
+    if (loading['erAnalytics']) return <TabLoadingSkeleton />;
+    if (!erAnalytics && !erTodayPatients.length) return (
+        <EmptyState
+            icon="🚑"
+            title="ไม่พบข้อมูล ER"
+            description="ไม่สามารถโหลดข้อมูลห้องฉุกเฉินได้ในขณะนี้ กรุณาตรวจสอบการเชื่อมต่อ HOSxP XE"
+        />
+    );
+
     return (
-        <div className="space-y-4 animate-fade-in pb-8">
+        <div
+            className="space-y-4 animate-fade-in pb-8"
+            role="region"
+            aria-label="แผนก ER — วิเคราะห์ห้องฉุกเฉิน"
+        >
+            {/* ━━━━ 🔴 Triage Level 1 Resuscitation Alert Banner ━━━━ */}
+            {erResusAlert && resusVisible && (
+                <ResusAlertBanner
+                    alert={erResusAlert}
+                    onDismiss={() => setResusVisible(false)}
+                />
+            )}
+
+            {/* ━━━━ 🚦 Diversion Status Panel ━━━━ */}
+            <DiversionStatusPanel data={erDiversionStatus} loading={loading.erDiversionStatus} />
+
             {/* ━━━━ 🚀 AI Strategic Intelligence Feed (Hero Strip) ━━━━ */}
             {!loading.erTodayPatients && erAnalytics && (
                 <div style={{
@@ -252,7 +297,7 @@ export default function ERTab() {
                     }}>
                         <div style={{ fontSize: '28px' }}>🤖</div>
                         <div style={{ flex: 1 }}>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: aiAnalytics.urgencyColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>AI Executive Intelligence</p>
+                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: aiAnalytics.urgencyColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>AI Executive Intelligence</p>
                             <p style={{ margin: '2px 0 0', fontSize: '13px', fontWeight: 700, color: 'var(--md-text-primary)' }}>{aiAnalytics.problems[0]?.title || 'ER Operations ปกติ'}</p>
                             <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>Urgency: {aiAnalytics.urgencyLabel} ({aiAnalytics.urgencyScore}/10)</p>
                         </div>
@@ -263,9 +308,9 @@ export default function ERTab() {
                     }}>
                         <div style={{ fontSize: '24px' }}>📈</div>
                         <div>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>Surge Forecast</p>
+                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>Surge Forecast</p>
                             <p style={{ margin: '2px 0 0', fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{aiAnalytics.forecast.intensity} Load</p>
-                            <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Peak at {aiAnalytics.forecast.nextPeak}</p>
+                            <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Peak at {aiAnalytics.forecast.nextPeak}</p>
                         </div>
                     </div>
                     <div className="glass-card" style={{
@@ -274,7 +319,7 @@ export default function ERTab() {
                     }}>
                         <div style={{ fontSize: '24px' }}>👥</div>
                         <div>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: aiAnalytics.staffing.color, textTransform: 'uppercase' }}>Staffing Recommendation</p>
+                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: aiAnalytics.staffing.color, textTransform: 'uppercase' }}>Staffing Recommendation</p>
                             <p style={{ margin: '2px 0 0', fontSize: '12px', fontWeight: 700, color: 'var(--md-text-primary)' }}>{aiAnalytics.staffing.recommendation}</p>
                         </div>
                     </div>
@@ -311,10 +356,10 @@ export default function ERTab() {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#f43f5e', margin: 0 }}>
+                                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#f43f5e', margin: 0 }}>
                                         🚑 Live ER — ผู้ป่วยในห้องฉุกเฉิน
                                     </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                         Real-time
                                     </span>
                                 </div>
@@ -330,8 +375,8 @@ export default function ERTab() {
                                 {/* Triage breakdown bar */}
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f43f5e' }}>🔴 L1: {l1}  🟠 L2: {l2}</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>🟡 L3: {l3}  🟢 L4-5: {Math.max(0, l45)}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#f43f5e' }}>🔴 L1: {l1}  🟠 L2: {l2}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981' }}>🟡 L3: {l3}  🟢 L4-5: {Math.max(0, l45)}</span>
                                     </div>
                                     <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(148,163,184,.12)', display: 'flex', gap: '2px' }}>
                                         {l1 > 0 && <div style={{ flex: l1, background: '#f43f5e', borderRadius: '99px', transition: 'flex 0.8s ease' }} />}
@@ -346,20 +391,177 @@ export default function ERTab() {
                 </div>
             </div>
 
-            {/* ━━━━━━ 🚀 Diagnostic Intelligence Grid — Professional ER KPIs ━━━━━━ */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-                {aiAnalytics.strategicKPIs.map((k, i) => (
-                    <div key={i} className="glass-card" style={{ padding: '0.75rem 1rem', border: '1px solid rgba(203,213,225,0.2)', transition: 'all 0.2s ease' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                            <span style={{ fontSize: '18px' }}>{k.icon}</span>
-                            <div>
-                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{k.label}</p>
-                                <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>{k.sub}</p>
-                            </div>
+            {/* ━━━━━━ 👨‍⚕️ On-Duty Personnel (ER) ━━━━━━ */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #f43f5e, #7c3aed)', borderRadius: '99px' }} />
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                    🩺 บุคลากรทางการแพทย์ที่ปฏิบัติหน้าที่วันนี้ (On-Duty)
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                    HOSxP Activity Logs
+                </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                {/* ── Active Doctors List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(244,63,94,.05)', borderBottom: '1px solid rgba(244,63,94,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👨‍⚕️</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#f43f5e' }}>แพทย์ที่อยู่เวร (ER)</span>
                         </div>
-                        <p style={{ margin: 0, fontSize: '20px', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f43f5e', opacity: 0.8 }}>{erAnalytics?.on_duty?.doctors?.length || 0}</span>
                     </div>
-                ))}
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.erAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (erAnalytics?.on_duty?.doctors?.length > 0) ? (
+                            erAnalytics.on_duty.doctors.map((dr, i) => (
+                                <div key={i} style={{
+                                    display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                    borderRadius: '10px', borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                }}>
+                                    <div style={{
+                                        width: '32px', height: '32px', borderRadius: '8px',
+                                        background: 'linear-gradient(135deg, #f43f5e, #fb7185)',
+                                        color: '#fff', fontSize: '12px', fontWeight: 800,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                    }}>
+                                        {(dr.staff_name || '').substring(0, 2).replace(/[นพ]\./, '').trim() || 'D'}
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{dr.staff_name || 'Unknown'}</p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>ER Physician</p>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#f43f5e' }}>{dr.total_count}</p>
+                                        <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>เคส</p>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Nurses List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(124,58,237,.05)', borderBottom: '1px solid rgba(124,58,237,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👩‍⚕️</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#7c3aed' }}>พยาบาลฉุกเฉิน (ER)</span>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#7c3aed', opacity: 0.8 }}>{erAnalytics?.on_duty?.nurses?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.erAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (erAnalytics?.on_duty?.nurses?.length > 0) ? (
+                            erAnalytics.on_duty.nurses.map((nr, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && nr.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && nr.afternoon_count > 0) ||
+                                    (currentHour >= 17 && nr.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}>
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #7c3aed, #8b5cf6)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {nr.staff_name?.substring(0, 1) || 'N'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nr.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: nr.morning_count > 0 ? '#7c3aed' : '#ccc' }}>🌅{nr.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: nr.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{nr.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: nr.night_count > 0 ? '#1e293b' : '#ccc' }}>🌙{nr.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#7c3aed' }}>{nr.total_count}</p>
+                                            <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>งาน</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Staff List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(14,165,233,.05)', borderBottom: '1px solid rgba(14,165,233,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>🏢</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#0ea5e9' }}>เจ้าหน้าที่สนับสนุน (ER)</span>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#0ea5e9', opacity: 0.8 }}>{erAnalytics?.on_duty?.staff?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.erAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (erAnalytics?.on_duty?.staff?.length > 0) ? (
+                            erAnalytics.on_duty.staff.map((st, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && st.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && st.afternoon_count > 0) ||
+                                    (currentHour >= 17 && st.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}>
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #0ea5e9, #6366f1)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {st.staff_name?.substring(0, 1) || 'S'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: st.morning_count > 0 ? '#0ea5e9' : '#ccc' }}>🌅{st.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: st.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{st.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: st.night_count > 0 ? '#1e293b' : '#ccc' }}>🌙{st.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#0ea5e9' }}>{st.total_count}</p>
+                                            <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>งาน</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
 
             {/* ━━━ Professional ER KPI Dashboard with Descriptions ━━━ */}
@@ -474,13 +676,13 @@ export default function ERTab() {
 
                     {/* Hourly Heatmap Small */}
                     <div className="flex-1">
-                        <p style={{ fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>🕐 Hourly Load (30 Day Average)</p>
+                        <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>🕐 Hourly Load (30 Day Average)</p>
                         <ResponsiveContainer width="100%" height={120}>
                             <BarChart data={erAnalytics?.hourly_heatmap || []}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.2)" vertical={false} />
                                 <XAxis dataKey="hour" tick={{ fontSize: 8 }} tickFormatter={h => `${h}h`} />
                                 <YAxis hide />
-                                <Tooltip contentStyle={{ fontSize: '10px' }} />
+                                <Tooltip contentStyle={{ fontSize: '11px' }} />
                                 <Bar dataKey="avg" radius={[3, 3, 0, 0]}>
                                     {(erAnalytics?.hourly_heatmap || []).map((d, i) => (
                                         <Cell key={i} fill={d.avg >= 3 ? '#f43f5e' : '#7c3aed'} />
@@ -490,13 +692,13 @@ export default function ERTab() {
                         </ResponsiveContainer>
 
                         <div className="mt-6">
-                            <p style={{ fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>📈 Monthly Trend (Visits & Criticality)</p>
+                            <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>📈 Monthly Trend (Visits & Criticality)</p>
                             <ResponsiveContainer width="100%" height={120}>
                                 <ComposedChart data={erAnalytics?.monthly_trend || []}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.2)" vertical={false} />
                                     <XAxis dataKey="month" tick={{ fontSize: 9 }} />
                                     <YAxis hide />
-                                    <Tooltip contentStyle={{ fontSize: '10px' }} />
+                                    <Tooltip contentStyle={{ fontSize: '11px' }} />
                                     <Area type="monotone" dataKey="visits" fill="rgba(124,58,237,.1)" stroke="#7c3aed" strokeWidth={2} />
                                     <Bar dataKey="critical" fill="rgba(244,63,94,.4)" barSize={10} radius={[2, 2, 0, 0]} />
                                 </ComposedChart>
@@ -527,15 +729,15 @@ export default function ERTab() {
                                     </div>
                                     <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
                                         <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔍 Root Cause</p>
+                                            <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔍 Root Cause</p>
                                             <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.rootCause}</p>
                                         </div>
                                         <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Cascade Effect</p>
+                                            <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Cascade Effect</p>
                                             <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.cascadeEffect}</p>
                                         </div>
                                         <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🚀 AI Recommendation</p>
+                                            <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🚀 AI Recommendation</p>
                                             <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.fixFirst}</p>
                                         </div>
                                     </div>
@@ -556,8 +758,8 @@ export default function ERTab() {
                             🚑 ER Performance Dynamics
                         </h3>
                         <div style={{ display: 'flex', gap: '12px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#7c3aed' }} /> <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>Actual</span></div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#8b5cf6', border: '1px solid #8b5cf6', opacity: 0.5 }} /> <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>Predicted</span></div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#7c3aed' }} /> <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>Actual</span></div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#8b5cf6', border: '1px solid #8b5cf6', opacity: 0.5 }} /> <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>Predicted</span></div>
                         </div>
                     </div>
                     <ResponsiveContainer width="100%" height={250}>
@@ -579,7 +781,7 @@ export default function ERTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     💰 รายได้ ER ประจำปีงบประมาณ
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>HOSxP XE Data Intelligence</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>HOSxP XE Data Intelligence</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
@@ -605,10 +807,10 @@ export default function ERTab() {
                                     <div key={fi} style={{ padding: '12px', borderRadius: '12px', border: `1px solid ${FY_COLORS[fi]}20`, background: `${FY_COLORS[fi]}05` }}>
                                         <div className="flex items-center gap-2 mb-1">
                                             <div className="w-2 h-2 rounded-full" style={{ background: FY_COLORS[fi] }} />
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: FY_COLORS[fi] }}>{fy.fiscal_label}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: FY_COLORS[fi] }}>{fy.fiscal_label}</span>
                                         </div>
                                         <p style={{ fontSize: '20px', fontWeight: 900, color: FY_COLORS[fi] }}>฿{(fy.total_revenue / 1e6).toFixed(1)}M</p>
-                                        <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)' }}>{fy.total_visits.toLocaleString()} visits</p>
+                                        <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>{fy.total_visits.toLocaleString()} visits</p>
                                     </div>
                                 ))}
                             </div>
@@ -636,3 +838,100 @@ export default function ERTab() {
         </div>
     );
 }
+
+// ── Triage Level 1 Resuscitation Alert Banner ─────────────────────────────
+// Flashes when WebSocket emits er:resus; auto-dismissed after 5 min
+function ResusAlertBanner({ alert, onDismiss }) {
+    const [flash, setFlash] = React.useState(true);
+    React.useEffect(() => {
+        const t = setInterval(() => setFlash(f => !f), 700);
+        return () => clearInterval(t);
+    }, []);
+
+    return (
+        <div style={{
+            display: 'flex', alignItems: 'center', gap: '12px',
+            padding: '14px 20px',
+            borderRadius: '14px',
+            border: '2px solid #f43f5e',
+            background: flash ? 'rgba(244,63,94,.18)' : 'rgba(244,63,94,.08)',
+            transition: 'background 0.3s',
+            boxShadow: flash ? '0 0 20px rgba(244,63,94,.35)' : '0 0 6px rgba(244,63,94,.1)',
+        }}>
+            <span style={{ fontSize: '28px', flexShrink: 0 }}>🔴</span>
+            <div style={{ flex: 1 }}>
+                <p style={{ margin: 0, fontSize: '14px', fontWeight: 900, color: '#f43f5e', letterSpacing: '0.02em' }}>
+                    TRIAGE LEVEL 1 — RESUSCITATION ALERT
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: '12px', fontWeight: 600, color: 'var(--md-text-primary)' }}>
+                    {alert.message}
+                </p>
+                <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-tertiary)' }}>
+                    WebSocket Push · {new Date(alert.timestamp).toLocaleTimeString('th-TH')}
+                </p>
+            </div>
+            <button
+                onClick={onDismiss}
+                style={{
+                    flexShrink: 0, padding: '6px 14px', borderRadius: '8px',
+                    border: '1px solid #f43f5e', background: 'transparent',
+                    color: '#f43f5e', fontSize: '11px', fontWeight: 700,
+                    cursor: 'pointer',
+                }}
+            >
+                รับทราบ
+            </button>
+        </div>
+    );
+}
+
+// ── Diversion Status Panel ────────────────────────────────────────────────
+// Auto-computed from live ER load: OPEN / CAUTION / DIVERTED
+const DIVERSION_CONFIG = {
+    open:     { color: '#10b981', bg: 'rgba(16,185,129,.08)',  icon: '✅', label: 'เปิดรับผู้ป่วย',   labelEn: 'OPEN' },
+    caution:  { color: '#f59e0b', bg: 'rgba(245,158,11,.08)',  icon: '⚠️', label: 'ระวัง — อาจล่าช้า', labelEn: 'CAUTION' },
+    diverted: { color: '#f43f5e', bg: 'rgba(244,63,94,.08)',   icon: '🚫', label: 'ปิดรับชั่วคราว',   labelEn: 'DIVERTED' },
+};
+
+function DiversionStatusPanel({ data, loading }) {
+    if (loading) return (
+        <div className="skeleton" style={{ height: '72px', borderRadius: '14px' }} />
+    );
+    if (!data) return null;
+
+    const cfg = DIVERSION_CONFIG[data.status] || DIVERSION_CONFIG.open;
+
+    return (
+        <div style={{
+            display: 'flex', alignItems: 'center', gap: '16px',
+            padding: '14px 20px',
+            borderRadius: '14px',
+            border: `1.5px solid ${cfg.color}30`,
+            background: cfg.bg,
+        }}>
+            <span style={{ fontSize: '28px', flexShrink: 0 }}>{cfg.icon}</span>
+            <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '2px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 900, color: cfg.color, letterSpacing: '0.06em' }}>
+                        ER DIVERSION STATUS: {cfg.labelEn}
+                    </span>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-secondary)' }}>
+                        — {cfg.label}
+                    </span>
+                </div>
+                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>
+                    {data.reason}
+                    {' · '}รอ {data.waiting_count} ราย · เฉลี่ย {data.avg_wait_min} นาที
+                    {data.resus_count > 0 && ` · Resus ${data.resus_count} ราย`}
+                    {data.long_wait_count > 0 && ` · รอ>2ชม. ${data.long_wait_count} ราย`}
+                </p>
+            </div>
+            <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                <div style={{ fontSize: '22px', fontWeight: 900, color: cfg.color }}>{data.critical_pct}%</div>
+                <div style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>Critical Cases</div>
+            </div>
+        </div>
+    );
+}
+
+export default React.memo(ERTab);

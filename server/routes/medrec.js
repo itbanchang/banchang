@@ -1,30 +1,14 @@
 import { Router } from 'express';
 import { cached } from '../cache/staleCache.js';
-import { dbQuery, dbQueryOne } from '../db/mysql.js';
+import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
 import { getRevenueFiscal } from '../helpers/fiscal.js';
+import logger from '../logger.js';
 
 const router = Router();
 const fiscalYearStart = "CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')";
 
-// Local memory cache for heavy queries (15-30 mins TTL) to reduce load on replicated DB nodes
-const H_CACHE = {};
-async function getHeavy(key, ttlMins, sql, isOne = false) {
-  const now = Date.now();
-  const ttl = ttlMins * 60000;
-  if (H_CACHE[key] && now - H_CACHE[key].t < ttl) return H_CACHE[key].d;
-  try {
-    const fn = isOne ? dbQueryOne : dbQuery;
-    const res = await fn(sql);
-    H_CACHE[key] = { d: res, t: now };
-    return res;
-  } catch (e) {
-    if (H_CACHE[key]) return H_CACHE[key].d;
-    return isOne ? null : [];
-  }
-}
-
-router.get('/today', cached('mrToday_v10', 60000, async () => {
-  const [summary, pttype, dep, hourly, audit, coders, pendingWards, clinicWait, ipdSummary, ipdCoders, ipdCodersDaily, ipdCodersFiscal, pendingRevenueRow, ipdCodersTrendFY, ipdMonthStatusFY] = await Promise.all([
+router.get('/today', cached('mrToday_v12', 60000, async () => {
+  const [summary, pttype, dep, hourly, audit, coders, pendingWards, clinicWait, ipdSummary, ipdCoders, ipdCodersDaily, ipdCodersFiscal, ipdCodersTrendFY] = await Promise.all([
     dbQueryOne(`
       SELECT COUNT(o.vn) as total_visits,
         COUNT(DISTINCT o.hn) as unique_patients,
@@ -37,7 +21,8 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
         ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
             THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 1) as avg_reg_time,
         ROUND(AVG(CASE WHEN st.service7 IS NOT NULL AND st.service2 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service2)
-            THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service2)) / 60 ELSE NULL END), 1) as avg_proc_time
+            THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service2)) / 60 ELSE NULL END), 1) as avg_proc_time,
+        SUM(CASE WHEN (SELECT 1 FROM ovstdiag WHERE vn = o.vn LIMIT 1) IS NULL THEN v.income ELSE 0 END) as pending_revenue
       FROM ovst o
       INNER JOIN patient p ON o.hn = p.hn
       INNER JOIN vn_stat v ON o.vn = v.vn
@@ -77,11 +62,11 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       FROM ovstdiag d
       LEFT JOIN opduser u ON d.staff = u.loginname
       WHERE d.vstdate = CURDATE() AND d.staff IS NOT NULL AND d.staff != '' 
-        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
       GROUP BY d.staff, u.name
       ORDER BY coded_count DESC LIMIT 5
     `).catch(() => []),
-    getHeavy('pendingWards', 10, `
+    dbQuery(`
       SELECT 
         w.name as ward_name, 
         COUNT(i.an) as pending_count 
@@ -90,10 +75,10 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       WHERE i.dchdate IS NOT NULL 
         AND i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND NOT EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an)
-      GROUP BY w.ward, w.name 
+      GROUP BY i.ward, w.name 
       ORDER BY pending_count DESC 
       LIMIT 5
-    `),
+    `).catch(() => []),
     dbQuery(`
       SELECT c.name as clinic_name, 
         ROUND(AVG(TIMESTAMPDIFF(MINUTE, o.vsttime, st.service2)), 0) as avg_wait
@@ -104,22 +89,23 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       GROUP BY c.clinic, c.name
       ORDER BY avg_wait DESC LIMIT 5
     `).catch(() => []),
-    getHeavy('ipdSummary', 10, `
-      SELECT 
+    dbQueryOne(`
+      SELECT
         COUNT(i.an) as ipd_dch_30d,
         SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
         COUNT(CASE WHEN i.adjrw IS NOT NULL THEN i.an END) as ipd_drg_calculated_30d,
         ROUND(SUM(i.adjrw), 2) as total_rw_30d,
         ROUND(AVG(i.adjrw), 2) as avg_rw_30d,
-        ROUND(AVG(DATEDIFF(d_first.first_code, i.dchdate)), 1) as avg_coding_days
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) as cmi,
+        ROUND(AVG(CASE WHEN i.adjrw > 0 THEN i.adjrw END), 4) as adj_cmi,
+        ROUND(SUM(CASE WHEN a.rw > 0 THEN a.rw ELSE 0 END), 2) as total_base_rw,
+        SUM(CASE WHEN i.adjrw IS NOT NULL AND i.adjrw < a.rw THEN 1 ELSE 0 END) as rw_reduced_cases,
+        ROUND(SUM(CASE WHEN i.adjrw IS NOT NULL THEN GREATEST(a.rw - i.adjrw, 0) ELSE 0 END), 2) as rw_loss,
+        ROUND(AVG((SELECT DATEDIFF(MIN(d.modify_datetime), i.dchdate) FROM iptdiag d WHERE d.an = i.an)), 1) as avg_coding_days
       FROM ipt i
-      LEFT JOIN (
-        SELECT an, MIN(modify_datetime) as first_code 
-        FROM iptdiag WHERE modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) 
-        GROUP BY an
-      ) d_first ON d_first.an = i.an
+      LEFT JOIN an_stat a ON i.an = a.an
       WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND i.dchdate <= CURDATE()
-    `, true),
+    `).catch(() => null),
     dbQuery(`
       SELECT 
         COALESCE(u.name, d.staff) as coder_name, 
@@ -127,7 +113,7 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       FROM iptdiag d
       LEFT JOIN opduser u ON d.staff = u.loginname
       WHERE d.modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND d.staff IS NOT NULL AND d.staff != ''
-        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
       GROUP BY d.staff, u.name
       ORDER BY coded_count DESC LIMIT 5
     `).catch(() => []),
@@ -139,11 +125,11 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       FROM iptdiag d
       LEFT JOIN opduser u ON d.staff = u.loginname
       WHERE d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.staff IS NOT NULL AND d.staff != ''
-        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
       GROUP BY record_date, coder_name
       ORDER BY record_date ASC
     `).catch(() => []),
-    getHeavy('ipdCodersFiscal', 30, `
+    dbQuery(`
       SELECT 
         COALESCE(u.name, d.staff) as coder_name,
         COUNT(DISTINCT CASE WHEN d.modify_datetime >= ${fiscalYearStart} THEN d.an END) as fiscal_total,
@@ -169,40 +155,23 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       LEFT JOIN opduser u ON d.staff = u.loginname
       WHERE d.modify_datetime >= ${fiscalYearStart}
         AND d.staff IS NOT NULL AND d.staff != ''
-        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
       GROUP BY d.staff, u.name
       ORDER BY current_month_total DESC LIMIT 10
-    `),
-    getHeavy('pendingRevenue', 5, `
-      SELECT SUM(v.income) as pending_revenue
-      FROM ovst o
-      INNER JOIN vn_stat v ON o.vn = v.vn
-      WHERE o.vstdate = CURDATE()
-      AND NOT EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn)
-    `, true),
-    getHeavy('ipdCodersTrendFY', 30, `
+    `).catch(() => []),
+    dbQuery(`
       SELECT 
-        DATE_FORMAT(d.modify_datetime, '%Y-%m') as month,
-        COALESCE(u.name, d.staff) as coder_name, 
-        COUNT(DISTINCT d.an) as coded_count 
+        DATE_FORMAT(d.modify_datetime, '%Y-%m') as month_key,
+        COALESCE(u.name, d.staff) as coder_name,
+        COUNT(DISTINCT d.an) as coded_count
       FROM iptdiag d
       LEFT JOIN opduser u ON d.staff = u.loginname
       WHERE d.modify_datetime >= ${fiscalYearStart}
         AND d.staff IS NOT NULL AND d.staff != ''
-        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
-      GROUP BY month, coder_name
-      ORDER BY month ASC, coded_count DESC
-    `),
-    getHeavy('ipdMonthStatusFY', 30, `
-      SELECT 
-        DATE_FORMAT(dchdate, '%Y-%m') as month,
-        COUNT(an) as total_dch,
-        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as coded_count
-      FROM ipt i
-      WHERE dchdate >= ${fiscalYearStart}
-      GROUP BY month
-      ORDER BY month ASC
-    `)
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'น.ส.ธนัชพร%'
+      GROUP BY month_key, d.staff, u.name
+      ORDER BY month_key ASC
+    `).catch(() => [])
   ]);
 
   const hArr = Array.from({ length: 24 }, (_, i) => ({
@@ -226,7 +195,7 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
     old_patients: Number(summary?.old_patients || 0),
     avg_reg_time: Number(summary?.avg_reg_time || 0),
     avg_proc_time: Number(summary?.avg_proc_time || 0),
-    pending_revenue: Number(pendingRevenueRow?.pending_revenue || 0),
+    pending_revenue: Number(summary?.pending_revenue || 0),
     quality_score: qualityScore,
     top_pttype: (pttype || []).map(p => ({ name: p.pttype_name || 'ไม่ระบุ', count: Number(p.cnt || 0) })),
     top_departments: (dep || []).map(d => ({ name: d.dep_name || 'ไม่ระบุ', count: Number(d.cnt || 0) })),
@@ -245,6 +214,11 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
     ipd_drg_score: ipdDrgScore,
     ipd_total_rw: Number(ipdSummary?.total_rw_30d || 0),
     ipd_avg_rw: Number(ipdSummary?.avg_rw_30d || 0),
+    ipd_cmi: Number(ipdSummary?.cmi || 0),
+    ipd_adj_cmi: Number(ipdSummary?.adj_cmi || 0),
+    ipd_total_base_rw: Number(ipdSummary?.total_base_rw || 0),
+    ipd_rw_reduced_cases: Number(ipdSummary?.rw_reduced_cases || 0),
+    ipd_rw_loss: Number(ipdSummary?.rw_loss || 0),
     ipd_avg_coding_days: Number(ipdSummary?.avg_coding_days || 0),
     ipd_coders: (ipdCoders || []).map(c => ({ name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
     pending_wards: (pendingWards || []).map(w => ({ ward: w.ward_name || 'ไม่ระบุ', count: Number(w.pending_count || 0) })),
@@ -255,27 +229,20 @@ router.get('/today', cached('mrToday_v10', 60000, async () => {
       current_month_total: Number(row.current_month_total || 0),
       prev_month_total: Number(row.prev_month_total || 0),
       cc_rate: Number(row.cc_rate || 0),
-      diag_per_case: Number(row.diag_per_case || 0),
-      type1_per_case: Number(row.type1_per_case || 0),
-      type2_per_case: Number(row.type2_per_case || 0),
-      type3_per_case: Number(row.type3_per_case || 0),
-      type4_per_case: Number(row.type4_per_case || 0),
-      type5_per_case: Number(row.type5_per_case || 0)
+      diag_per_case: Number(row.diag_per_case || 0)
     })),
 
-    ipd_coders_trend_fy: (ipdCodersTrendFY || []).map(c => ({ month: c.month, name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
-    ipd_month_status_fy: (ipdMonthStatusFY || []).map(m => ({
-      month: m.month,
-      total: Number(m.total_dch || 0),
-      coded: Number(m.coded_count || 0),
-      pct: m.total_dch > 0 ? Math.round((m.coded_count / m.total_dch) * 100) : 0
+    ipd_coders_trend_fy: (ipdCodersTrendFY || []).map(row => ({
+      month: row.month_key,
+      name: row.coder_name || 'ไม่ระบุ',
+      count: Number(row.coded_count || 0)
     })),
     clinic_wait: (clinicWait || []).map(cw => ({ clinic: cw.clinic_name, wait: Number(cw.avg_wait || 0) })),
     timestamp: new Date().toISOString()
   };
 }));
 
-router.get('/analytics', cached('mrAnalytics', 120000, async () => {
+router.get('/analytics', cached('mrAnalytics_v2', 120000, async () => {
   const [summary, monthly, audit30, hourlyBenchmark] = await Promise.all([
     dbQueryOne(`
       SELECT COUNT(*) as total_visits,
@@ -297,17 +264,16 @@ router.get('/analytics', cached('mrAnalytics', 120000, async () => {
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
       GROUP BY DATE_FORMAT(o.vstdate, '%Y-%m') ORDER BY month
     `).catch(() => []),
-    dbQueryOne(`
+    dbQueryOneHeavy('mrAudit30d', 60, `
       SELECT 
-        COUNT(DISTINCT o.vn) as audit_total,
-        COUNT(DISTINCT d.vn) as audit_coded
-      FROM ovst o
-      LEFT JOIN ovstdiag d ON o.vn = d.vn
+        COUNT(o.vn) as audit_total,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn) THEN 1 ELSE 0 END) as audit_coded
+      FROM ovst o FORCE INDEX (ix_vstdate)
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
-    dbQuery(`
+    dbQueryHeavy('mrHourlyBenchmark30d', 240, `
       SELECT HOUR(o.vsttime) as hr, COUNT(*) / COUNT(DISTINCT o.vstdate) as avg_visits
-      FROM ovst o
+      FROM ovst o FORCE INDEX (ix_vstdate)
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
       GROUP BY HOUR(o.vsttime)
       ORDER BY hr
@@ -351,13 +317,265 @@ router.get('/analytics', cached('mrAnalytics', 120000, async () => {
   };
 }));
 
+// ━━━━━━ CMI Analytics — Case Mix Index Deep Analysis ━━━━━━
+router.get('/cmi', cached('mrCMI_v3', 600000, async () => {
+  const fiscalStart = `CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')`;
+
+  const [overall, monthly, byWard, byDRG, severity, coderCMI] = await Promise.all([
+    // 1. Overall CMI (fiscal year)
+    dbQueryOneHeavy('cmi_overall_fy', 120, `
+      SELECT
+        COUNT(*) AS total_cases,
+        SUM(CASE WHEN a.rw > 0 THEN 1 ELSE 0 END) AS drg_cases,
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) AS cmi,
+        ROUND(AVG(CASE WHEN i.adjrw > 0 THEN i.adjrw END), 4) AS adj_cmi,
+        ROUND(SUM(CASE WHEN a.rw > 0 THEN a.rw ELSE 0 END), 2) AS total_rw,
+        ROUND(SUM(CASE WHEN i.adjrw > 0 THEN i.adjrw ELSE 0 END), 2) AS total_adjrw,
+        ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) AS alos,
+        ROUND(AVG(a.income)) AS avg_income,
+        ROUND(SUM(a.income)) AS total_income,
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.income / a.rw END)) AS revenue_per_rw,
+        SUM(CASE WHEN i.adjrw IS NOT NULL AND i.adjrw < a.rw THEN 1 ELSE 0 END) AS cases_rw_reduced,
+        ROUND(SUM(CASE WHEN i.adjrw IS NOT NULL THEN a.rw - i.adjrw ELSE 0 END), 2) AS total_rw_loss
+      FROM ipt i
+      JOIN an_stat a ON i.an = a.an
+      WHERE i.dchdate >= ${fiscalStart} AND i.dchdate IS NOT NULL AND i.ward != '06'
+    `).catch(() => null),
+
+    // 2. CMI monthly trend (fiscal year)
+    dbQueryHeavy('cmi_monthly_fy', 120, `
+      SELECT
+        DATE_FORMAT(i.dchdate, '%Y-%m') AS month,
+        COUNT(*) AS cases,
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) AS cmi,
+        ROUND(AVG(CASE WHEN i.adjrw > 0 THEN i.adjrw END), 4) AS adj_cmi,
+        ROUND(SUM(CASE WHEN a.rw > 0 THEN a.rw ELSE 0 END), 2) AS total_rw,
+        ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) AS alos,
+        ROUND(AVG(a.income)) AS avg_income
+      FROM ipt i
+      JOIN an_stat a ON i.an = a.an
+      WHERE i.dchdate >= ${fiscalStart} AND i.dchdate IS NOT NULL AND i.ward != '06' AND a.rw > 0
+      GROUP BY DATE_FORMAT(i.dchdate, '%Y-%m')
+      ORDER BY month
+    `).catch(() => []),
+
+    // 3. CMI by ward
+    dbQueryHeavy('cmi_by_ward', 120, `
+      SELECT
+        w.name AS ward_name,
+        COUNT(*) AS cases,
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) AS cmi,
+        ROUND(AVG(CASE WHEN i.adjrw > 0 THEN i.adjrw END), 4) AS adj_cmi,
+        ROUND(SUM(CASE WHEN a.rw > 0 THEN a.rw ELSE 0 END), 2) AS total_rw,
+        ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) AS alos,
+        ROUND(AVG(a.income)) AS avg_income,
+        SUM(CASE WHEN i.adjrw IS NOT NULL AND i.adjrw < a.rw THEN 1 ELSE 0 END) AS rw_reduced_cases,
+        ROUND(SUM(CASE WHEN i.adjrw IS NOT NULL THEN GREATEST(a.rw - i.adjrw, 0) ELSE 0 END), 2) AS rw_loss
+      FROM ipt i
+      JOIN an_stat a ON i.an = a.an
+      JOIN ward w ON i.ward = w.ward
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND i.dchdate IS NOT NULL AND i.ward != '06'
+      GROUP BY w.name
+      HAVING cases >= 5
+      ORDER BY cmi DESC
+    `).catch(() => []),
+
+    // 4. Top DRGs by volume and RW
+    dbQueryHeavy('cmi_top_drg', 120, `
+      SELECT
+        a.drg,
+        MIN(SUBSTRING_INDEX(icd.tname, ' ', 5)) AS drg_desc,
+        COUNT(*) AS cases,
+        ROUND(AVG(a.rw), 4) AS avg_rw,
+        ROUND(SUM(a.rw), 2) AS total_rw,
+        ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) AS alos,
+        ROUND(AVG(a.income)) AS avg_income,
+        ROUND(SUM(a.income)) AS total_income
+      FROM ipt i
+      JOIN an_stat a ON i.an = a.an
+      LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
+      LEFT JOIN icd101 icd ON id.icd10 = icd.code
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND i.dchdate IS NOT NULL
+        AND a.drg IS NOT NULL AND a.drg != '' AND i.ward != '06'
+      GROUP BY a.drg
+      HAVING cases >= 3
+      ORDER BY total_rw DESC
+      LIMIT 20
+    `).catch(() => []),
+
+    // 5. CMI by severity (RW bands)
+    dbQueryHeavy('cmi_severity', 120, `
+      SELECT
+        CASE
+          WHEN a.rw >= 3.0 THEN 'Very High (RW≥3)'
+          WHEN a.rw >= 2.0 THEN 'High (RW 2-3)'
+          WHEN a.rw >= 1.0 THEN 'Moderate (RW 1-2)'
+          WHEN a.rw >= 0.5 THEN 'Low (RW 0.5-1)'
+          ELSE 'Very Low (RW<0.5)'
+        END AS severity_band,
+        COUNT(*) AS cases,
+        ROUND(AVG(a.rw), 4) AS avg_rw,
+        ROUND(SUM(a.rw), 2) AS total_rw,
+        ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) AS alos,
+        ROUND(AVG(a.income)) AS avg_income,
+        ROUND(SUM(a.income)) AS total_income
+      FROM ipt i
+      JOIN an_stat a ON i.an = a.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND i.dchdate IS NOT NULL
+        AND a.rw > 0 AND i.ward != '06'
+      GROUP BY severity_band
+      ORDER BY avg_rw DESC
+    `).catch(() => []),
+
+    // 6. CMI by coder (who coded → impact on RW)
+    dbQueryHeavy('cmi_by_coder', 120, `
+      SELECT
+        COALESCE(u.name, d.staff) AS coder_name,
+        COUNT(DISTINCT d.an) AS cases_coded,
+        ROUND(AVG(a.rw), 4) AS avg_rw_coded,
+        ROUND(AVG(CASE WHEN i.adjrw > 0 THEN i.adjrw END), 4) AS avg_adjrw_coded,
+        ROUND(SUM(a.rw), 2) AS total_rw,
+        ROUND(AVG(
+          (SELECT COUNT(*) FROM iptdiag d2 WHERE d2.an = d.an AND d2.diagtype IN ('2','3'))
+        ), 1) AS avg_cc_per_case
+      FROM iptdiag d
+      JOIN ipt i ON d.an = i.an
+      JOIN an_stat a ON i.an = a.an
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND i.dchdate IS NOT NULL
+        AND d.diagtype = '1' AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%'
+        AND a.rw > 0
+      GROUP BY d.staff, u.name
+      HAVING cases_coded >= 5
+      ORDER BY total_rw DESC
+      LIMIT 10
+    `).catch(() => []),
+  ]);
+
+  // ── Compute CMI insights ──
+  const cmi = Number(overall?.cmi || 0);
+  const adjCmi = Number(overall?.adj_cmi || 0);
+  const rwLoss = Number(overall?.total_rw_loss || 0);
+  const rwLossCases = Number(overall?.cases_rw_reduced || 0);
+  const totalCases = Number(overall?.total_cases || 0);
+  const revenuePerRW = Number(overall?.revenue_per_rw || 8350);
+
+  // HA Thailand F2 benchmark CMI
+  const CMI_BENCHMARK = 0.80;
+
+  const insights = {
+    cmi_status: cmi >= 1.0 ? 'excellent' : cmi >= CMI_BENCHMARK ? 'good' : cmi >= 0.6 ? 'below_benchmark' : 'critical',
+    cmi_vs_benchmark: cmi > 0 ? Math.round(((cmi - CMI_BENCHMARK) / CMI_BENCHMARK) * 100) : 0,
+    rw_adjustment_impact: {
+      cases_reduced: rwLossCases,
+      total_rw_loss: rwLoss,
+      estimated_revenue_loss: Math.round(rwLoss * revenuePerRW),
+      pct_cases_reduced: totalCases > 0 ? Math.round((rwLossCases / totalCases) * 100) : 0,
+    },
+    coding_quality: {
+      avg_cc_rate: (coderCMI || []).reduce((s, c) => s + Number(c.avg_cc_per_case || 0), 0) / Math.max((coderCMI || []).length, 1),
+      top_coder_rw: (coderCMI || [])[0]?.coder_name || '—',
+    },
+    recommendations: [],
+  };
+
+  // Generate recommendations
+  if (cmi < CMI_BENCHMARK) {
+    insights.recommendations.push(`CMI ${cmi.toFixed(3)} ต่ำกว่า benchmark ${CMI_BENCHMARK} — ทบทวน CC/MCC coding เพื่อเพิ่ม RW`);
+  }
+  if (rwLoss > 5) {
+    insights.recommendations.push(`RW ถูกปรับลดรวม ${rwLoss.toFixed(1)} RW (≈฿${Math.round(rwLoss * revenuePerRW).toLocaleString()}) — ตรวจสอบ LOS outlier`);
+  }
+  if (adjCmi > 0 && adjCmi < cmi * 0.85) {
+    insights.recommendations.push(`AdjRW (${adjCmi.toFixed(3)}) ต่ำกว่า Base RW (${cmi.toFixed(3)}) ≥15% — ตรวจสอบ LOS trimpoint`);
+  }
+  const lowRWWards = (byWard || []).filter(w => Number(w.cmi) < 0.5 && Number(w.cases) >= 10);
+  if (lowRWWards.length > 0) {
+    insights.recommendations.push(`Ward ที่ CMI ต่ำมาก: ${lowRWWards.map(w => w.ward_name).join(', ')} — ตรวจสอบ coding completeness`);
+  }
+  if (insights.recommendations.length === 0) {
+    insights.recommendations.push('CMI อยู่ในเกณฑ์ดี — ดำเนินการ coding ตามมาตรฐานต่อไป');
+  }
+
+  const MTH = ['','ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+
+  return {
+    data_source: 'HOSxP XE · an_stat + ipt + ipt_drg_result',
+    timestamp: new Date().toISOString(),
+    period: 'Fiscal Year',
+
+    summary: {
+      cmi: cmi,
+      adj_cmi: adjCmi,
+      total_rw: Number(overall?.total_rw || 0),
+      total_adjrw: Number(overall?.total_adjrw || 0),
+      total_cases: totalCases,
+      drg_cases: Number(overall?.drg_cases || 0),
+      alos: Number(overall?.alos || 0),
+      avg_income: Number(overall?.avg_income || 0),
+      total_income: Number(overall?.total_income || 0),
+      revenue_per_rw: revenuePerRW,
+      benchmark: CMI_BENCHMARK,
+    },
+
+    monthly_trend: (monthly || []).map(m => ({
+      month: MTH[parseInt(m.month?.split('-')[1])] || m.month,
+      month_key: m.month,
+      cases: Number(m.cases),
+      cmi: Number(m.cmi),
+      adj_cmi: Number(m.adj_cmi || 0),
+      total_rw: Number(m.total_rw),
+      alos: Number(m.alos),
+      avg_income: Number(m.avg_income),
+    })),
+
+    by_ward: (byWard || []).map(w => ({
+      ward: w.ward_name,
+      cases: Number(w.cases),
+      cmi: Number(w.cmi),
+      adj_cmi: Number(w.adj_cmi || 0),
+      total_rw: Number(w.total_rw),
+      alos: Number(w.alos),
+      avg_income: Number(w.avg_income),
+      rw_reduced: Number(w.rw_reduced_cases),
+      rw_loss: Number(w.rw_loss),
+    })),
+
+    top_drg: (byDRG || []).map(d => ({
+      drg: d.drg,
+      description: d.drg_desc || d.drg,
+      cases: Number(d.cases),
+      avg_rw: Number(d.avg_rw),
+      total_rw: Number(d.total_rw),
+      alos: Number(d.alos),
+      avg_income: Number(d.avg_income),
+      total_income: Number(d.total_income),
+    })),
+
+    severity_distribution: severity || [],
+
+    coder_cmi: (coderCMI || []).map(c => ({
+      coder: c.coder_name,
+      cases: Number(c.cases_coded),
+      avg_rw: Number(c.avg_rw_coded),
+      avg_adjrw: Number(c.avg_adjrw_coded || 0),
+      total_rw: Number(c.total_rw),
+      avg_cc_per_case: Number(c.avg_cc_per_case || 0),
+    })),
+
+    insights,
+  };
+}));
+
 // ━━━━━━ DRG Optimization AI — Fiscal Year (Real Data) ━━━━━━
 router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () => {
   const fiscalYearStart = `CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')`;
 
   try {
     // 1. PDx Optimization (Unspecified PDx)
-    const pdxCases = await dbQuery(`
+    const pdxCases = await dbQueryHeavy('mrPdxOptimization', 360, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
                  d.icd10 as original_pdx, a.rw,
                  GROUP_CONCAT(DISTINCT IF(lo.lab_items_name_ref IS NULL, NULL, CONCAT(lo.lab_items_name_ref, ' [', IFNULL(lo.lab_order_result, ''), ']')) SEPARATOR ', ') as abnormal_labs
@@ -370,7 +588,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
           LEFT JOIN lab_order lo ON lo.lab_order_number = lh.lab_order_number 
             AND lo.abnormal_result = 'Y' 
             AND (lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%Cultur%' OR lo.lab_items_name_ref LIKE '%Hemo%' OR lo.lab_items_name_ref LIKE '%Stool%')
-          WHERE i.dchdate >= ${fiscalYearStart}
+          WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             AND d.icd10 IN ('J189', 'K358', 'A419', 'I64', 'N201', 'A099', 'N390')
           GROUP BY p.hn, i.an, name, ward, original_pdx, a.rw
           ORDER BY i.dchdate DESC
@@ -378,7 +596,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
       `).catch(() => []);
 
     // 2. LOS Alert (Short/Long Stay)
-    const losCases = await dbQuery(`
+    const losCases = await dbQueryHeavy('mrLosAlerts', 360, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
                  DATEDIFF(i.dchdate, i.regdate) as los, a.income, idr.rw, idr.adjrw, idr.wtlos
           FROM ipt i
@@ -386,7 +604,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
           INNER JOIN ward w ON i.ward = w.ward
           INNER JOIN an_stat a ON i.an = a.an
           LEFT JOIN ipt_drg_result idr ON idr.an = i.an
-          WHERE i.dchdate >= ${fiscalYearStart}
+          WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             AND (DATEDIFF(i.dchdate, i.regdate) <= 1 OR DATEDIFF(i.dchdate, i.regdate) >= 14)
             AND i.dchdate <= CURDATE()
           ORDER BY i.dchdate DESC
@@ -394,7 +612,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
       `).catch(() => []);
 
     // 3. MCC/CC Missing (High severity but missing secondary dx)
-    const mccCases = await dbQuery(`
+    const mccCases = await dbQueryHeavy('mrMccMissing', 360, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
                  a.income, a.rw, GROUP_CONCAT(DISTINCT IF(lo.lab_items_name_ref IS NULL, NULL, CONCAT(lo.lab_items_name_ref, ' [', IFNULL(lo.lab_order_result, ''), ']')) SEPARATOR ', ') as abnormal_labs
           FROM ipt i
@@ -411,10 +629,10 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
           GROUP BY p.hn, i.an, name, ward, a.income, a.rw
           ORDER BY i.dchdate DESC
           LIMIT 30
-      `).catch(err => { console.error('MCC query err:', err); return []; });
+      `).catch(err => { logger.error('MCC query error', { error: err.message }); return []; });
 
     // 4. Abnormal Labs Alerts (Detect potential CC/MCC from Lab)
-    const labCases = await dbQuery(`
+    const labCases = await dbQueryHeavy('mrAbnormalLabs', 120, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
                  lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw
           FROM ipt i
@@ -425,9 +643,9 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
           INNER JOIN lab_order lo ON lo.lab_order_number = lh.lab_order_number
           WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             AND lo.abnormal_result = 'Y'
-          ORDER BY i.dchdate DESC
-          LIMIT 50
-      `).catch(err => { console.error('Lab query err:', err); return []; });
+          ORDER BY lh.order_date DESC
+          LIMIT 200
+      `).catch(err => { logger.error('Lab query error', { error: err.message }); return []; });
 
     // Build AI Insights
     const pdxMapped = (pdxCases || []).map(c => {
@@ -551,7 +769,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
       timestamp: new Date().toISOString()
     };
   } catch (error) {
-    console.error("DRG Optimization API Error:", error);
+    logger.error('DRG Optimization API error', { error: error.message });
     return { error: error.message };
   }
 }));

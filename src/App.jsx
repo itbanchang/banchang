@@ -3,39 +3,63 @@
 // Material Dashboard 3 PRO — White Minimal Theme
 // ============================================================
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
+import { useAuth } from './hooks/useAuth.js';
+import { useAIInsights } from './hooks/useAIInsights.js';
+import { createBoundFetch } from './utils/fetchWithTokenRefresh.js';
+import LoginForm from './components/LoginForm.jsx';
 import { useDashboard } from './context/DashboardContext.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
-import KPICard from './components/KPICard.jsx';
+import KPICardV2 from './components/KPICardV2.jsx';
 import AlertBanner from './components/AlertBanner.jsx';
 import DataFreshnessBar from './components/shared/DataFreshnessBar.jsx';
 const AIAssistant = React.lazy(() => import('./components/AIAssistant.jsx'));
 import Clock from './components/Clock.jsx';
 import DrillDownModal from './components/shared/DrillDownModal.jsx';
+import ProjectTeamPanel from './components/ProjectTeamPanel.jsx';
+const ExecutiveCommandCenter = React.lazy(() => import('./components/ExecutiveCommandCenter.jsx'));
+const ServerSettings = React.lazy(() => import('./components/ServerSettings.jsx'));
 
 const FinanceTab = React.lazy(() => import('./components/FinanceTab.jsx'));
-// Preload the component in background
-const preloadFinanceTab = () => {
-    import('./components/FinanceTab.jsx');
-};
 const OPDTab = React.lazy(() => import('./components/OPDTab.jsx'));
 const IPDTab = React.lazy(() => import('./components/IPDTab.jsx'));
+
+// Preload high-priority tabs in background
+const preloadPriorityTabs = () => {
+    import('./components/FinanceTab.jsx');
+    import('./components/OPDTab.jsx');
+    import('./components/IPDTab.jsx');
+};
 const ERTab = React.lazy(() => import('./components/ERTab.jsx'));
 const DentalTab = React.lazy(() => import('./components/DentalTab.jsx'));
 const ThaiMedTab = React.lazy(() => import('./components/ThaiMedTab.jsx'));
 const PhysTherapyTab = React.lazy(() => import('./components/PhysTherapyTab.jsx'));
 const NCDTab = React.lazy(() => import('./components/NCDTab.jsx'));
 const MedRecTab = React.lazy(() => import('./components/MedRecTab.jsx'));
+const XRAYTab = React.lazy(() => import('./components/XRAYTab.jsx'));
+const PharmacyTab = React.lazy(() => import('./components/PharmacyTab.jsx'));
+const LaboratoryTab = React.lazy(() => import('./components/LaboratoryTab.jsx'));
+const QualityTab = React.lazy(() => import('./components/QualityTab.jsx'));
+const CompareTab = React.lazy(() => import('./components/CompareTab.jsx'));
+const ReportTab = React.lazy(() => import('./components/ReportTab.jsx'));
+const EvolutionTab = React.lazy(() => import('./components/EvolutionTab.jsx'));
 
 const TABS = [
+    { id: 'report', label: 'Report', icon: '📋', desc: 'REPORT Online โรงพยาบาลบ้านฉาง' },
+    { id: 'compare', label: 'เปรียบเทียบปีงบ', icon: '📊', desc: 'YoY · 3 ปีงบ · ทุกแผนก' },
     { id: 'finance', label: 'ศูนย์จัดเก็บรายได้', icon: '💰', desc: 'รายได้ · ค่าใช้จ่าย · AI Forecast' },
     { id: 'opd', label: 'OPD ผู้ป่วยนอก', icon: '⏱️', desc: 'ระยะเวลารอคอย · สถานะคลินิก' },
     { id: 'ipd', label: 'IPD ผู้ป่วยใน', icon: '🏥', desc: 'เตียง · การนอน · AI พยากรณ์' },
     { id: 'er', label: 'ห้องฉุกเฉิน', icon: '🚑', desc: 'สถานะ ER · AI Surge Alert' },
     { id: 'dental', label: 'ทันตกรรม', icon: '🦷', desc: 'คลินิกฟัน · DPI Analytics' },
+    { id: 'xray', label: 'รังสีวิทยา', icon: '☢️', desc: 'X-Ray · CT · MRI' },
+    { id: 'pharmacy', label: 'เภสัชกรรม', icon: '💊', desc: 'ยา · Generic · PPI Analytics' },
+    { id: 'lab', label: 'ห้องปฏิบัติการ', icon: '🔬', desc: 'TAT · Abnormal · LPI Analytics' },
     { id: 'thaimed', label: 'แพทย์แผนไทย', icon: '🌿', desc: 'นวด · สมุนไพร · TPI Analytics' },
     { id: 'phystherapy', label: 'กายภาพบำบัด', icon: '🏋️', desc: 'Rehab · PT · PPI Analytics' },
     { id: 'ncd', label: 'NCD', icon: '🫀', desc: 'DM · HT · CKD · NCI Analytics' },
     { id: 'medrec', label: 'Medical Record Audit', icon: '📇', desc: 'Audit · Coding Quality Analytics' },
+    { id: 'quality', label: 'คุณภาพ HA', icon: '⭐', desc: 'HA Thailand · QPI Analytics' },
+    { id: 'evolution', label: 'Self-Upgrade', icon: '🧬', desc: 'Learning Journal · Evolution Log' },
 ];
 
 /* ----- Utility: คำนวณ trend % เทียบกับค่าก่อนหน้า ----------- */
@@ -106,10 +130,35 @@ class ErrorBoundary extends React.Component {
 
 /* ============================================================== */
 export default function App() {
+    // ── Authentication Check ──
+    const { isAuthenticated, loading: authLoading } = useAuth();
+
+    // If still loading auth state, show spinner
+    if (authLoading) {
+        return <LoadingSpinner />;
+    }
+
+    // If not authenticated, show login form
+    if (!isAuthenticated) {
+        return <LoginForm />;
+    }
+
+    // ── Otherwise render dashboard ──
     const { state, setTab, fetchData } = useDashboard();
     const { activeTab, dashboardSummary } = state;
     const [systemStatus, setSystemStatus] = useState(null);
     const [aiHub, setAiHub] = useState(null);
+    const [showTeamPanel, setShowTeamPanel] = useState(false);
+    const [showServerSettings, setShowServerSettings] = useState(false);
+    // After 4s show dashboard even if summary not yet loaded (avoids infinite spinner)
+    const [summaryTimedOut, setSummaryTimedOut] = useState(false);
+    useEffect(() => {
+        const t = setTimeout(() => setSummaryTimedOut(true), 4000);
+        return () => clearTimeout(t);
+    }, []);
+
+    // ── AI Insights + Clinical Intelligence ──
+    const { insights, anomalies, prediction, clinicalInsights, loading: insightsLoading } = useAIInsights(true);
 
     // ── Dark Mode ──
     const [darkMode, setDarkMode] = useState(() => {
@@ -129,33 +178,62 @@ export default function App() {
         localStorage.setItem('bch-dark-mode', darkMode);
     }, [darkMode]);
 
+    // ── Get authentication for API calls ──
+    const { tokens, refreshAccessToken } = useAuth();
+    const apiFetch = useCallback(
+        (url, opts) => createBoundFetch(tokens, refreshAccessToken)(url, opts),
+        [tokens?.accessToken, refreshAccessToken]
+    );
+
     useWebSocket();
 
-    useEffect(() => {
+    // Consolidated fetch function used by both initial load and polling
+    const refreshAllData = useCallback(() => {
         fetchData('dashboardSummary', '/api/dashboard/summary');
-        fetch('/api/system/status').then(r => r.json()).then(setSystemStatus).catch(() => { });
-        fetch('/api/ai/hub').then(r => r.json()).then(setAiHub).catch(() => { });
+        apiFetch('/api/system/status').then(r => r.ok ? r.json() : null).then(d => d && setSystemStatus(d)).catch(() => { });
+        apiFetch('/api/ai/hub').then(r => r.ok ? r.json() : null).then(d => d && setAiHub(d)).catch(() => { });
+    }, [fetchData, apiFetch]);
 
-        const interval = setInterval(() => {
-            fetchData('dashboardSummary', '/api/dashboard/summary');
-            fetch('/api/ai/hub').then(r => r.json()).then(setAiHub).catch(() => { });
-        }, 30000);
+    useEffect(() => {
+        // Initial fetch
+        refreshAllData();
 
-        // ⚡ Preload FinanceTab after brief delay to avoid blocking LCP/TBT
-        setTimeout(preloadFinanceTab, 100);
+        // Poll every 30s
+        const interval = setInterval(refreshAllData, 30000);
 
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        // Preload high-priority tabs after brief delay to avoid blocking LCP/TBT
+        const preloadTimer = setTimeout(preloadPriorityTabs, 100);
+
+        return () => {
+            clearInterval(interval);
+            clearTimeout(preloadTimer);
+        };
+    }, [refreshAllData]);
 
     const summary = dashboardSummary;
     const isLive = systemStatus?.mysql_connected;
 
     // ── Force Refresh handler (for DataFreshnessBar) ──
-    const handleForceRefresh = useCallback(() => {
-        fetchData('dashboardSummary', '/api/dashboard/summary');
-        fetch('/api/system/status').then(r => r.json()).then(setSystemStatus).catch(() => { });
-        fetch('/api/ai/hub').then(r => r.json()).then(setAiHub).catch(() => { });
-    }, [fetchData]);
+    const handleForceRefresh = refreshAllData;
+
+    // ── Drill-down handler ──
+    const handleDrillDown = useCallback(({ id, title, endpoint }) => {
+        console.log('Drill-down:', id, title, endpoint);
+        // Navigate to relevant tab based on drill-down ID
+        if (id.startsWith('finance')) setTab('finance');
+        else if (id.startsWith('opd')) setTab('opd');
+        else if (id.startsWith('ipd')) setTab('ipd');
+        else if (id.startsWith('er')) setTab('er');
+    }, [setTab]);
+
+    // ── Action handler for AI insights ──
+    const handleAIAction = useCallback((action) => {
+        console.log('AI Action:', action);
+        // Navigate to relevant analysis tab
+        if (action === 'revenue_analysis') setTab('finance');
+        if (action === 'collection_analysis') setTab('finance');
+        if (action === 'denial_analysis') setTab('finance');
+    }, [setTab]);
 
     return (
         <div className="min-h-screen" style={{ background: 'var(--md-bg)' }}>
@@ -197,11 +275,16 @@ export default function App() {
                                     style={{ color: 'var(--md-text-primary)' }}>
                                     BCH
                                     <span style={{ color: 'var(--md-primary)' }}>360°</span>
-                                    <span className="text-gray-400 font-normal text-[13px] tracking-wider">Intelligence</span>
+                                    <span style={{ color: 'var(--md-text-secondary)', fontWeight: 400, fontSize: 13, letterSpacing: '0.05em' }}>Intelligence</span>
                                 </h1>
                                 <div className="flex items-center gap-1.5 mt-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+                                    <span className="w-1.5 h-1.5 rounded-full"
+                                        style={{ background: isLive ? '#10b981' : '#f59e0b' }} />
+                                    <p style={{
+                                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                                        letterSpacing: '0.18em', color: 'var(--md-text-secondary)',
+                                        margin: 0,
+                                    }}>
                                         {isLive ? 'System Online' : 'Connecting…'}
                                     </p>
                                 </div>
@@ -216,7 +299,7 @@ export default function App() {
                         {/* Right: clock + avatar */}
                         <div className="flex items-center gap-3">
                             <div className="text-right hidden sm:block">
-                                <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">Global Scan</p>
+                                <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', color: 'var(--md-text-tertiary)', margin: 0 }}>Global Scan</p>
                                 <Clock />
                             </div>
 
@@ -235,6 +318,22 @@ export default function App() {
                                 }}
                             >
                                 {darkMode ? '☀️' : '🌙'}
+                            </button>
+
+                            {/* Server Settings */}
+                            <button
+                                onClick={() => setShowServerSettings(true)}
+                                title="Database Server Settings"
+                                style={{
+                                    width: '36px', height: '36px', borderRadius: '10px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'rgba(15,118,110,0.08)',
+                                    border: '1px solid rgba(15,118,110,0.15)',
+                                    cursor: 'pointer', transition: 'all 0.3s ease',
+                                    fontSize: '16px',
+                                }}
+                            >
+                                ⚙️
                             </button>
 
                             {/* Avatar */}
@@ -257,23 +356,42 @@ export default function App() {
                 {/* Alert banner */}
                 <AlertBanner />
 
+                {/* ══════ Executive Command Center ══════ */}
+                <div className="hidden lg:block mb-5">
+                    <Suspense fallback={
+                        <div className="rounded-2xl p-8 animate-pulse" style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)' }}>
+                            <div className="grid grid-cols-4 gap-4 mb-4">{[1,2,3,4].map(i => <div key={i} className="h-28 rounded-xl" style={{ background: 'var(--md-border)' }} />)}</div>
+                            <div className="grid grid-cols-4 gap-3">{[1,2,3,4,5,6,7,8].map(i => <div key={i} className="h-16 rounded-lg" style={{ background: 'var(--md-border)' }} />)}</div>
+                        </div>
+                    }>
+                        <ExecutiveCommandCenter
+                            summary={summary}
+                            systemStatus={systemStatus}
+                            isLive={isLive}
+                            clinicalInsights={clinicalInsights}
+                        />
+                    </Suspense>
+                </div>
+
                 {/* Mobile KPIs */}
                 <div className="grid grid-cols-2 lg:hidden gap-2 mb-3">
-                    <KPICard
+                    <KPICardV2
                         title="รายได้รวม" value={summary?.finance?.total_revenue}
                         format="currency" icon="💰" color="blue"
                         trend={summary?.finance?.trend_revenue}
                         trendLabel="vs เดือนก่อน"
-                        loading={!summary}
+                        loading={!summary && !summaryTimedOut}
                         drillDownId="finance_revenue"
                         drillDownEndpoint="/api/finance/drilldown?type=revenue"
+                        aiInsight={summary?.finance?.trend_revenue > 5 ? `Strong growth at ${summary?.finance?.trend_revenue}% - excellent momentum` : null}
                     />
-                    <KPICard
+                    <KPICardV2
                         title="อัตราครองเตียง" value={summary?.beds?.occupancy_rate}
                         format="percent" icon="🛏️" color="green"
-                        loading={!summary}
+                        loading={!summary && !summaryTimedOut}
                         drillDownId="ipd_beds"
                         drillDownEndpoint="/api/ipd/drilldown?type=beds"
+                        aiInsight={summary?.beds?.occupancy_rate > 85 ? `High bed occupancy at ${summary?.beds?.occupancy_rate}% - plan for expansion` : 'Adequate bed availability'}
                     />
                 </div>
 
@@ -375,10 +493,17 @@ export default function App() {
                             {activeTab === 'ipd' && <IPDTab />}
                             {activeTab === 'er' && <ERTab />}
                             {activeTab === 'dental' && <DentalTab />}
+                            {activeTab === 'xray' && <XRAYTab />}
                             {activeTab === 'thaimed' && <ThaiMedTab />}
                             {activeTab === 'phystherapy' && <PhysTherapyTab />}
                             {activeTab === 'ncd' && <NCDTab />}
                             {activeTab === 'medrec' && <MedRecTab />}
+                            {activeTab === 'pharmacy' && <PharmacyTab />}
+                            {activeTab === 'lab' && <LaboratoryTab />}
+                            {activeTab === 'quality' && <QualityTab />}
+                            {activeTab === 'report' && <ReportTab />}
+                            {activeTab === 'compare' && <CompareTab />}
+                            {activeTab === 'evolution' && <EvolutionTab />}
                         </div>
                     </Suspense>
                 </ErrorBoundary>
@@ -404,18 +529,32 @@ export default function App() {
                 }}
             >
                 <div className="max-w-[1700px] xl:max-w-[2100px] 2xl:max-w-[2800px] mx-auto px-5 py-5
-                                flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold text-gray-400">
+                                flex flex-wrap items-center justify-between gap-3"
+                    style={{ fontSize: 11, fontWeight: 600, color: 'var(--md-text-secondary)' }}>
                     <div className="flex items-center gap-2 flex-wrap">
                         <span style={{ color: 'var(--md-text-tertiary)', fontWeight: 600 }}>© 2026</span>
                         <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(15, 118, 110, .08)', padding: '2px 6px', borderRadius: '4px', color: '#0f766e' }}>AI PROJECT</span>
                         <span className="font-bold" style={{ color: 'var(--md-primary)', letterSpacing: '-0.01em' }}>BCH 360° Intelligence</span>
                         <span style={{ color: 'var(--md-text-tertiary)' }}>v10.4.0</span>
-                        <span className="text-gray-300">·</span>
+                        <span style={{ color: 'var(--md-border)' }}>·</span>
                         <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(244,63,94,.08)', padding: '2px 6px', borderRadius: '4px', color: '#f43f5e' }}>SYSTEM ANALYST & DEVELOPMENT BY</span>
                         <span style={{ fontWeight: 800, color: '#f43f5e', letterSpacing: '-0.01em' }}>BOSSART</span>
-                        <span className="text-gray-300">·</span>
-                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(14,165,233,.08)', padding: '2px 6px', borderRadius: '4px', color: '#0ea5e9' }}>SUPPORTED BY</span>
+                        <span style={{ color: 'var(--md-border)' }}>·</span>
+                        <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', background: 'rgba(14,165,233,.08)', padding: '2px 6px', borderRadius: '4px', color: '#0ea5e9' }}>TESTER & SUPPORTED BY</span>
                         <span style={{ fontWeight: 800, color: '#0ea5e9', letterSpacing: '-0.01em' }}>ITBANCHANG TEAM</span>
+                        <span style={{ color: 'var(--md-border)' }}>·</span>
+                        <button
+                            onClick={() => setShowTeamPanel(true)}
+                            style={{
+                                fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+                                background: 'rgba(109,40,217,.08)', padding: '2px 8px', borderRadius: '4px', color: '#6d28d9',
+                                border: 'none', cursor: 'pointer', transition: 'all 0.2s',
+                            }}
+                            onMouseEnter={e => { e.target.style.background = 'rgba(109,40,217,.15)'; }}
+                            onMouseLeave={e => { e.target.style.background = 'rgba(109,40,217,.08)'; }}
+                        >
+                            🏗️ Project Team & Standards
+                        </button>
                     </div>
                     <div className="flex items-center gap-5">
                         <div className="flex items-center gap-1.5">
@@ -428,6 +567,14 @@ export default function App() {
                     </div>
                 </div>
             </footer>
+
+            {/* Project Team & Standards Panel */}
+            <ProjectTeamPanel isOpen={showTeamPanel} onClose={() => setShowTeamPanel(false)} />
+
+            {/* Server Settings Panel */}
+            <Suspense fallback={null}>
+                <ServerSettings open={showServerSettings} onClose={() => setShowServerSettings(false)} />
+            </Suspense>
         </div>
     );
 }

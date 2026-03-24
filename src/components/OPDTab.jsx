@@ -10,8 +10,15 @@ import {
     ComposedChart, Area, Line, ReferenceLine, Legend
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
+import AIInsightCard from './shared/AIInsightCard.jsx';
+import StatusBadge from './shared/StatusBadge.jsx';
+import MetricCard from './shared/MetricCard.jsx';
+import MetricsStrip from './shared/MetricsStrip.jsx';
+import HealthGauge from './shared/HealthGauge.jsx';
+import AlertBanner from './shared/AlertBanner.jsx';
+import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
+import EmptyState from './shared/EmptyState.jsx';
 
 const STATUS_COLORS = {
     'รอคัดกรอง': '#f5365c', // Danger
@@ -27,7 +34,20 @@ function formatMin(min) {
     return `${h}h ${m > 0 ? m + 'm' : ''}`;
 }
 
-export default function OPDTab() {
+// ─── DPI (Department Performance Index) Calculator ───
+// Composite score: SLA×30% + WaitScore×25% + ThroughputScore×25% + (100−Dropout)×20%
+function computeDPI(opd) {
+    if (!opd) return 0;
+    const sla = Math.min(opd.sla_pct || 0, 100);
+    // WaitScore: 100 when avg_wait=0, 0 when avg_wait>=120
+    const waitScore = Math.max(0, Math.min(100, Math.round(100 - ((opd.avg_total_minutes || 0) / 120) * 100)));
+    // ThroughputScore: normalised to 0-100  (30 visits/hr = 100)
+    const throughputScore = Math.min(100, Math.round(((opd.throughput || 0) / 30) * 100));
+    const dropoutScore = Math.max(0, 100 - (opd.dropout_pct || 0));
+    return Math.round(sla * 0.30 + waitScore * 0.25 + throughputScore * 0.25 + dropoutScore * 0.20);
+}
+
+function OPDTab() {
     const { state, fetchData } = useDashboard();
     const opd = state.opdToday;
     const loading = state.loading;
@@ -255,8 +275,22 @@ export default function OPDTab() {
         );
     }, [patients]);
 
+    // ── Loading & Empty States ──
+    if (loading['opdToday']) return <TabLoadingSkeleton />;
+    if (!opd) return (
+        <EmptyState
+            icon="🏥"
+            title="ไม่พบข้อมูล OPD"
+            description="ไม่สามารถโหลดข้อมูลผู้ป่วยนอกได้ในขณะนี้ กรุณาตรวจสอบการเชื่อมต่อ HOSxP XE"
+        />
+    );
+
     return (
-        <div className="space-y-4 animate-fade-in pb-8">
+        <div
+            className="space-y-4 animate-fade-in pb-8"
+            role="region"
+            aria-label="แผนก OPD — วิเคราะห์ผู้ป่วยนอก"
+        >
             {/* AI Strategic Intelligence Feed — Unified View */}
             <div className="glass-card" style={{ padding: '0.75rem 1.25rem', border: '1px solid rgba(124,58,237,.2)', background: 'linear-gradient(90deg, rgba(124,58,237,.08), transparent)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -270,7 +304,7 @@ export default function OPDTab() {
                         </span>
                     </div>
                     <div style={{ display: 'flex', gap: '12px' }}>
-                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>
+                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>
                             <strong style={{ color: 'var(--md-text-primary)' }}>System Status:</strong> Online & Auditing
                         </span>
                     </div>
@@ -320,50 +354,101 @@ export default function OPDTab() {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#7c3aed', margin: 0 }}>
+                                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#7c3aed', margin: 0 }}>
                                         👥 ผู้รับบริการวันนี้
                                     </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                         {new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}
                                     </span>
                                 </div>
 
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                                    <span style={{ fontSize: '42px', fontWeight: 900, color: '#7c3aed', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(124,58,237,.3)' }}>
-                                        {total.toLocaleString()}
-                                    </span>
-                                    <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>ราย</span>
-                                    {opd?.today_vs_yesterday_pct !== 0 && (
-                                        <span style={{
-                                            fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
-                                            background: opd?.today_vs_yesterday_pct > 0 ? 'rgba(245,158,11,.12)' : 'rgba(16,185,129,.12)',
-                                            color: opd?.today_vs_yesterday_pct > 0 ? '#f59e0b' : '#10b981',
-                                        }}>
-                                            {opd?.today_vs_yesterday_pct > 0 ? '▲' : '▼'} {Math.abs(opd?.today_vs_yesterday_pct)}% vs เมื่อวาน
+                                <div style={{ marginBottom: '8px' }}>
+                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '4px' }}>
+                                        ปริมาณผู้ป่วยและประชากรศาสตร์
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                                        <span style={{ fontSize: '42px', fontWeight: 900, color: '#7c3aed', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(124,58,237,.3)' }}>
+                                            {total.toLocaleString()}
                                         </span>
-                                    )}
+                                        <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>ราย</span>
+                                        {opd?.today_vs_yesterday_pct !== 0 && (
+                                            <span style={{
+                                                fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
+                                                background: opd?.today_vs_yesterday_pct > 0 ? 'rgba(245,158,11,.12)' : 'rgba(16,185,129,.12)',
+                                                color: opd?.today_vs_yesterday_pct > 0 ? '#f59e0b' : '#10b981',
+                                            }}>
+                                                {opd?.today_vs_yesterday_pct > 0 ? '▲' : '▼'} {Math.abs(opd?.today_vs_yesterday_pct)}% vs เมื่อวาน
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
 
-                                {/* Gender + Type compact bars */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                {/* Gender compact bar */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', marginBottom: '12px' }}>
                                     <div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#3b82f6' }}>♂ ชาย {male} ({malePct}%)</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#ec4899' }}>♀ หญิง {female} ({100 - malePct}%)</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#3b82f6' }}>♂ ชาย {male} ({malePct}%)</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#ec4899' }}>♀ หญิง {female} ({100 - malePct}%)</span>
                                         </div>
                                         <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(236,72,153,.12)', display: 'flex' }}>
                                             <div style={{ width: `${malePct}%`, background: 'linear-gradient(90deg,#3b82f6,#60a5fa)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
                                             <div style={{ flex: 1, background: 'linear-gradient(90deg,#f472b6,#ec4899)', borderRadius: '0 99px 99px 0' }} />
                                         </div>
                                     </div>
-                                    <div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>★ ใหม่ (1,2,3) {newPt} ({newPct}%)</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#6b7280' }}>↩ เก่า (อื่น/วางเปล่า) {total - newPt}</span>
+                                </div>
+                                <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
+                                    วิธีคำนวณ: นับรายการจากทะเบียนผู้ป่วยนอก (ovst) เทียบกับยอดรวมของวันก่อนหน้า
+                                </div>
+
+                                {/* Operational Insights: Vulnerable groups, P90, and Clinics */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                    <div style={{
+                                        padding: '10px 12px', background: 'rgba(255,255,255,0.03)',
+                                        borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)',
+                                        display: 'flex', flexDirection: 'column'
+                                    }}>
+                                        <p style={{ margin: '0', fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            👥 กลุ่มเปราะบาง
+                                        </p>
+                                        <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>
+                                            สัดส่วนประชากรผู้รับบริการ
+                                        </p>
+                                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '8px' }}>
+                                            <div>
+                                                <span style={{ fontSize: '14px', fontWeight: 900, color: '#f59e0b', display: 'block', lineHeight: 1 }}>{opd?.elderly_pct || 0}%</span>
+                                                <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>สูงวัย (60+)</span>
+                                            </div>
+                                            <div style={{ width: '1px', height: '18px', background: 'rgba(255,255,255,0.1)' }} />
+                                            <div>
+                                                <span style={{ fontSize: '14px', fontWeight: 900, color: '#0ea5e9', display: 'block', lineHeight: 1 }}>{opd?.child_pct || 0}%</span>
+                                                <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>เด็ก ({'<'}15)</span>
+                                            </div>
                                         </div>
-                                        <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(107,114,128,.1)', display: 'flex' }}>
-                                            <div style={{ width: `${newPct}%`, background: 'linear-gradient(90deg,#10b981,#34d399)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
-                                            <div style={{ flex: 1, background: 'rgba(156,163,175,.2)', borderRadius: '0 99px 99px 0' }} />
+                                        <div style={{ marginTop: 'auto', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', fontWeight: 500, fontStyle: 'italic', lineHeight: 1.3 }}>
+                                            วิธีคำนวณ: (จำนวนผู้ป่วยตามกลุ่มอายุ ÷ ผู้ป่วยทั้งหมดวันนี้) × 100
+                                        </div>
+                                    </div>
+
+                                    <div style={{
+                                        padding: '10px 14px', background: 'rgba(124,58,237,0.06)',
+                                        borderRadius: '12px', border: '1px solid rgba(124,58,237,0.12)',
+                                        display: 'flex', flexDirection: 'column', justifyContent: 'center'
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+                                            <div>
+                                                <p style={{ margin: '0', fontSize: '10px', fontWeight: 800, color: '#8b5cf6', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                                    ⚡ P90 Wait Time
+                                                </p>
+                                                <p style={{ margin: '0', fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>
+                                                    จุดวิกฤตความล่าช้า (Critical Delay)
+                                                </p>
+                                            </div>
+                                            <span style={{ fontSize: '18px', fontWeight: 900, color: '#7c3aed', lineHeight: 1 }}>
+                                                {opd?.p90_wait || '—'} <small style={{ fontSize: '10px', fontWeight: 700 }}>น.</small>
+                                            </span>
+                                        </div>
+                                        <div style={{ marginTop: 'auto', paddingTop: '6px', borderTop: '1px solid rgba(124,58,237,0.1)', fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 500, fontStyle: 'italic' }}>
+                                            วิธีคำนวณ: Percentile 90 (ผู้ป่วย 90% ของวันนี้ รอไม่เกินเวลานี้)
                                         </div>
                                     </div>
                                 </div>
@@ -384,6 +469,7 @@ export default function OPDTab() {
                         border: `1px solid ${kpi.grad[0]}25`,
                         position: 'relative', overflow: 'hidden',
                         transition: 'transform 0.2s, box-shadow 0.2s',
+                        display: 'flex', flexDirection: 'column', height: '100%'
                     }}
                         onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 8px 25px ${kpi.glow}`; }}
                         onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
@@ -395,18 +481,48 @@ export default function OPDTab() {
                             </div>
                         ) : (
                             <>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
                                         {kpi.title}
                                     </span>
                                     <span style={{ fontSize: '18px' }}>{kpi.icon}</span>
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                                {kpi.title === 'กลับบ้านแล้ว' && (
+                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                        ประสิทธิภาพการบริการ (Throughput)
+                                    </div>
+                                )}
+                                {kpi.title === 'ยังรอรับบริการ' && (
+                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                        ภาระงานที่คงค้าง (Work-in-Progress) หรือคิวไม่รักษา
+                                    </div>
+                                )}
+                                {kpi.title === 'เวลารอเฉลี่ย' && (
+                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                        ระยะเวลาบริการรวม (Cycle Time)
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', marginBottom: '8px' }}>
                                     <span style={{ fontSize: '28px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
                                         {(kpi.value ?? 0).toLocaleString()}
                                     </span>
                                     <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{kpi.unit}</span>
                                 </div>
+                                {kpi.title === 'กลับบ้านแล้ว' && (
+                                    <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
+                                        วิธีคำนวณ: นับผู้ป่วยที่จบกระบวนการ (service7, bill_time หรือลงสถานะแพทย์ให้กลับบ้าน/Admit/ส่งต่อ)
+                                    </div>
+                                )}
+                                {kpi.title === 'ยังรอรับบริการ' && (
+                                    <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
+                                        วิธีคำนวณ: นับผู้ป่วยที่ยังรอตรวจ/รับยา โดยคัดแยกเคสเปลี่ยนสถานะออก (ยอดนี้อาจรวมถึงคิวที่คนไข้ไม่รอรักษา)
+                                    </div>
+                                )}
+                                {kpi.title === 'เวลารอเฉลี่ย' && (
+                                    <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
+                                        วิธีคำนวณ: ค่าเฉลี่ยของ (เวลาเสร็จสิ้น - เวลาลงทะเบียน) ของผู้ป่วยที่จบกระบวนการแล้ว (ไม่นับคิวที่กลับก่อนหรือไม่รับบริการ)
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>
@@ -418,7 +534,7 @@ export default function OPDTab() {
                 const sla = opd.sla_pct || 0;
                 const avgWait = opd.avg_total_minutes || 0;
                 const throughput = opd.throughput || 0;
-                const dpi = opd.dpi || 0;
+                const dpi = opd.dpi || computeDPI(opd);
                 const dropout = opd.dropout_pct || 0;
                 const todayShort = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
 
@@ -492,117 +608,7 @@ export default function OPDTab() {
                 );
             })()}
 
-            {/* ━━━━ 🚀 AI Strategic Intelligence Feed (Hero Strip) ━━━━ */}
-            {!loading.opdToday && opd && (
-                <div style={{
-                    display: 'flex', gap: '12px', marginBottom: '1rem', marginTop: '0.75rem',
-                    overflowX: 'auto', paddingBottom: '4px'
-                }}>
-                    <div className="glass-card" style={{
-                        flex: '1 1 300px', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '14px',
-                        borderLeft: `4px solid ${aiAnalytics.urgencyColor}`, background: `${aiAnalytics.urgencyColor}05`
-                    }}>
-                        <div style={{ fontSize: '28px' }}>🤖</div>
-                        <div style={{ flex: 1 }}>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: aiAnalytics.urgencyColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>AI Executive Intelligence</p>
-                            <p style={{ margin: '2px 0 0', fontSize: '13px', fontWeight: 700, color: 'var(--md-text-primary)' }}>{aiAnalytics.problems[0]?.title || 'ระบบทำงานปกติ'}</p>
-                            <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>Urgency: {aiAnalytics.urgencyLabel} ({aiAnalytics.urgencyScore}/10)</p>
-                        </div>
-                    </div>
-                    <div className="glass-card" style={{
-                        flex: '0 0 200px', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px',
-                        borderLeft: `4px solid #10b981`, background: 'rgba(16,185,129,.05)'
-                    }}>
-                        <div style={{ fontSize: '24px' }}>📈</div>
-                        <div>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>Forecast (Next Hour)</p>
-                            <p style={{ margin: '2px 0 0', fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{aiAnalytics.forecast.intensity} Load</p>
-                            <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Peak at {aiAnalytics.forecast.nextPeak}</p>
-                        </div>
-                    </div>
-                    <div className="glass-card" style={{
-                        flex: '0 0 240px', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px',
-                        borderLeft: `4px solid ${aiAnalytics.staffing.color}`, background: `${aiAnalytics.staffing.color}05`
-                    }}>
-                        <div style={{ fontSize: '24px' }}>👥</div>
-                        <div>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: aiAnalytics.staffing.color, textTransform: 'uppercase' }}>Staffing Recommendation</p>
-                            <p style={{ margin: '2px 0 0', fontSize: '12px', fontWeight: 700, color: 'var(--md-text-primary)' }}>{aiAnalytics.staffing.recommend}</p>
-                        </div>
-                    </div>
-                </div>
-            )}
 
-            {/* ━━━━ 🔥 AI Optimizer & Flow Prediction (LIVE) ━━━━ */}
-            {(state.opdWaitOptimizer || state.opdFlowPrediction) && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '1.25rem', marginBottom: '1.5rem' }}>
-                    {/* Wait Optimizer */}
-                    {state.opdWaitOptimizer && (
-                        <div className="glass-card" style={{ padding: '1.25rem', borderTop: '4px solid #f43f5e' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                                <h4 style={{ fontSize: '13px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span>⏱️</span> Wait Time Optimizer
-                                </h4>
-                                <span style={{ fontSize: '9px', fontWeight: 700, color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '2px 8px', borderRadius: '99px' }}>AI Powered</span>
-                            </div>
-
-                            <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-                                <div style={{ flex: 1, background: 'rgba(244,63,94,.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(244,63,94,.1)' }}>
-                                    <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', marginBottom: '4px' }}>Avg Total Wait</p>
-                                    <p style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: '#f43f5e', lineHeight: 1 }}>{state.opdWaitOptimizer.overall?.avg_total_minutes} <span style={{ fontSize: '12px', fontWeight: 700 }}>min</span></p>
-                                </div>
-                                <div style={{ flex: 1, background: 'rgba(245,158,11,.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(245,158,11,.1)' }}>
-                                    <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', marginBottom: '4px' }}>Primary Bottleneck</p>
-                                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f59e0b', lineHeight: 1.2 }}>{state.opdWaitOptimizer.overall?.primary_bottleneck?.name_th}</p>
-                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#f59e0b', marginTop: '4px' }}>รอนาน {state.opdWaitOptimizer.overall?.primary_bottleneck?.avg_minutes} นาที</p>
-                                </div>
-                            </div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                {state.opdWaitOptimizer.recommendations?.slice(0, 3).map((rec, i) => (
-                                    <div key={i} style={{ padding: '8px 12px', background: 'rgba(124,58,237,.05)', borderRadius: '8px', borderLeft: '3px solid #7c3aed' }}>
-                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#7c3aed', marginBottom: '2px' }}>💡 {rec.action}</p>
-                                        <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>Target: {rec.target || 'N/A'}</p>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Flow Prediction */}
-                    {state.opdFlowPrediction && (
-                        <div className="glass-card" style={{ padding: '1.25rem', borderTop: '4px solid #10b981' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                                <h4 style={{ fontSize: '13px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span>🌊</span> Flow Prediction
-                                </h4>
-                                <span style={{ fontSize: '9px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,.1)', padding: '2px 8px', borderRadius: '99px' }}>AI Powered</span>
-                            </div>
-
-                            <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-                                <div style={{ flex: 1, background: 'rgba(16,185,129,.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(16,185,129,.1)' }}>
-                                    <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#10b981', textTransform: 'uppercase', marginBottom: '4px' }}>Predicted Volume</p>
-                                    <p style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: '#10b981', lineHeight: 1 }}>{state.opdFlowPrediction.today_prediction?.predicted_total} <span style={{ fontSize: '12px', fontWeight: 700 }}>ราย</span></p>
-                                </div>
-                                <div style={{ flex: 1, background: 'rgba(14,165,233,.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(14,165,233,.1)' }}>
-                                    <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: '#0ea5e9', textTransform: 'uppercase', marginBottom: '4px' }}>Surge Status</p>
-                                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 800, color: '#0ea5e9', lineHeight: 1.2 }}>{state.opdFlowPrediction.today_prediction?.status}</p>
-                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#0ea5e9', marginTop: '4px' }}>Index: {state.opdFlowPrediction.today_prediction?.surge_index}</p>
-                                </div>
-                            </div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                {state.opdFlowPrediction.recommendations?.slice(0, 3).map((rec, i) => (
-                                    <div key={i} style={{ padding: '8px 12px', background: 'rgba(124,58,237,.05)', borderRadius: '8px', borderLeft: '3px solid #7c3aed' }}>
-                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#7c3aed', marginBottom: '2px' }}>👥 {rec.action}</p>
-                                        <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-secondary)', fontWeight: 500 }}>{rec.reason || `Target: ${rec.target}`}</p>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
 
             {/* ━━━━ 🔥 Deep Root-Cause Analysis ━━━━ */}
             {(() => {
@@ -631,15 +637,15 @@ export default function OPDTab() {
                                         </div>
                                         <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'minmax(200px, 1fr) minmax(200px, 1fr) minmax(200px, 1fr)', gap: '12px' }}>
                                             <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔍 Root Cause</p>
+                                                <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🔍 Root Cause</p>
                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.rootCause}</p>
                                             </div>
                                             <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Cascade Effect</p>
+                                                <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Cascade Effect</p>
                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.cascadeEffect}</p>
                                             </div>
                                             <div style={{ padding: '12px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🚀 AI Recommendation</p>
+                                                <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em' }}>🚀 AI Recommendation</p>
                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.6, fontWeight: 500 }}>{p.fixFirst}</p>
                                             </div>
                                         </div>
@@ -651,13 +657,216 @@ export default function OPDTab() {
                 );
             })()}
 
+            {/* ━━━━ 🩺 Active Medical Staff (On-Duty Today) ━━━━ */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', marginTop: '1.5rem' }}>
+                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #5e72e4, #11cdef)', borderRadius: '99px' }} />
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                    🩺 บุคลากรทางการแพทย์ที่ปฏิบัติหน้าที่วันนี้ (On-Duty)
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(94,114,228,.08)', padding: '2px 8px', borderRadius: '99px' }}>HOSxP Activity Logs</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+                {/* ── Active Doctors List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(94,114,228,.05)', borderBottom: '1px solid rgba(94,114,228,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👨‍⚕️</span>
+                            <div>
+                                <span style={{ fontSize: '12px', fontWeight: 800, color: '#5e72e4', display: 'block' }}>ทีมแพทย์ (OPD)</span>
+                                <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>คัดกรอง: นพ./พญ.</span>
+                            </div>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#5e72e4', opacity: 0.8 }}>{opd?.active_doctors_list?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.opdToday ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (opd?.active_doctors_list?.length > 0) ? (
+                            opd.active_doctors_list.map((dr, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && dr.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && dr.afternoon_count > 0) ||
+                                    (currentHour >= 17 && dr.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', transition: 'background 0.2s', cursor: 'default',
+                                        borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}
+                                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(94,114,228,.04)'}
+                                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #5e72e4, #8b5cf6)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {dr.name?.substring(0, 2).replace('น.', '').replace('พ.', '').trim() || 'D'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{dr.name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: dr.morning_count > 0 ? '#5e72e4' : '#ccc' }}>🌅{dr.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: dr.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{dr.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: dr.night_count > 0 ? '#172b4d' : '#ccc' }}>🌙{dr.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#5e72e4' }}>{dr.total_count}</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Nurses List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(17,205,239,.05)', borderBottom: '1px solid rgba(17,205,239,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👩‍⚕️</span>
+                            <div>
+                                <span style={{ fontSize: '12px', fontWeight: 800, color: '#11cdef', display: 'block' }}>ทีมพยาบาล</span>
+                                <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>พว./พช./นป./พยาบาล</span>
+                            </div>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#11cdef', opacity: 0.8 }}>{opd?.active_nurses_list?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.opdToday ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (opd?.active_nurses_list?.length > 0) ? (
+                            opd.active_nurses_list.map((nr, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && nr.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && nr.afternoon_count > 0) ||
+                                    (currentHour >= 17 && nr.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', transition: 'background 0.2s', cursor: 'default',
+                                        borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}
+                                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(17,205,239,.04)'}
+                                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #11cdef, #1171ef)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {nr.staff_name?.substring(0, 1) || 'N'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nr.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: nr.morning_count > 0 ? '#5e72e4' : '#ccc' }}>🌅{nr.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: nr.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{nr.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: nr.night_count > 0 ? '#172b4d' : '#ccc' }}>🌙{nr.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#11cdef' }}>{nr.screen_count}</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Staff List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(45,206,137,.05)', borderBottom: '1px solid rgba(45,206,137,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>🏢</span>
+                            <div>
+                                <span style={{ fontSize: '12px', fontWeight: 800, color: '#2dce89', display: 'block' }}>เจ้าหน้าที่อื่นๆ</span>
+                                <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>คัดกรอง/ห้องบัตร/อื่นๆ</span>
+                            </div>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#2dce89', opacity: 0.8 }}>{opd?.active_staff_list?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.opdToday ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (opd?.active_staff_list?.length > 0) ? (
+                            opd.active_staff_list.map((st, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && st.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && st.afternoon_count > 0) ||
+                                    (currentHour >= 17 && st.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', transition: 'background 0.2s', cursor: 'default',
+                                        borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}
+                                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(45,206,137,.04)'}
+                                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #2dce89, #2dcecc)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {st.staff_name?.substring(0, 1) || 'S'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: st.morning_count > 0 ? '#5e72e4' : '#ccc' }}>🌅{st.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: st.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{st.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: st.night_count > 0 ? '#172b4d' : '#ccc' }}>🌙{st.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#2dce89' }}>{st.screen_count}</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
             {/* ━━━━ Efficiency KPI Strip ━━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                 <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #5e72e4)', borderRadius: '99px' }} />
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     📊 ตัวชี้วัดประสิทธิภาพ
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.06)', padding: '2px 8px', borderRadius: '99px' }}>Real-time</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.06)', padding: '2px 8px', borderRadius: '99px' }}>Real-time</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
                 {[
@@ -705,7 +914,7 @@ export default function OPDTab() {
                         ) : (
                             <>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                    <span style={{ fontSize: '9px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--md-text-tertiary)' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--md-text-tertiary)' }}>
                                         {kpi.title}
                                     </span>
                                     <span style={{ fontSize: '16px' }}>{kpi.icon}</span>
@@ -714,22 +923,22 @@ export default function OPDTab() {
                                     <span style={{ fontSize: '24px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
                                         {kpi.value}
                                     </span>
-                                    {kpi.unit && <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{kpi.unit}</span>}
+                                    {kpi.unit && <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{kpi.unit}</span>}
                                 </div>
-                                <p style={{ margin: '3px 0 0', fontSize: '10px', fontWeight: 600, color: kpi.grad[0], opacity: 0.8 }}>{kpi.sub}</p>
+                                <p style={{ margin: '3px 0 0', fontSize: '11px', fontWeight: 600, color: kpi.grad[0], opacity: 0.8 }}>{kpi.sub}</p>
                             </>
                         )}
                     </div>
                 ))}
             </div>
 
-            {/* ━━━━━━ 📊 Diagnostic Intelligence Grid — AI Driven ━━━━━━ */}
+            {/* ━━━━━━ 📊 แดชบอร์ดวิเคราะห์ประสิทธิภาพเชิงยุทธศาสตร์ ━━━━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                 <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #0ea5e9)', borderRadius: '99px' }} />
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
-                    🩺 Diagnostic Intelligence Dashboard — ประเด็นยุทธศาสตร์
+                    🩺 แดชบอร์ดวิเคราะห์ประสิทธิภาพ OPD — ประเด็นยุทธศาสตร์
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>AI Powered</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>ขับเคลื่อนด้วย AI</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
@@ -739,28 +948,43 @@ export default function OPDTab() {
                     gap: '12px'
                 }}>
                     {[
-                        { icon: '📐', label: 'Wait Variance (σ)', value: `${opd?.wait_stddev || 0}m`, sub: 'ความเสถียรของงานคิว', color: (opd?.wait_stddev || 0) > 30 ? '#f43f5e' : '#10b981' },
-                        { icon: '🤖', label: 'AI Staffing Rec.', value: aiAnalytics.staffing.status, sub: aiAnalytics.staffing.recommendation, color: aiAnalytics.staffing.color },
-                        { icon: '�', label: 'Wait Forecast', value: aiAnalytics.forecast.waitTrend, sub: `Next Peak: ${aiAnalytics.forecast.nextPeak}`, color: aiAnalytics.forecast.intensity === 'High' ? '#f43f5e' : '#7c3aed' },
-                        { icon: '�🚶', label: 'Dropout Rate', value: `${opd?.dropout_pct || 0}%`, sub: 'ยกเลิกคิว (30 วัน)', color: (opd?.dropout_pct || 0) > 5 ? '#f43f5e' : '#10b981' },
-                        { icon: '🎯', label: 'Doctor Yield', value: `${opd?.avg_patients_per_doctor || 0} p/dr`, sub: 'ศักยภาพการตรวจเฉลี่ย', color: '#7c3aed' },
-                        { icon: '✅', label: 'Completion Rate', value: `${opd?.completion_rate || 0}%`, sub: 'อัตราการปิดเคสรายวัน', color: (opd?.completion_rate || 0) < 90 ? '#f59e0b' : '#10b981' },
-                        { icon: '🔋', label: 'Capacity Util.', value: `${opd?.capacity_utilization || 0}%`, sub: 'การใช้ทรัพยากรสูงสุด', color: (opd?.capacity_utilization || 0) > 100 ? '#f43f5e' : '#0ea5e9' },
-                        { icon: '👵', label: 'Elderly Ratio', value: `${opd?.elderly_pct || 0}%`, sub: 'สัดส่วนผู้สูงอายุวันนี้', color: '#8b5cf6' },
-                        { icon: '⚡', label: 'Time-to-1st Service', value: `${opd?.wait_steps?.registration_to_screening || 0}m`, sub: 'ลงทะเบียน → คัดกรอง', color: (opd?.wait_steps?.registration_to_screening || 0) > 15 ? '#f43f5e' : '#10b981' },
-                        { icon: '💎', label: 'Revenue/Visit', value: `฿${(opd?.revenue_per_visit || 0).toLocaleString()}`, sub: 'รายได้เฉลี่ยต่อ Visit', color: '#10b981' },
-                        { icon: '📊', label: 'DPI Score', value: `${opd?.dpi || 0}/100`, sub: 'Performance Index รวม', color: (opd?.dpi || 0) < 70 ? '#f43f5e' : '#10b981' },
+                        { icon: '📐', label: 'ความผันผวนเวลารอ (σ)', value: `${opd?.wait_stddev || 0} นาที`, sub: `ค่าเบี่ยงเบนมาตรฐานของเวลารอ — ${(opd?.wait_stddev || 0) > 30 ? 'ผันผวนสูง' : 'เสถียรดี'}`, color: (opd?.wait_stddev || 0) > 30 ? '#f43f5e' : '#10b981', calc: 'STDDEV(total_wait_minutes)' },
+
+                        { icon: '🤖', label: 'AI แนะนำกำลังคน', value: aiAnalytics.staffing.status === 'Optimal' ? 'เพียงพอ' : aiAnalytics.staffing.status === 'Tight' ? 'ตึงตัว' : aiAnalytics.staffing.status === 'Overstrained' ? 'ขาดแคลน' : aiAnalytics.staffing.status, sub: aiAnalytics.staffing.recommendation, color: aiAnalytics.staffing.color, calc: 'AI Machine Learning Model' },
+
+                        { icon: '📈', label: 'พยากรณ์แนวโน้มรอ', value: aiAnalytics.forecast.waitTrend === 'Increasing' ? 'เพิ่มขึ้น ↑' : aiAnalytics.forecast.waitTrend === 'Improving' ? 'ดีขึ้น ↓' : aiAnalytics.forecast.waitTrend, sub: `พีคถัดไป: ${aiAnalytics.forecast.nextPeak}`, color: aiAnalytics.forecast.intensity === 'High' ? '#f43f5e' : '#7c3aed', calc: 'Time-Series Analysis' },
+
+                        { icon: '🚶', label: 'อัตรายกเลิกคิว', value: `${opd?.dropout_pct || 0}%`, sub: `ผู้ป่วยที่ออกก่อนตรวจเสร็จ (30 วัน)`, color: (opd?.dropout_pct || 0) > 5 ? '#f43f5e' : '#10b981', calc: '(Dropout / Registered) × 100' },
+
+                        { icon: '✅', label: 'อัตราปิดเคสสำเร็จ', value: `${opd?.completion_rate || 0}%`, sub: `ผ่านครบทุกขั้นตอน (ตรวจ→ยา→เงิน)`, color: (opd?.completion_rate || 0) < 90 ? '#f59e0b' : '#10b981', calc: '(Completed / Registered) × 100' },
+
+                        { icon: '🔋', label: 'อัตราใช้ทรัพยากร', value: `${opd?.capacity_utilization || 0}%`, sub: `ความหนาแน่นคนไข้ต่อขีดจำกัดแผนก`, color: (opd?.capacity_utilization || 0) > 100 ? '#f43f5e' : '#0ea5e9', calc: '(Current / Max Capacity) × 100' },
+
+                        { icon: '👵', label: 'สัดส่วนผู้สูงอายุ', value: `${opd?.elderly_pct || 0}%`, sub: `ผู้ป่วยอายุ ≥60 ปี (วันนี้)`, color: '#8b5cf6', calc: '(Age ≥ 60 / Total) × 100' },
+
+                        { icon: '⚡', label: 'เวลาถึงบริการแรก', value: `${opd?.wait_steps?.registration_to_screening || 0} นาที`, sub: `ลงทะเบียน → คัดกรอง (เฉลี่ย)`, color: (opd?.wait_steps?.registration_to_screening || 0) > 15 ? '#f43f5e' : '#10b981', calc: 'AVG(screen_time - reg_time)' },
+
+                        { icon: '💎', label: 'รายได้เฉลี่ยต่อ Visit', value: `${(opd?.avg_revenue_per_visit || 0).toLocaleString()} บาท`, sub: `ค่าบริการเฉลี่ยต่อครั้ง (ค่ายา+ตรวจ)`, color: '#10b981', calc: 'Total Revenue / Total Visists' },
+
+                        { icon: '📊', label: 'ดัชนีประสิทธิภาพ OPD', value: `${opd?.dpi || computeDPI(opd)}/100`, sub: `คะแนน DPI รวม 4 ด้านสำคัญ`, color: (opd?.dpi || computeDPI(opd)) < 70 ? '#f43f5e' : '#10b981', calc: 'SLA 30%+Wait 25%+Thru 25%+Drop 20%' },
                     ].map((k, i) => (
                         <div key={i} style={{
                             padding: '12px 14px', borderRadius: '12px',
                             background: `${k.color}06`, border: `1px solid ${k.color}15`,
-                            display: 'flex', alignItems: 'center', gap: '12px'
+                            display: 'flex', flexDirection: 'column', gap: '8px'
                         }}>
-                            <div style={{ fontSize: '20px', width: '36px', height: '36px', borderRadius: '10px', background: `${k.color}12`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{k.icon}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <div style={{ fontSize: '20px', width: '36px', height: '36px', borderRadius: '10px', background: `${k.color}12`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{k.icon}</div>
+                                <div style={{ flex: 1 }}>
+                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{k.label}</p>
+                                    <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
+                                </div>
+                            </div>
                             <div style={{ flex: 1 }}>
-                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{k.label}</p>
-                                <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600, lineHeight: 1.4 }}>{k.sub}</p>
+                            </div>
+                            <div style={{ marginTop: 'auto', paddingTop: '6px', borderTop: '1px solid rgba(0,0,0,0.03)', fontSize: '8px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', fontWeight: 500 }}>
+                                {k.calc}
                             </div>
                         </div>
                     ))}
@@ -775,10 +999,10 @@ export default function OPDTab() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                     <div>
                         <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em', margin: 0 }}>
-                            📅 เวลารอเฉลี่ยรายเดือน — ปีงบประมาณ {fiscalData?.fiscal_year_be || ''}
+                            📅 ระยะเวลาบริการรวม (Cycle Time) และ เวลารอเฉลี่ยรายเดือน — ปีงบประมาณ {fiscalData?.fiscal_year_be || ''}
                         </h3>
                         <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', marginTop: '3px' }}>
-                            ตุลาคม–กันยายน · แยกตามขั้นตอน · เส้นประ = ค่าเฉลี่ยรวม
+                            ตุลาคม–กันยายน · แยกตามขั้นตอน
                         </p>
                     </div>
                     {/* Live badge */}
@@ -802,8 +1026,8 @@ export default function OPDTab() {
                     const totalVisits = months.reduce((s, m) => s + m.total_visits, 0);
                     const kpis = [
                         { label: 'ปีงบประมาณ', value: `พ.ศ. ${fiscalData.fiscal_year_be}`, color: '#7c3aed', icon: '📆' },
-                        { label: 'เวลารอเฉลี่ยทั้งปี', value: fiscalData.benchmark_avg ? `${fiscalData.benchmark_avg} นาที` : '—', color: fiscalData.benchmark_avg > 90 ? '#f43f5e' : '#10b981', icon: '⏱️' },
-                        { label: 'เดือนที่รอนานสุด', value: peakMonth ? `${peakMonth.month} (${peakMonth.avg_total}น.)` : '—', color: '#f59e0b', icon: '📌' },
+                        { label: 'ระยะเวลาบริการรวม (เฉลี่ยทั้งปี)', value: fiscalData.benchmark_avg ? `${fiscalData.benchmark_avg} นาที` : '—', color: fiscalData.benchmark_avg > 90 ? '#f43f5e' : '#10b981', icon: '⏱️' },
+                        { label: 'เดือนที่นานสุด', value: peakMonth ? `${peakMonth.month} (${peakMonth.avg_total}น.)` : '—', color: '#f59e0b', icon: '📌' },
                         { label: 'ผู้ป่วยสะสม (ปีนี้)', value: totalVisits.toLocaleString() + ' ราย', color: '#0ea5e9', icon: '👥' },
                     ];
                     return (
@@ -883,7 +1107,7 @@ export default function OPDTab() {
                                         avg_screen: '🔬 คัดกรอง → พบแพทย์',
                                         avg_doc: '🩺 ตรวจรักษา → รับยา',
                                         avg_rx: '💊 รับยา → ชำระเงิน',
-                                        avg_total: '⏱️ รวมทุกขั้นตอน',
+                                        avg_total: '⏱️ ระยะเวลาบริการรวม (Cycle Time)',
                                     };
                                     return [`${value} นาที`, labelMap[name] || name];
                                 }}
@@ -892,34 +1116,7 @@ export default function OPDTab() {
                                     return d ? `${label}  ·  ${(d.total_visits || 0).toLocaleString()} ราย` : label;
                                 }}
                             />
-                            <Legend
-                                iconType="circle"
-                                iconSize={8}
-                                wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}
-                                formatter={(value) => ({
-                                    avg_reg: 'ลงทะเบียน',
-                                    avg_screen: 'คัดกรอง',
-                                    avg_doc: 'ตรวจรักษา',
-                                    avg_rx: 'รับยา',
-                                }[value] || value)}
-                            />
 
-                            {/* Benchmark reference line */}
-                            {fiscalData?.benchmark_avg > 0 && (
-                                <ReferenceLine
-                                    y={fiscalData.benchmark_avg}
-                                    stroke="#f43f5e"
-                                    strokeDasharray="6 3"
-                                    strokeWidth={1.5}
-                                    label={{
-                                        value: `เฉลี่ย ${fiscalData.benchmark_avg}น`,
-                                        position: 'insideTopRight',
-                                        fill: '#f43f5e',
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                    }}
-                                />
-                            )}
 
                             {/* Stacked Area per step */}
                             <Area type="monotone" dataKey="avg_reg" stackId="s" stroke="#7c3aed" fill="url(#gradReg)" strokeWidth={1.5} dot={false} name="avg_reg" />
@@ -958,10 +1155,6 @@ export default function OPDTab() {
                             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-secondary)', fontWeight: 600 }}>{l.label}</span>
                         </div>
                     ))}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginLeft: 'auto' }}>
-                        <div style={{ width: '18px', height: '2px', background: '#f43f5e', borderRadius: '2px', border: 'none', backgroundImage: 'repeating-linear-gradient(90deg, #f43f5e 0, #f43f5e 4px, transparent 4px, transparent 8px)' }} />
-                        <span style={{ fontSize: 'var(--fs-xs)', color: '#f43f5e', fontWeight: 700 }}>เส้น = ค่าเฉลี่ย benchmark</span>
-                    </div>
                 </div>
             </div>
 
@@ -1145,9 +1338,9 @@ export default function OPDTab() {
                 <div className="chart-container">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
                         <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--md-text-primary)', margin: 0 }}>
-                            📊 จำนวนผู้ป่วยรายชั่วโมง <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>({opd?.is_holiday ? 'วันหยุด' : 'วันทำการปกติ'} เวลา {opd?.op_hours || '07.00 - 20.30'} น.)</span>
+                            📊 จำนวนผู้ป่วยรายชั่วโมง <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>({opd?.is_holiday ? 'วันหยุดและนักขัตฤกษ์' : 'วันทำการปกติ'} เวลา {opd?.op_hours || (opd?.is_holiday ? '07:00 - 12:00' : '07:00 - 20:30')} น.)</span>
                         </h3>
-                        <div style={{ display: 'flex', gap: '12px', fontSize: '10px', fontWeight: 600 }}>
+                        <div style={{ display: 'flex', gap: '12px', fontSize: '11px', fontWeight: 600 }}>
                             <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                 <span style={{ width: '10px', height: '10px', borderRadius: '3px', background: '#7c3aed' }}></span>
                                 วันนี้
@@ -1230,7 +1423,7 @@ export default function OPDTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     💰 รายได้โดยประมาณ — ปีงบประมาณ (3 ปีย้อนหลัง)
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
@@ -1281,17 +1474,17 @@ export default function OPDTab() {
                                         }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                                                 <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color }} />
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     {fy.fiscal_label}
                                                 </span>
                                                 {isLatest && (
-                                                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>
                                                 )}
                                             </div>
                                             <p style={{ fontSize: '22px', fontWeight: 900, color, margin: '0 0 2px', letterSpacing: '-0.02em' }}>
                                                 {(fy.total_revenue).toLocaleString()} บาท
                                             </p>
-                                            <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
+                                            <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
                                             </p>
                                             {isLatest && prevYear && (
@@ -1299,7 +1492,7 @@ export default function OPDTab() {
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
                                                         {yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%
                                                     </span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
                                                         vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)
                                                     </span>
                                                 </div>
@@ -1353,3 +1546,5 @@ export default function OPDTab() {
         </div>
     );
 }
+
+export default React.memo(OPDTab);

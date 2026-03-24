@@ -11,7 +11,7 @@ import {
     Cell, PieChart, Pie, ComposedChart, Area, Line, Legend, ReferenceLine
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
+import KPICardV2 from './KPICardV2.jsx';
 
 const RISK_COLORS = {
     critical: '#f43f5e',
@@ -21,7 +21,7 @@ const RISK_COLORS = {
     low: '#10b981'
 };
 
-export default function ClinicalTab() {
+function ClinicalTab() {
     const { state, fetchData } = useDashboard();
     const { riskPatients, riskDistribution, resourceElasticity } = state;
     const loading = state.loading;
@@ -61,12 +61,12 @@ export default function ClinicalTab() {
             background: score >= 3 ? 'rgba(244,63,94,.15)' : score >= 2 ? 'rgba(245,158,11,.1)' : score >= 1 ? 'rgba(245,158,11,.05)' : 'rgba(203,213,225,.1)',
             border: score >= 3 ? '1px solid rgba(244,63,94,.3)' : score >= 2 ? '1px solid rgba(245,158,11,.2)' : 'none',
         }}>
-            <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{label}</span>
+            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', textTransform: 'uppercase' }}>{label}</span>
             <span style={{
                 fontSize: 'var(--fs-sm)', fontWeight: 700,
                 color: score >= 3 ? '#f43f5e' : score >= 2 ? '#f59e0b' : score >= 1 ? '#eab308' : '#10b981'
             }}>{value || '—'}</span>
-            <span style={{ fontSize: '8px', color: 'var(--md-text-tertiary)' }}>{unit} {flag ? '⚠️' : ''} +{score}</span>
+            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>{unit} {flag ? '⚠️' : ''} +{score}</span>
         </div>
     );
 
@@ -104,10 +104,10 @@ export default function ClinicalTab() {
 
                 {/* NEWS2 Score */}
                 <div style={{ width: '48px', textAlign: 'center', flexShrink: 0 }}>
-                    <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 900, color: ews?.color || '#fff' }}>
+                    <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 900, color: ews?.color || RISK_COLORS.low }}>
                         {ews?.score ?? '—'}
                     </div>
-                    <div style={{ fontSize: '8px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>NEWS2</div>
+                    <div style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>NEWS2</div>
                 </div>
 
                 {/* Risk Badge */}
@@ -115,7 +115,7 @@ export default function ClinicalTab() {
                     <span style={{
                         display: 'inline-block',
                         padding: '3px 8px', borderRadius: '999px',
-                        fontSize: '10px', fontWeight: 700,
+                        fontSize: '11px', fontWeight: 700,
                         background: `${ews?.color}18`, color: ews?.color,
                         border: `1px solid ${ews?.color}30`,
                     }}>
@@ -132,7 +132,7 @@ export default function ClinicalTab() {
                         { label: 'SpO2', value: vitals?.spo2, flag: bd.spo2?.score >= 2 },
                     ].map((v, i) => (
                         <span key={i} style={{
-                            fontSize: '10px', padding: '2px 6px', borderRadius: '6px',
+                            fontSize: '11px', padding: '2px 6px', borderRadius: '6px',
                             fontWeight: 600, fontFamily: 'JetBrains Mono, monospace',
                             background: v.flag ? 'rgba(244,63,94,.1)' : 'rgba(203,213,225,.08)',
                             color: v.flag ? '#f43f5e' : 'var(--md-text-tertiary)',
@@ -158,7 +158,7 @@ export default function ClinicalTab() {
                     <div style={{ width: '4px', height: '20px', background: 'linear-gradient(180deg, #f43f5e, #dc2626)', borderRadius: '99px' }} />
                     <div>
                         <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            🧠 Clinical Intelligence Hub <span style={{ fontSize: '10px', background: 'rgba(244,63,94,.15)', color: '#f43f5e', padding: '1px 6px', borderRadius: '4px' }}>AI NEWS2 ACTIVE</span>
+                            🧠 Clinical Intelligence Hub <span style={{ fontSize: '11px', background: 'rgba(244,63,94,.15)', color: '#f43f5e', padding: '1px 6px', borderRadius: '4px' }}>AI NEWS2 ACTIVE</span>
                         </h3>
                         <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>Real-time Surveillance for Patient Deterioration & Clinical Risk Management</p>
                     </div>
@@ -242,12 +242,12 @@ export default function ClinicalTab() {
 
             {/* KPI Row */}
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-                <KPICard title="IPD ทั้งหมด" value={ewsSummary?.total_patients} icon="🏥" color="blue" loading={loading.riskPatients} />
-                <KPICard title="🚨 Critical" value={ewsSummary?.critical} icon="" color="red" subtitle="NEWS2 ≥ 7" loading={loading.riskPatients} />
-                <KPICard title="⚠️ High Risk" value={ewsSummary?.high} icon="" color="yellow" subtitle="NEWS2 5-6" loading={loading.riskPatients} />
-                <KPICard title="📋 Medium" value={ewsSummary?.medium} icon="" color="blue" subtitle="NEWS2 3-4" loading={loading.riskPatients} />
-                <KPICard title="✅ Low Risk" value={ewsSummary?.low} icon="" color="green" subtitle="NEWS2 0-2" loading={loading.riskPatients} />
-                <KPICard title="Avg NEWS2" value={ewsSummary?.avg_ews ?? '—'} icon="🧠" color="purple" subtitle="AI Score" loading={loading.riskPatients} />
+                <KPICardV2 title="IPD ทั้งหมด" value={ewsSummary?.total_patients} icon="🏥" color="blue" loading={loading.riskPatients} aiInsight={ewsSummary?.total_patients > 100 ? "High overall IPD volume. Monitor resource allocation." : "IPD volume is within manageable limits."} />
+                <KPICardV2 title="🚨 Critical" value={ewsSummary?.critical} icon="" color="red" unit="NEWS2 ≥ 7" loading={loading.riskPatients} aiInsight={ewsSummary?.critical > 0 ? "Immediate medical review required for critical patients. Ensure ICU availability." : "No critical patients detected currently."} />
+                <KPICardV2 title="⚠️ High Risk" value={ewsSummary?.high} icon="" color="amber" unit="NEWS2 5-6" loading={loading.riskPatients} aiInsight={ewsSummary?.high > 5 ? "Elevated number of high-risk patients. Prepare for potential rapid responses." : "High-risk patient load is contained."} />
+                <KPICardV2 title="📋 Medium" value={ewsSummary?.medium} icon="" color="blue" unit="NEWS2 3-4" loading={loading.riskPatients} aiInsight="Monitor medium risk patients for any signs of clinical deterioration." />
+                <KPICardV2 title="✅ Low Risk" value={ewsSummary?.low} icon="" color="green" unit="NEWS2 0-2" loading={loading.riskPatients} aiInsight="Standard monitoring protocols apply. Review for potential discharge." />
+                <KPICardV2 title="Avg NEWS2" value={ewsSummary?.avg_ews ?? '—'} icon="🧠" color="purple" unit="AI Score" loading={loading.riskPatients} aiInsight={ewsSummary?.avg_ews > 3 ? "Average acuity is trending high, indicating a generally sicker inpatient mix." : "Average patient acuity is stable."} />
             </div>
 
             {/* ━━━━━ CSI + Advanced Clinical Analytics Panel ━━━━━ */}
@@ -495,18 +495,18 @@ export default function ClinicalTab() {
 
                                     {/* CSI Component Bars */}
                                     <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>
+                                        <p style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>
                                             CSI Components
                                         </p>
                                         {csiRadar.map((c, i) => {
                                             const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
                                                     <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
                                                 </div>
                                             );
                                         })}
@@ -539,24 +539,24 @@ export default function ClinicalTab() {
                                                             <span style={{ fontSize: '18px', flexShrink: 0 }}>{k.icon}</span>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</p>
-                                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
+                                                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
                                                             </div>
                                                             <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
                                                             </div>
                                                         </div>
                                                         {/* Problem */}
                                                         {k.problem && (
                                                             <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
                                                             </div>
                                                         )}
                                                         {/* Recommend */}
                                                         {k.recommend && (
                                                             <div style={{ marginTop: '4px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.recommend}</p>
                                                             </div>
                                                         )}
@@ -664,11 +664,11 @@ export default function ClinicalTab() {
                                             const barColor = pct >= 80 ? '#f43f5e' : pct >= 50 ? '#f59e0b' : '#10b981';
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-secondary)', width: '70px', textAlign: 'right', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.ward}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-secondary)', width: '70px', textAlign: 'right', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.ward}</span>
                                                     <div style={{ flex: 1, height: '8px', background: 'rgba(203,213,225,.15)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '48px', textAlign: 'right', flexShrink: 0 }}>
+                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: barColor, width: '48px', textAlign: 'right', flexShrink: 0 }}>
                                                         {w.patients} pt · {w.intensity}
                                                     </span>
                                                 </div>
@@ -689,11 +689,11 @@ export default function ClinicalTab() {
                                                 padding: '4px 8px', borderRadius: '8px',
                                                 background: i === 0 ? 'rgba(124,58,237,.06)' : 'transparent',
                                             }}>
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color: '#7c3aed', width: '16px', textAlign: 'center' }}>{i + 1}</span>
-                                                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
-                                                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color: '#7c3aed', flexShrink: 0 }}>{d.count}</span>
-                                                <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>LOS {d.avg_los}d</span>
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color: '#7c3aed', width: '16px', textAlign: 'center' }}>{i + 1}</span>
+                                                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
+                                                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color: '#7c3aed', flexShrink: 0 }}>{d.count}</span>
+                                                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>LOS {d.avg_los}d</span>
                                             </div>
                                         ))}
                                     </div>
@@ -884,7 +884,7 @@ export default function ClinicalTab() {
                                             ⚡ ระดับความเร่งด่วนรวม — Clinical Safety
                                         </span>
                                         <span style={{
-                                            fontSize: '10px', fontWeight: 700, color: urgencyColor,
+                                            fontSize: '11px', fontWeight: 700, color: urgencyColor,
                                             background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px',
                                             border: `1px solid ${urgencyColor}25`,
                                         }}>{urgencyLabel}</span>
@@ -895,7 +895,7 @@ export default function ClinicalTab() {
                                             {warnCount > 0 && <> + <strong style={{ color: '#f59e0b' }}>{warnCount} ปัญหาเตือน</strong></>}
                                             {problems[0]?.severity === 'good' && <strong style={{ color: '#10b981' }}>ไม่พบปัญหา</strong>}
                                         </span>
-                                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
                                             CSI: {csi}/100 · Critical: {criticalEWS} · High: {highEWS} · SIRS+: {sirsPositive} · Stability: {vitalStability}/100
                                         </span>
                                     </div>
@@ -907,16 +907,16 @@ export default function ClinicalTab() {
                                         }} />
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
-                                        <span style={{ fontSize: '9px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
-                                        <span style={{ fontSize: '9px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
-                                        <span style={{ fontSize: '9px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
+                                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
+                                        <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
+                                        <span style={{ fontSize: '11px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
                                     </div>
                                 </div>
                                 <div style={{ textAlign: 'center' }}>
                                     <div className="urgency-score-pulse" style={{ fontSize: '36px', fontWeight: 900, color: urgencyColor, lineHeight: 1, letterSpacing: '-0.03em' }}>
                                         {Math.round(urgencyScore)}<span style={{ fontSize: '16px', fontWeight: 700 }}>/10</span>
                                     </div>
-                                    <div style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
+                                    <div style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
                                 </div>
                             </div>
 
@@ -942,7 +942,7 @@ export default function ClinicalTab() {
                                                 {p.title}
                                             </span>
                                             <span style={{
-                                                marginLeft: 'auto', flexShrink: 0, fontSize: '9px', fontWeight: 700,
+                                                marginLeft: 'auto', flexShrink: 0, fontSize: '11px', fontWeight: 700,
                                                 textTransform: 'uppercase', letterSpacing: '0.08em',
                                                 padding: '3px 8px', borderRadius: '999px',
                                                 background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25`,
@@ -953,7 +953,7 @@ export default function ClinicalTab() {
 
                                         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     🔍 ปัญหาที่แท้จริง (Root Cause)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -961,7 +961,7 @@ export default function ClinicalTab() {
                                                 </p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     ⚡ ผลกระทบลูกโซ่ (Cascade Effect)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -969,7 +969,7 @@ export default function ClinicalTab() {
                                                 </p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -1028,19 +1028,19 @@ export default function ClinicalTab() {
                                     background: `${avgColor}06`, border: `1px solid ${avgColor}20`,
                                     borderRadius: '12px', padding: '10px 12px',
                                 }}>
-                                    <div style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.ward}</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.ward}</div>
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
                                         <div>
                                             <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 900, color: 'var(--md-text-primary)' }}>{w.total}</span>
-                                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', marginLeft: '4px' }}>pts</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', marginLeft: '4px' }}>pts</span>
                                         </div>
                                         <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 900, color: avgColor }}>
                                             {w.avg_ews}
                                         </span>
                                     </div>
                                     <div style={{ display: 'flex', gap: '4px', marginTop: '6px', flexWrap: 'wrap' }}>
-                                        {w.critical > 0 && <span style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(244,63,94,.1)', color: '#f43f5e', borderRadius: '4px', fontWeight: 700 }}>🚨{w.critical}</span>}
-                                        {w.high > 0 && <span style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(245,158,11,.1)', color: '#f59e0b', borderRadius: '4px', fontWeight: 700 }}>⚠️{w.high}</span>}
+                                        {w.critical > 0 && <span style={{ fontSize: '11px', padding: '1px 5px', background: 'rgba(244,63,94,.1)', color: '#f43f5e', borderRadius: '4px', fontWeight: 700 }}>🚨{w.critical}</span>}
+                                        {w.high > 0 && <span style={{ fontSize: '11px', padding: '1px 5px', background: 'rgba(245,158,11,.1)', color: '#f59e0b', borderRadius: '4px', fontWeight: 700 }}>⚠️{w.high}</span>}
                                     </div>
                                 </div>
                             );
@@ -1147,3 +1147,5 @@ export default function ClinicalTab() {
         </div>
     );
 }
+
+export default React.memo(ClinicalTab);

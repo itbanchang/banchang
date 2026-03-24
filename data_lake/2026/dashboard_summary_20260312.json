@@ -1,17 +1,17 @@
 {
   "meta": {
-    "timestamp": "2026-03-12T02:19:21.043Z",
+    "timestamp": "2026-03-12T10:07:40.935Z",
     "source": "BCH-360-INTELLIGENCE-V10",
     "category": "dashboard_summary"
   },
   "payload": {
-    "opd_today": 352,
-    "ipd_current": 63,
-    "er_today": 9,
-    "revenue_this_month": 4653777.82,
-    "revenue_ytd": 29644309.769999977,
+    "opd_today": 679,
+    "ipd_current": 52,
+    "er_today": 38,
+    "revenue_this_month": 5060340.970000001,
+    "revenue_ytd": 30050872.919999976,
     "total_beds": 120,
-    "beds_occupied": 63,
-    "occupancy_rate": 53
+    "beds_occupied": 52,
+    "occupancy_rate": 43
   }
 }

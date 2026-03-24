@@ -5,6 +5,7 @@
 // Data: ovst + service_time + rcpt_print (MIL milestones)
 // ============================================================
 import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
+import logger from '../logger.js';
 
 /**
  * #16 AI Wait Time Optimizer
@@ -26,8 +27,8 @@ export async function getWaitTimeOptimizer() {
   const start = Date.now();
 
   const [stepAnalysis, clinicPerformance, hourlyBottleneck, trendData, currentQueue, benchmarks] = await Promise.all([
-    // 1. Per-step wait time analysis (today)
-    dbQueryOne(`
+    // 1. Per-step wait time analysis (today) — cached 15 min; heavy aggregation on ovst+joins
+    dbQueryOneHeavy('aiWaitStep', 15, `
       SELECT
         -- Step 1: Registration → Screening
         ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
@@ -138,7 +139,7 @@ export async function getWaitTimeOptimizer() {
         ROUND(AVG(CASE WHEN st.service2 IS NOT NULL AND st.service1 IS NOT NULL
           AND TIME_TO_SEC(st.service2) > TIME_TO_SEC(st.service1)
           THEN (TIME_TO_SEC(st.service2) - TIME_TO_SEC(st.service1)) / 60 END)) as avg_step2
-      FROM ovst o
+      FROM ovst o FORCE INDEX (ix_vstdate)
       LEFT JOIN service_time st ON o.vn = st.vn
       LEFT JOIN rcpt_print r ON o.vn = r.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND o.vstdate < CURDATE()
@@ -176,10 +177,10 @@ export async function getWaitTimeOptimizer() {
         ROUND(AVG(CASE WHEN (st.service7 IS NOT NULL OR r.bill_time IS NOT NULL)
           AND TIME_TO_SEC(COALESCE(r.bill_time, st.service7)) > TIME_TO_SEC(o.vsttime)
           THEN (TIME_TO_SEC(COALESCE(r.bill_time, st.service7)) - TIME_TO_SEC(o.vsttime)) / 60 END)) as bench_total
-      FROM ovst o
+      FROM ovst o FORCE INDEX (ix_vstdate)
       LEFT JOIN service_time st ON o.vn = st.vn
       LEFT JOIN rcpt_print r ON o.vn = r.vn
-      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.vstdate < CURDATE()
+      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 14 DAY) AND o.vstdate < CURDATE()
     `).catch(() => ({}))
   ]);
 
@@ -353,7 +354,7 @@ export async function getWaitTimeOptimizer() {
     };
   });
 
-  console.log(`🧠 AI #16 Wait Time Optimizer: ${Date.now() - start}ms (bottleneck=${worstStep?.key || 'none'})`);
+  logger.debug('Wait Time Optimizer AI computed', { duration: Date.now() - start, bottleneck: worstStep?.key || 'none' });
 
   return {
     ai_module: 'OPD Wait Time Optimizer',

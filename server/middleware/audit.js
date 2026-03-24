@@ -3,6 +3,7 @@
 // ============================================================
 import { v4 as uuidv4 } from 'uuid';
 import { insert, find } from '../db/dataStore.js';
+import logger from '../logger.js';
 
 const SENSITIVITY_MAP = {
     'patient_info': 'highly_sensitive', 'vital_signs': 'highly_sensitive',
@@ -27,7 +28,7 @@ export function logAudit(event) {
             created_at: new Date().toISOString()
         });
     } catch (err) {
-        console.error('Audit error:', err.message);
+        logger.error('Audit error', { message: err.message, stack: err.stack });
     }
 }
 

@@ -172,14 +172,53 @@ function createSchema() {
         );
 
         -- Performance Indices
+        -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        -- 9. Learning Journal — AI auto-captured insights
+        -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        CREATE TABLE IF NOT EXISTS dw_learning_journal (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_date      TEXT NOT NULL DEFAULT (date('now','localtime')),
+            module          TEXT NOT NULL,
+            event_type      TEXT NOT NULL,
+            severity        TEXT DEFAULT 'info',
+            title           TEXT NOT NULL,
+            detail          TEXT,
+            metric_value    REAL,
+            metric_unit     TEXT,
+            created_at      TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        -- 10. Evolution Log — System changes & improvements
+        -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        CREATE TABLE IF NOT EXISTS dw_evolution_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_date      TEXT NOT NULL DEFAULT (date('now','localtime')),
+            category        TEXT NOT NULL,
+            title           TEXT NOT NULL,
+            description     TEXT,
+            author          TEXT DEFAULT 'system',
+            version         TEXT,
+            tags            TEXT,
+            impact          TEXT DEFAULT 'minor',
+            created_at      TEXT DEFAULT (datetime('now','localtime'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_dw_daily_date ON dw_daily_snapshot(snapshot_date);
         CREATE INDEX IF NOT EXISTS idx_dw_monthly_rev ON dw_monthly_revenue(year_month);
         CREATE INDEX IF NOT EXISTS idx_dw_ipd_month ON dw_ipd_monthly(year_month);
         CREATE INDEX IF NOT EXISTS idx_dw_er_date ON dw_er_daily(snapshot_date);
         CREATE INDEX IF NOT EXISTS idx_dw_disease ON dw_disease_monthly(year_month);
         CREATE INDEX IF NOT EXISTS idx_dw_forecast_target ON dw_forecast_log(target_month);
+        CREATE INDEX IF NOT EXISTS idx_dw_learn_date ON dw_learning_journal(event_date);
+        CREATE INDEX IF NOT EXISTS idx_dw_learn_module ON dw_learning_journal(module);
+        CREATE INDEX IF NOT EXISTS idx_dw_evo_date ON dw_evolution_log(event_date);
+        CREATE INDEX IF NOT EXISTS idx_dw_evo_category ON dw_evolution_log(category);
     `);
 }
+
+// ── Expose db for shared access ──
+export function getWarehouseDb() { return db; }
 
 // ── Archive Functions (called daily from server) ──
 

@@ -5,6 +5,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import logger from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,9 +20,9 @@ export async function initDataLake() {
         // Create subdirectories for years automatically
         const currentYear = new Date().getFullYear();
         await fs.mkdir(path.join(DATA_LAKE_DIR, currentYear.toString()), { recursive: true });
-        console.log(`📂 Data Lake initialized at: ${DATA_LAKE_DIR}`);
+        logger.info('Data Lake initialized', { directory: DATA_LAKE_DIR });
     } catch (err) {
-        console.error('❌ Failed to init Data Lake:', err);
+        logger.error('Failed to init Data Lake', { error: err.message, stack: err.stack });
     }
 }
 
@@ -52,7 +53,7 @@ export async function archiveSnapshot(category, data) {
     };
 
     await fs.writeFile(filepath, JSON.stringify(payload, null, 2));
-    console.log(`💾 Snapshot archived: ${filename}`);
+    logger.info('Snapshot archived', { filename, category, timestamp: payload.meta.timestamp });
 }
 
 /**
@@ -73,8 +74,12 @@ export async function getTrendData(category, years = 5) {
             // Just take one snapshot per day or month... 
             // For now, let's just return the last snapshot of each month available
             for (const file of catFiles) {
-                const content = await fs.readFile(path.join(dir, file), 'utf-8');
-                results.push(JSON.parse(content));
+                try {
+                    const content = await fs.readFile(path.join(dir, file), 'utf-8');
+                    results.push(JSON.parse(content));
+                } catch (fileErr) {
+                    logger.warn('[DataLake] Failed to read/parse file', { file, error: fileErr.message });
+                }
             }
         } catch (e) {
             // Year directory might not exist

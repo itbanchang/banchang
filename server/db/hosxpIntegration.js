@@ -16,17 +16,20 @@ export async function getDashboardSummary() {
   const firstDayOfYear = `${yr}-01-01`;
   const lastDayOfYear = `${yr}-12-31`;
 
-  // Parallel queries for speed — EXTREMELY OPTIMIZED avoiding YEAR() / MONTH() functions to enable index use
+  // Fast queries (< 200ms) run first, revenue queries have 6s individual timeout
+  const timeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(null), ms))]);
+
+  // Parallel queries — revenue wrapped with timeout so slow vn_stat never blocks OPD/IPD/ER
   const [opdToday, ipdCurrent, erToday, revMonth, revYTD, beds] = await Promise.all([
     dbQueryOne(`SELECT COUNT(DISTINCT vn) as c FROM ovst WHERE vstdate = CURDATE()`),
     dbQueryOne(`SELECT COUNT(*) as c FROM ipt WHERE dchdate IS NULL AND ward != '06'`),
     dbQueryOne(`SELECT COUNT(*) as c FROM er_regist WHERE vstdate = CURDATE()`),
-    dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate <= LAST_DAY(?)`, [firstDayOfMonth, firstDayOfMonth]),
-    dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate <= ?`, [firstDayOfYear, lastDayOfYear]),
+    timeout(dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate <= LAST_DAY(?)`, [firstDayOfMonth, firstDayOfMonth]), 6000),
+    timeout(dbQueryOne(`SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate <= ?`, [firstDayOfYear, lastDayOfYear]), 6000),
     dbQueryOne(`SELECT SUM(bedcount) as tb, SUM(real_bedcount) as rb FROM ward WHERE ward_active = 'Y'`)
   ]);
 
-  const totalBeds = 120; // จำนวนเตียงจริงของโรงพยาบาล
+  const totalBeds = 120; // เตียงจริง BCH (HOSxP ward table นับเกินจริง)
   const occupied = ipdCurrent?.c || 0;
 
   return {
@@ -44,7 +47,7 @@ export async function getDashboardSummary() {
 // ============================================================
 // FINANCE — Revenue Monthly
 // ============================================================
-export async function getMonthlyRevenue(year = 2025) {
+export async function getMonthlyRevenue(year = new Date().getFullYear()) {
   const rows = await dbQuery(`
     SELECT MONTH(vstdate) as m, SUM(income) as r, COUNT(DISTINCT vn) as v
     FROM vn_stat
@@ -54,7 +57,7 @@ export async function getMonthlyRevenue(year = 2025) {
   return rows;
 }
 
-export async function getRevenueByPayer(year = 2025) {
+export async function getRevenueByPayer(year = new Date().getFullYear()) {
   return await dbQuery(`
     SELECT pt.name as payer, MONTH(v.vstdate) as m,
       SUM(v.income) as amount, COUNT(DISTINCT v.vn) as cnt
@@ -109,12 +112,15 @@ export async function getClaimsData(options = {}) {
     a.drg, a.rw,
     COALESCE(a.income, 0) as charge,
     COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0) as paid,
-    DATEDIFF(COALESCE(i.dchdate, NOW()), i.regdate) as los
+    DATEDIFF(COALESCE(i.dchdate, NOW()), i.regdate) as los,
+    u.name as staff_name
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
     LEFT JOIN pttype pt ON i.pttype = pt.pttype
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
     LEFT JOIN an_stat a ON i.an = a.an
+    LEFT JOIN ipt_pttype ip ON i.an = ip.an
+    LEFT JOIN opduser u ON ip.staff = u.loginname
     WHERE i.dchdate IS NOT NULL
     `;
   const params = [];
@@ -182,7 +188,7 @@ export async function getActiveAdmissions(wardId = null) {
 // IPD — ALOS by DRG
 // ============================================================
 export async function getALOSData(options = {}) {
-  const { year = 2025, wardId } = options;
+  const { year = new Date().getFullYear(), wardId } = options;
   let sql = `
     SELECT a.drg, w.name as ward, COUNT(*) as cnt,
     AVG(DATEDIFF(i.dchdate, i.regdate)) as alos, AVG(a.rw) as rw

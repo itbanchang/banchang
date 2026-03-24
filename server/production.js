@@ -14,7 +14,8 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
 // ── Config ──
-const PROD_PORT = process.env.PROD_PORT || 4000;
+// NOTE: PROD_PORT is resolved AFTER loadEnv() in main() — do not read here
+let PROD_PORT = 4001; // default, overridden in main() after .env is loaded
 const DEBOUNCE_MS = 1500;       // Wait 1.5s after last change before action
 const BUILD_DEBOUNCE_MS = 3000; // Wait 3s for build (batch multiple saves)
 
@@ -31,6 +32,7 @@ const log = (icon, msg) => console.log(`${C.dim}[${new Date().toLocaleTimeString
 let serverProcess = null;
 let buildTimer = null;
 let restartTimer = null;
+let crashRestartTimer = null;
 let isBuilding = false;
 let buildQueued = false;
 let deployCount = 0;
@@ -61,7 +63,7 @@ function loadEnv() {
             if (eqIdx === -1) continue;
             const key = trimmed.slice(0, eqIdx).trim();
             const val = trimmed.slice(eqIdx + 1).trim();
-            if (!process.env[key]) process.env[key] = val;
+            process.env[key] = val; // .env always wins over stale shell session variables
         }
         log('📄', `${C.dim}Loaded .env config${C.reset}`);
     } catch { /* ignore */ }
@@ -87,6 +89,9 @@ function trackDeploy(type) {
 let isRestarting = false;
 function startServer() {
     if (isRestarting) return;
+    // Cancel any pending restart timers — we're already restarting
+    clearTimeout(crashRestartTimer);
+    clearTimeout(restartTimer);
 
     if (serverProcess) {
         isRestarting = true;
@@ -111,7 +116,7 @@ function startServer() {
             serverProcess.on('exit', (code, signal) => {
                 if (signal !== 'SIGTERM' && signal !== 'SIGKILL') {
                     log('💀', `${C.red}Server crashed (code: ${code}). Restarting in 2s...${C.reset}`);
-                    setTimeout(startServer, 2000);
+                    crashRestartTimer = setTimeout(startServer, 2000);
                 }
             });
 
@@ -219,8 +224,14 @@ function watchDir(dir, label, onChange) {
             // Ignore non-source files
             if (filename.includes('node_modules')) return;
             if (filename.includes('.git')) return;
+            if (filename.includes('dist')) return;
             if (filename.endsWith('.map')) return;
             if (filename.startsWith('.')) return;
+            // Ignore SQLite WAL/SHM files — they change on every server startup
+            if (filename.endsWith('.db')) return;
+            if (filename.endsWith('.db-shm')) return;
+            if (filename.endsWith('.db-wal')) return;
+            if (filename.endsWith('.db-journal')) return;
 
             onChange(filename);
         });
@@ -232,8 +243,11 @@ function watchDir(dir, label, onChange) {
 
 // ── Main ──
 function main() {
-    // Load .env before anything else
+    // Load .env before anything else — .env values override any stale shell session vars
     loadEnv();
+
+    // Read PROD_PORT AFTER loadEnv so .env value is used
+    PROD_PORT = Number(process.env.PROD_PORT) || 4001;
 
     const lanIP = getLanIP();
 
@@ -249,7 +263,7 @@ ${C.cyan}${C.bold}╔═══════════════════�
 ║     src/    → auto vite build → dist/ updated             ║
 ║     server/ → auto server restart                         ║
 ║                                                           ║
-║  💡 Dev Server: npm run dev (port 4001)                   ║
+║  💡 Dev Server: npm run dev (port 5173)                   ║
 ║  💡 This Prod:  port ${PROD_PORT} (auto-deploy on change)        ║
 ╚════════════════════════════════════════════════════════════╝${C.reset}
 `);

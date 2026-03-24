@@ -1,11 +1,10 @@
 // ============================================================
-// BCH 360° Intelligence V.10 — Alert Banner
-// Material Dashboard 3 PRO — White Minimal
+// BCH 360° Intelligence V.10 — Alert Banner (Theme-Aware)
 // ============================================================
 import React from 'react';
 import { useDashboard } from '../context/DashboardContext.jsx';
 
-export default function AlertBanner() {
+function AlertBanner() {
     const { state, dismissAlert } = useDashboard();
     const { emergencyAlerts } = state;
 
@@ -15,8 +14,8 @@ export default function AlertBanner() {
         <div
             className="relative mb-4 overflow-hidden rounded-2xl border shadow-card"
             style={{
-                background: 'linear-gradient(90deg,rgba(244,63,94,.06) 0%,#fff 60%)',
-                borderColor: 'rgba(244,63,94,.2)',
+                background: 'linear-gradient(90deg, rgba(244,63,94,.08) 0%, var(--md-surface) 60%)',
+                borderColor: 'rgba(244,63,94,.25)',
             }}
         >
             <div className="flex items-stretch">
@@ -26,7 +25,9 @@ export default function AlertBanner() {
                     style={{ background: '#f43f5e', minWidth: '9rem' }}
                 >
                     <div className="w-1.5 h-1.5 rounded-full bg-white animate-live-pulse" />
-                    <span className="text-[9px] font-black text-white uppercase tracking-[0.18em]">Live Alert</span>
+                    <span style={{ fontSize: 11, fontWeight: 900, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+                        Live Alert
+                    </span>
                 </div>
 
                 {/* Ticker */}
@@ -38,14 +39,21 @@ export default function AlertBanner() {
                                     className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                                     style={{ background: alert.severity === 'critical' ? '#f43f5e' : '#f59e0b' }}
                                 />
-                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                                <span style={{
+                                    fontSize: 11, fontWeight: 700,
+                                    color: 'var(--md-text-tertiary)',
+                                    textTransform: 'uppercase', letterSpacing: '0.1em',
+                                }}>
                                     {new Date(alert.timestamp).toLocaleTimeString('th-TH')}
                                 </span>
-                                <span className="text-[13px] font-black tracking-tight"
-                                    style={{ color: 'var(--md-text-primary)' }}>
+                                <span style={{
+                                    fontSize: 13, fontWeight: 800,
+                                    color: 'var(--md-text-primary)',
+                                    letterSpacing: '-0.01em',
+                                }}>
                                     {alert.message}
                                 </span>
-                                <span className="text-gray-300 mx-2">·</span>
+                                <span style={{ color: 'var(--md-border)', margin: '0 8px' }}>·</span>
                             </div>
                         ))}
                     </div>
@@ -54,9 +62,27 @@ export default function AlertBanner() {
                 {/* Dismiss */}
                 <button
                     onClick={() => dismissAlert(0)}
-                    className="px-4 border-l flex items-center text-gray-400 hover:text-gray-600 hover:bg-gray-50
-                               transition-colors text-[10px] font-bold uppercase tracking-widest flex-shrink-0"
-                    style={{ borderColor: 'rgba(244,63,94,.15)' }}
+                    style={{
+                        padding: '0 1rem',
+                        borderLeft: '1px solid rgba(244,63,94,.2)',
+                        background: 'none',
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: 'var(--md-text-secondary)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.1em',
+                        flexShrink: 0,
+                        transition: 'color 0.2s, background 0.2s',
+                    }}
+                    onMouseEnter={e => {
+                        e.currentTarget.style.color = 'var(--md-text-primary)';
+                        e.currentTarget.style.background = 'var(--md-surface-2)';
+                    }}
+                    onMouseLeave={e => {
+                        e.currentTarget.style.color = 'var(--md-text-secondary)';
+                        e.currentTarget.style.background = 'none';
+                    }}
                 >
                     Dismiss
                 </button>
@@ -70,3 +96,5 @@ export default function AlertBanner() {
         </div>
     );
 }
+
+export default React.memo(AlertBanner);

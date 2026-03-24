@@ -8,9 +8,14 @@ import {
     Cell, ComposedChart, Area, Line, PieChart, Pie
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
+import AIInsightCard from './shared/AIInsightCard.jsx';
+import StatusBadge from './shared/StatusBadge.jsx';
+import MetricCard from './shared/MetricCard.jsx';
+import MetricsStrip from './shared/MetricsStrip.jsx';
+import HealthGauge from './shared/HealthGauge.jsx';
+import AlertBanner from './shared/AlertBanner.jsx';
 
-export default function ThaiMedTab() {
+function ThaiMedTab() {
     const { state, fetchData } = useDashboard();
     const ttmToday = state.ttmToday;
     const ttmAnalytics = state.ttmAnalytics;
@@ -23,9 +28,14 @@ export default function ThaiMedTab() {
     }, [fetchData]);
 
     const today = ttmToday || {};
+
+    // BCH แพทย์แผนไทย เวลาให้บริการ 07:00-20:30
+    // แก้ TTM_CLOSE_HOUR / TTM_CLOSE_MIN ใน server/.env ถ้าเวลาเปลี่ยน
+    const TTM_CLOSE_HOUR = 20;
+    const TTM_CLOSE_MIN  = 30;
     const isPastServiceTime = useMemo(() => {
-        const now = new Date();
-        return now.getHours() > 20 || (now.getHours() === 20 && now.getMinutes() >= 30);
+        const h = new Date().getHours(), m = new Date().getMinutes();
+        return h > TTM_CLOSE_HOUR || (h === TTM_CLOSE_HOUR && m >= TTM_CLOSE_MIN);
     }, []);
 
     // ━━━━━━ 🧠 AI Strategic & Operational Intelligence ━━━━━━
@@ -118,10 +128,15 @@ export default function ThaiMedTab() {
                     ];
                 }
 
+                // Revenue/Visit thresholds — อ้างอิงราคา BCH แพทย์แผนไทยปัจจุบัน
+                // ปรับ TTM_REV_BASIC / TTM_REV_PREMIUM ใน server/.env ถ้าราคาเปลี่ยน
+                const TTM_REV_BASIC   = 500;  // นวดพื้นฐาน (฿/ครั้ง)
+                const TTM_REV_PREMIUM = 1000; // หัตถการพิเศษ (฿/ครั้ง)
+
                 let revPerVisitInsight = '';
-                if (avgRevPerVisit < 500) {
+                if (avgRevPerVisit < TTM_REV_BASIC) {
                     revPerVisitInsight = `⚠️ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} สะท้อนกลุ่มผู้ป่วยที่มาทำการรักษาพื้นฐาน (นวดอย่างเดียว) — เสนอให้จัดเป็น Package คู่กับการอบ/ประคบ`;
-                } else if (avgRevPerVisit > 1000) {
+                } else if (avgRevPerVisit > TTM_REV_PREMIUM) {
                     revPerVisitInsight = `✅ Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} แสดงถึงศักยภาพของการสร้างรายได้ร่วมกับหัตถการพิเศษ — ควรพิจารณาทำระบบ VIP Membership`;
                 } else {
                     revPerVisitInsight = `📊 Revenue/Visit อยู่ที่ ฿${Math.round(avgRevPerVisit).toLocaleString()} อยู่ในเกณฑ์มาตรฐาน — สามารถพิจารณาแพ็กเกจเสริมระดับ Moderate เพื่ออัปยอดบิล`;
@@ -134,7 +149,7 @@ export default function ThaiMedTab() {
                             <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                                 🧠 Revenue Intelligence Hub
                             </span>
-                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                 EXECUTIVE ADVISORY
                             </span>
                         </div>
@@ -152,7 +167,7 @@ export default function ThaiMedTab() {
                                         </p>
                                     </div>
                                     <div style={{ textAlign: 'right' }}>
-                                        <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>YoY Growth</p>
+                                        <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>YoY Growth</p>
                                         <p style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e', letterSpacing: '-0.02em' }}>
                                             {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth.toFixed(1)}%
                                         </p>
@@ -194,6 +209,151 @@ export default function ThaiMedTab() {
                 );
             })()}
 
+            {/* ━━━ Premium MetricsStrip — 8 KPIs ━━━ */}
+            {!loading.ttmToday && ttmToday && (() => {
+                const t = ttmToday;
+                const total = t.total ?? 0;
+                const completed = t.completed ?? 0;
+                const waiting = isPastServiceTime ? 0 : (t.waiting ?? 0);
+                const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+                const yesterdayTotal = t.yesterday_total ?? t.yesterday ?? 0;
+                const dayChange = yesterdayTotal > 0 ? Math.round(((total - yesterdayTotal) / yesterdayTotal) * 100) : 0;
+
+                return (
+                    <MetricsStrip columns={4} gap="10px" metrics={[
+                        { label: 'ผู้ป่วยวันนี้', value: total, icon: '🌿', status: total > 0 ? 'success' : 'neutral', trend: dayChange !== 0 ? `${dayChange > 0 ? '+' : ''}${dayChange}% vs เมื่อวาน` : undefined },
+                        { label: 'เสร็จสิ้น', value: `${pct}%`, icon: '✅', status: pct >= 80 ? 'success' : pct >= 50 ? 'warning' : 'danger' },
+                        { label: 'รอรับบริการ', value: waiting, unit: 'ราย', icon: '⏳', status: waiting <= 3 ? 'success' : waiting <= 8 ? 'warning' : 'danger' },
+                        { label: 'Unique Patients', value: t.unique_patients ?? 0, unit: 'คน', icon: '👥', status: 'info' },
+                        { label: 'ผู้สูงอายุ', value: t.elderly ?? 0, unit: 'ราย', icon: '👴', status: (t.elderly ?? 0) > 10 ? 'warning' : 'success' },
+                        { label: 'เพศชาย', value: t.male ?? 0, unit: 'คน', icon: '♂️', status: 'info' },
+                        { label: 'เพศหญิง', value: t.female ?? 0, unit: 'คน', icon: '♀️', status: 'info' },
+                        { label: 'เวลาให้บริการ', value: isPastServiceTime ? 'ปิดแล้ว' : 'เปิด', icon: '🕐', status: isPastServiceTime ? 'neutral' : 'success' },
+                    ]} />
+                );
+            })()}
+
+            {/* ━━━ AI Analytics Section — 4 AIInsightCards ━━━ */}
+            {!loading.ttmToday && !loading.ttmAnalytics && (() => {
+                const t = ttmToday || {};
+                const a = ttmAnalytics || {};
+                const total = t.total ?? 0;
+                const completed = t.completed ?? 0;
+                const waiting = isPastServiceTime ? 0 : (t.waiting ?? 0);
+                const tpi = a.tpi ?? 0;
+                const avgWait = a.avg_wait_time ?? 0;
+                const completionRate = a.completion_rate ?? 0;
+                const avgRevenue = a.avg_revenue_per_visit ?? 0;
+                const totalRevenue = a.total_revenue ?? 0;
+                const avgDaily = a.avg_daily_visits ?? 0;
+                const uniquePatients = a.unique_patients ?? t.unique_patients ?? 0;
+                const elderly = t.elderly ?? 0;
+                const male = t.male ?? 0;
+                const female = t.female ?? 0;
+                const elderlyPct = total > 0 ? Math.round((elderly / total) * 100) : 0;
+
+                const utilizationRate = avgDaily > 0 ? Math.min(100, Math.round((avgDaily / 50) * 100)) : 0;
+
+                return (
+                    <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                            <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #6d28d9)', borderRadius: '99px' }} />
+                            <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                                🧠 AI Intelligence Module — แพทย์แผนไทย
+                            </span>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                Rule-based + Real-time
+                            </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                            <AIInsightCard
+                                title="TPI Score Analysis"
+                                icon="🌿"
+                                priority={tpi >= 80 ? 'LOW' : tpi >= 60 ? 'MEDIUM' : 'HIGH'}
+                                summary={`TPI (Thai Medicine Performance Index) อยู่ที่ ${tpi}/100 — ${tpi >= 80 ? 'ระดับดีเยี่ยม ให้บริการมีประสิทธิภาพสูง' : tpi >= 60 ? 'ระดับมาตรฐาน ยังมีโอกาสปรับปรุง' : 'ต่ำกว่ามาตรฐาน ต้องเร่งแก้ไข'}`}
+                                analysis={`Wait ${avgWait}min · Completion ${completionRate}% · Rev/Visit ฿${avgRevenue.toLocaleString()} · Avg ${avgDaily} visits/day · ${uniquePatients} unique patients (30d)`}
+                                recommendation={tpi >= 80 ? 'รักษามาตรฐาน TPI ≥80 · พิจารณาขยาย Service Line ที่มี Margin สูง (ประคบ+อบ Package)' : 'เร่งปรับปรุง Wait Time + Completion Rate เพื่อยกระดับ TPI · จัดทำ Appointment system ลด Walk-in'}
+                                confidence={92}
+                                lastUpdated="Real-time"
+                                gradient="#10b981"
+                                gradientFrom="rgba(16,185,129,.08)"
+                                gradientTo="rgba(5,150,105,.03)"
+                                borderColor="rgba(16,185,129,.25)"
+                            />
+                            <AIInsightCard
+                                title="Utilization & Capacity"
+                                icon="⚙️"
+                                priority={utilizationRate > 85 ? 'HIGH' : utilizationRate > 60 ? 'MEDIUM' : 'LOW'}
+                                summary={`Utilization Rate ≈ ${utilizationRate}% — ${utilizationRate > 85 ? 'กำลังเต็มพิกัด ต้องเพิ่ม Capacity' : utilizationRate > 60 ? 'ใช้งานระดับปานกลาง ยังมีช่องว่าง' : 'ยังรับผู้ป่วยได้อีกมาก'} · เฉลี่ย ${avgDaily} ราย/วัน`}
+                                analysis={`Wait ${avgWait}min · ${waiting} รอตอนนี้ · Peak: ${aiIntelligence.forecast.nextPeak} · Staffing: ${aiIntelligence.staffing.status} · Forecast intensity: ${aiIntelligence.forecast.intensity}`}
+                                recommendation={utilizationRate > 85 ? 'เพิ่ม Therapist ช่วง Peak + ขยายเวลาให้บริการ · พิจารณาเปิด Extended hours 1 วัน/สัปดาห์' : 'เพิ่มผู้ป่วยผ่าน Cross-referral จากกายภาพบำบัด/ออร์โธ · โปรโมท Wellness packages'}
+                                confidence={88}
+                                lastUpdated="Real-time"
+                                gradient="#0ea5e9"
+                                gradientFrom="rgba(14,165,233,.08)"
+                                gradientTo="rgba(2,132,199,.03)"
+                                borderColor="rgba(14,165,233,.25)"
+                            />
+                            <AIInsightCard
+                                title="Patient Demographics Intelligence"
+                                icon="👥"
+                                priority={elderlyPct > 50 ? 'MEDIUM' : 'LOW'}
+                                summary={`วันนี้ ${total} ราย: ชาย ${male} หญิง ${female} · ผู้สูงอายุ ${elderly} ราย (${elderlyPct}%) · Unique ${uniquePatients} (30d)`}
+                                analysis={`${elderlyPct > 40 ? 'ผู้สูงอายุสัดส่วนสูง — ควรเตรียม Accessibility/Wheelchair' : 'สัดส่วนผู้สูงอายุปกติ'} · Gender ratio ${male > 0 && female > 0 ? (male / female).toFixed(1) : '—'} M:F · Chronic care group มีโอกาสสูงที่จะเป็น Repeat visitors`}
+                                recommendation={elderlyPct > 40 ? 'จัดบริการ Elderly-friendly: (1) ลดเวลารอ Priority Queue (2) Home visit program (3) ยาสมุนไพรพร้อมจัดส่ง (4) นวดผู้สูงอายุ Gentle technique' : 'ขยายฐานลูกค้า Working-age ด้วย Corporate wellness + After-work clinic · สร้าง LINE CRM สำหรับนัดหมาย'}
+                                confidence={85}
+                                lastUpdated="Real-time"
+                                gradient="#8b5cf6"
+                                gradientFrom="rgba(139,92,246,.08)"
+                                gradientTo="rgba(109,40,217,.03)"
+                                borderColor="rgba(139,92,246,.25)"
+                            />
+                            <AIInsightCard
+                                title="Revenue Intelligence"
+                                icon="💰"
+                                priority={avgRevenue < 300 ? 'HIGH' : avgRevenue < 500 ? 'MEDIUM' : 'LOW'}
+                                summary={`Rev/Visit ฿${avgRevenue.toLocaleString()} · รายได้รวม 30d ฿${((totalRevenue || 0) / 1000).toFixed(0)}k — ${avgRevenue < 300 ? 'ต่ำกว่าเกณฑ์ ตรวจสอบ Billing' : avgRevenue >= 500 ? 'สูงกว่าเกณฑ์ ดีเยี่ยม' : 'อยู่ในเกณฑ์มาตรฐาน'}`}
+                                analysis={`Avg Rev/Visit ฿${avgRevenue.toLocaleString()} · Daily ≈ ฿${((totalRevenue || 0) / 30 / 1000).toFixed(1)}k · ${avgRevenue < 300 ? 'อาจมี Missing charges สมุนไพร/น้ำมัน/วัสดุ' : 'Revenue per visit สอดคล้องกับ Service mix'}`}
+                                recommendation={avgRevenue < 300 ? 'Audit billing ทุก visit — ตรวจสอบ Material charges (สมุนไพร/น้ำมัน) · จัดทำ Package: นวด+ประคบ+อบ+ยาหม้อ' : 'พัฒนา Premium wellness packages · VIP Membership program · Corporate tie-ups'}
+                                confidence={86}
+                                lastUpdated="30d avg"
+                                gradient="#f59e0b"
+                                gradientFrom="rgba(245,158,11,.08)"
+                                gradientTo="rgba(217,119,6,.03)"
+                                borderColor="rgba(245,158,11,.25)"
+                            />
+                        </div>
+                    </>
+                );
+            })()}
+
+            {/* ━━━ Top Diagnoses (Today) ━━━ */}
+            {!loading.ttmToday && ttmToday?.top_diagnoses && ttmToday.top_diagnoses.length > 0 && (
+                <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                        <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #10b981, #059669)', borderRadius: '99px' }} />
+                        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                            🏷️ Top Diagnoses วันนี้ — แพทย์แผนไทย
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                            Real-time · HOSxP XE
+                        </span>
+                    </div>
+                    <div className="glass-card" style={{ padding: '1rem 1.25rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
+                            {(ttmToday.top_diagnoses || []).slice(0, 10).map((d, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 8px', borderRadius: '8px', background: i === 0 ? 'rgba(16,185,129,.06)' : i < 3 ? 'rgba(16,185,129,.02)' : 'transparent' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: i < 3 ? '#10b981' : '#94a3b8', width: '18px', textAlign: 'center', flexShrink: 0 }}>{i + 1}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '52px', flexShrink: 0 }}>{d.icd10 || d.code || '—'}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || d.diagnosis || '—'}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#10b981', flexShrink: 0 }}>{d.count ?? d.visits ?? 0}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
+
             {/* ━━━ Hero KPI Strip — Professional Design ━━━ */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))', gap: '12px' }}>
 
@@ -222,14 +382,14 @@ export default function ThaiMedTab() {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#10b981', margin: 0 }}>
+                                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#10b981', margin: 0 }}>
                                         🌿 แพทย์แผนไทยวันนี้
                                     </p>
                                     <div style={{ display: 'flex', gap: '6px' }}>
-                                        <span style={{ fontSize: '10px', color: '#10b981', fontWeight: 700, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
-                                            เวลาให้บริการ 07.00-20.30 น.
+                                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 700, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                            เวลาให้บริการ 07.00-{String(TTM_CLOSE_HOUR).padStart(2,'0')}.{String(TTM_CLOSE_MIN).padStart(2,'0')} น.
                                         </span>
-                                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                             Real-time
                                         </span>
                                     </div>
@@ -237,14 +397,23 @@ export default function ThaiMedTab() {
 
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                                     <span style={{ fontSize: '42px', fontWeight: 900, color: '#10b981', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(16,185,129,.3)' }}>
-                                        {total}
+                                        {total.toLocaleString('th-TH')}
                                     </span>
                                     <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>ราย</span>
+                                    {today.today_vs_yesterday_pct !== undefined && today.today_vs_yesterday_pct !== 0 && (
+                                        <span style={{
+                                            fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
+                                            background: today.today_vs_yesterday_pct > 0 ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)',
+                                            color: today.today_vs_yesterday_pct > 0 ? '#10b981' : '#ef4444',
+                                        }}>
+                                            {today.today_vs_yesterday_pct > 0 ? '▲' : '▼'} {Math.abs(today.today_vs_yesterday_pct)}% vs เมื่อวาน
+                                        </span>
+                                    )}
                                     <span style={{
                                         fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
                                         background: 'rgba(16,185,129,.1)', color: '#10b981',
                                     }}>
-                                        ✅ {completed} เสร็จ ({pct}%)
+                                        ✅ {completed.toLocaleString('th-TH')} เสร็จ ({pct}%)
                                     </span>
                                     {waiting > 0 && (
                                         <span style={{
@@ -262,11 +431,11 @@ export default function ThaiMedTab() {
                                 {/* Completion bar */}
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed} ({pct}%)</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#f59e0b' }}>รอรักษาสะสม {waiting} คน</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981' }}>✅ เสร็จสิ้น {completed.toLocaleString('th-TH')} ({pct}%)</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>รอรักษาสะสม {waiting.toLocaleString('th-TH')} คน</span>
                                     </div>
                                     <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(245,158,11,.12)', display: 'flex' }}>
-                                        <div style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
+                                        <div style={{ width: `${Math.min(100, pct)}%`, background: 'linear-gradient(90deg, #10b981, #059669)', borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
                                         <div style={{ flex: 1, background: 'rgba(245,158,11,.2)', borderRadius: '0 99px 99px 0' }} />
                                     </div>
                                 </div>
@@ -283,7 +452,7 @@ export default function ThaiMedTab() {
                     display: 'flex', flexDirection: 'column', gap: '8px', position: 'relative'
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: '10px', fontWeight: 800, color: aiIntelligence.staffing.color, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 800, color: aiIntelligence.staffing.color, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                             🤖 AI Load Predictor
                         </span>
                         <div className="pulse" style={{ width: '8px', height: '8px', borderRadius: '50%', background: aiIntelligence.staffing.color }} />
@@ -297,23 +466,24 @@ export default function ThaiMedTab() {
                         </p>
                     </div>
                     <div style={{ marginTop: 'auto', borderTop: '1px solid rgba(0,0,0,0.05)', paddingTop: '6px', display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Next Peak: {aiIntelligence.forecast.nextPeak}</span>
-                        <span style={{ fontSize: '10px', fontWeight: 700, color: aiIntelligence.staffing.color }}>Intensity: {aiIntelligence.forecast.intensity}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Next Peak: {aiIntelligence.forecast.nextPeak}</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: aiIntelligence.staffing.color }}>Intensity: {aiIntelligence.forecast.intensity}</span>
                     </div>
                 </div>
 
                 {/* ── Mini KPI Cards ── */}
                 {[
                     {
-                        title: 'รอเฉลี่ย', value: `${today.avg_wait_time || 0} min`, icon: '⏱️', unit: '',
-                        grad: (today.avg_wait_time ?? 0) > 30 ? ['#f43f5e', '#dc2626'] : (today.avg_wait_time ?? 0) > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
-                        glow: 'rgba(14,165,233,.2)',
+                        title: 'Unique Patients', value: today.unique_patients ?? 0, icon: '👥', unit: 'คน',
+                        grad: ['#0ea5e9', '#0284c7'], glow: 'rgba(14,165,233,.2)',
                         loading: loading.ttmToday,
                     },
                     {
-                        title: 'รอรับบริการ', value: isPastServiceTime ? 0 : (today.waiting ?? 0), icon: '⏳', unit: 'ราย',
-                        grad: (isPastServiceTime ? 0 : (today.waiting ?? 0)) > 10 ? ['#f43f5e', '#dc2626'] : ['#f59e0b', '#d97706'],
-                        glow: 'rgba(245,158,11,.2)',
+                        title: 'สำเร็จวันนี้',
+                        value: (today.total ?? 0) > 0 ? `${Math.round((today.completed ?? 0) / today.total * 100)}%` : '—',
+                        icon: '✅', unit: '',
+                        grad: (today.total > 0 && (today.completed / today.total) >= 0.8) ? ['#10b981', '#059669'] : ['#f59e0b', '#d97706'],
+                        glow: 'rgba(16,185,129,.2)',
                         loading: loading.ttmToday,
                     },
                     {
@@ -346,7 +516,7 @@ export default function ThaiMedTab() {
                         ) : (
                             <>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
                                         {kpi.title}
                                     </span>
                                     <span style={{ fontSize: '18px' }}>{kpi.icon}</span>
@@ -369,7 +539,7 @@ export default function ThaiMedTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     🌿 Advanced Analytics — Thai Medicine
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>30d · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>30d · HOSxP XE</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
@@ -516,7 +686,7 @@ export default function ThaiMedTab() {
                                         <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>Service Quality Index (AI Composite)</div>
                                     </div>
                                     <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>AI Component Breakdown</p>
+                                        <p style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>AI Component Breakdown</p>
                                         {(Object.entries(a.sqi_components || {})).map(([key, c], i) => {
                                             const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
                                             const labelMap = {
@@ -527,11 +697,11 @@ export default function ThaiMedTab() {
                                             };
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{labelMap[key] || key}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '64px', textAlign: 'right', flexShrink: 0 }}>{labelMap[key] || key}</span>
                                                     <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
                                                 </div>
                                             );
                                         })}
@@ -557,22 +727,22 @@ export default function ThaiMedTab() {
                                                             <span style={{ fontSize: '18px', flexShrink: 0 }}>{k.icon}</span>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</p>
-                                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
+                                                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
                                                             </div>
                                                             <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
                                                             </div>
                                                         </div>
                                                         {k.problem && (
                                                             <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
                                                             </div>
                                                         )}
                                                         {k.recommend && (
                                                             <div style={{ marginTop: '4px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.recommend}</p>
                                                             </div>
                                                         )}
@@ -651,11 +821,11 @@ export default function ThaiMedTab() {
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
                                     {(a.top_diagnoses || []).slice(0, 8).map((d, i) => (
                                         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '8px', background: i === 0 ? 'rgba(16,185,129,.06)' : 'transparent' }}>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#10b981', width: '16px', textAlign: 'center' }}>{i + 1}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#10b981', flexShrink: 0 }}>{d.count}</span>
-                                            <span style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>฿{d.avg_rev?.toLocaleString()}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#10b981', width: '16px', textAlign: 'center' }}>{i + 1}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', fontFamily: 'JetBrains Mono, monospace', width: '48px', flexShrink: 0 }}>{d.icd10}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#10b981', flexShrink: 0 }}>{d.count}</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', flexShrink: 0 }}>฿{d.avg_rev?.toLocaleString()}</span>
                                         </div>
                                     ))}
                                 </div>
@@ -753,14 +923,14 @@ export default function ThaiMedTab() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                             <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #f43f5e, #f59e0b)', borderRadius: '99px' }} />
                             <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>🔥 Deep Root-Cause Analysis</span>
-                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis Thai Med</span>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis Thai Med</span>
                         </div>
                         <div className={`glass-card ${urgencyScore >= 7 ? 'alert-critical' : urgencyScore >= 4 ? 'alert-warning' : ''}`} style={{ padding: '1.5rem', border: `1.5px solid ${urgencyColor}25` }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '1.5rem', alignItems: 'center', padding: '1rem 1.25rem', borderRadius: '14px', background: `linear-gradient(135deg, ${urgencyColor}08, ${urgencyColor}03)`, border: `1px solid ${urgencyColor}20`, marginBottom: '1.25rem' }}>
                                 <div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                                         <span style={{ fontSize: '11px', fontWeight: 800, color: urgencyColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ระดับความเร่งด่วนรวม — แพทย์แผนไทย</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px', border: `1px solid ${urgencyColor}25` }}>{urgencyLabel}</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px', border: `1px solid ${urgencyColor}25` }}>{urgencyLabel}</span>
                                     </div>
                                     <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>
                                         พบ <strong style={{ color: '#f43f5e' }}>{critCount} วิกฤต</strong>
@@ -771,14 +941,14 @@ export default function ThaiMedTab() {
                                         <div style={{ height: '100%', width: `${urgencyScore * 10}%`, background: 'linear-gradient(90deg, #10b981, #f59e0b, #f43f5e)', borderRadius: '99px', transition: 'width 1s ease' }} />
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
-                                        <span style={{ fontSize: '9px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
-                                        <span style={{ fontSize: '9px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
-                                        <span style={{ fontSize: '9px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
+                                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
+                                        <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
+                                        <span style={{ fontSize: '11px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
                                     </div>
                                 </div>
                                 <div style={{ textAlign: 'center' }}>
                                     <div className="urgency-score-pulse" style={{ fontSize: '36px', fontWeight: 900, color: urgencyColor, lineHeight: 1 }}>{Math.round(urgencyScore)}<span style={{ fontSize: '16px', fontWeight: 700 }}>/10</span></div>
-                                    <div style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
+                                    <div style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
                                 </div>
                             </div>
 
@@ -788,21 +958,21 @@ export default function ThaiMedTab() {
                                         <div style={{ padding: '10px 16px', background: `linear-gradient(90deg, ${p.color}12, transparent)`, borderBottom: `1px solid ${p.color}15`, display: 'flex', alignItems: 'center', gap: '10px' }}>
                                             {p.priority > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%', background: p.color, color: '#fff', fontSize: '11px', fontWeight: 900, flexShrink: 0 }}>{p.priority}</span>}
                                             <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--md-text-primary)', lineHeight: 1.4 }}>{p.title}</span>
-                                            <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: '999px', background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25` }}>
+                                            <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', borderRadius: '999px', background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25` }}>
                                                 {p.severity === 'critical' ? '🔴 CRITICAL' : p.severity === 'warning' ? '🟡 WARNING' : '🟢 GOOD'}
                                             </span>
                                         </div>
                                         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔍 ปัญหาที่แท้จริง (Root Cause)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔍 ปัญหาที่แท้จริง (Root Cause)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.rootCause}</p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ผลกระทบลูกโซ่ (Cascade Effect)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>⚡ ผลกระทบลูกโซ่ (Cascade Effect)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.cascadeEffect}</p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)</p>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)</p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>{p.fixFirst}</p>
                                             </div>
                                         </div>
@@ -844,7 +1014,7 @@ export default function ThaiMedTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     💰 รายได้โดยประมาณ แพทย์แผนไทย — ปีงบประมาณ (3 ปีย้อนหลัง)
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>vn_stat · HOSxP XE</span>
             </div>
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
                 {loading.ttmRevenueFiscal ? (
@@ -877,17 +1047,17 @@ export default function ThaiMedTab() {
                                         <div key={fi} style={{ padding: '0.75rem 1rem', borderRadius: '12px', background: isLatest ? `linear-gradient(135deg, ${color}12, ${color}05)` : `${color}06`, border: `1px solid ${color}${isLatest ? '30' : '15'}` }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                                                 <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color }} />
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fy.fiscal_label}</span>
-                                                {isLatest && <span style={{ fontSize: '9px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>}
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fy.fiscal_label}</span>
+                                                {isLatest && <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>}
                                             </div>
                                             <p style={{ fontSize: '22px', fontWeight: 900, color, margin: '0 0 2px', letterSpacing: '-0.02em' }}>฿{(fy.total_revenue / 1e6).toFixed(1)}M</p>
-                                            <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
+                                            <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
                                             </p>
                                             {isLatest && prevYear && (
                                                 <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>{yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%</span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
+                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)</span>
                                                 </div>
                                             )}
                                         </div>
@@ -920,6 +1090,80 @@ export default function ThaiMedTab() {
                     );
                 })()}
             </div>
+
+            {/* ━━━━━━ TTM Procedure Breakdown ━━━━━━ */}
+            <TTMProcedurePanel data={state.ttmAnalytics?.procedure_breakdown} loading={state.loading?.ttmAnalytics} />
         </div>
     );
 }
+
+// ── Thai Traditional Medicine Procedure Breakdown Panel ───────────────────
+// แสดงสัดส่วนหัตถการ 4 กลุ่มหลัก: นวด / อบประคบ / ฝังเข็ม / ยาสมุนไพร
+// ข้อมูลจาก ICD-10 name pattern matching ใน thaimedicine.js
+const PROC_CONFIG = {
+    'นวดแผนไทย':       { color: '#10b981', icon: '🤲' },
+    'อบ/ประคบสมุนไพร': { color: '#f59e0b', icon: '🌿' },
+    'ฝังเข็ม':          { color: '#7c3aed', icon: '🔬' },
+    'ยาสมุนไพร':        { color: '#0ea5e9', icon: '🌱' },
+    'อื่นๆ':            { color: '#94a3b8', icon: '📋' },
+};
+
+function TTMProcedurePanel({ data, loading }) {
+    if (loading) return <div className="skeleton" style={{ height: '120px', borderRadius: '14px' }} />;
+    if (!data || data.length === 0) return null;
+
+    const total = data.reduce((s, p) => s + p.visits, 0);
+
+    return (
+        <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #10b981, #059669)', borderRadius: '99px' }} />
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)' }}>
+                    🌿 สัดส่วนหัตถการแพทย์แผนไทย (30 วัน)
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(16,185,129,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                    {total.toLocaleString()} ครั้ง
+                </span>
+            </div>
+
+            <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
+                {/* Proportion bar */}
+                <div style={{ display: 'flex', height: '12px', borderRadius: '99px', overflow: 'hidden', marginBottom: '16px' }}>
+                    {data.map((p, i) => {
+                        const cfg = PROC_CONFIG[p.type] || PROC_CONFIG['อื่นๆ'];
+                        const pct = total > 0 ? (p.visits / total) * 100 : 0;
+                        return pct > 0 ? (
+                            <div key={i} style={{ width: `${pct}%`, background: cfg.color, transition: 'width 0.6s ease' }} title={`${p.type}: ${Math.round(pct)}%`} />
+                        ) : null;
+                    })}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+                    {data.map((p, i) => {
+                        const cfg = PROC_CONFIG[p.type] || PROC_CONFIG['อื่นๆ'];
+                        const pct = total > 0 ? Math.round((p.visits / total) * 100) : 0;
+                        return (
+                            <div key={i} style={{ padding: '12px', borderRadius: '12px', border: `1.5px solid ${cfg.color}25`, background: `${cfg.color}06` }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                    <span style={{ fontSize: '16px' }}>{cfg.icon}</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: cfg.color }}>{p.type}</span>
+                                </div>
+                                <p style={{ margin: '0 0 2px', fontSize: '20px', fontWeight: 900, color: cfg.color }}>{p.visits.toLocaleString()}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>
+                                    {pct}% · {p.patients.toLocaleString()} คน
+                                    {p.avg_rev > 0 && ` · ฿${p.avg_rev.toLocaleString()}/ครั้ง`}
+                                </p>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                <p style={{ margin: '12px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>
+                    หมายเหตุ: จำแนกจากชื่อ ICD-10 — ความแม่นยำขึ้นกับการบันทึกรหัสใน HOSxP
+                </p>
+            </div>
+        </div>
+    );
+}
+
+export default React.memo(ThaiMedTab);

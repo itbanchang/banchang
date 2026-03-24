@@ -33,7 +33,7 @@ router.get('/flow-bottlenecks', cached('erBottlenecks', 60000, async () => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 🔬 Professional ER Analytics — Advanced KPIs
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/analytics', cached('erAnalytics', 300000, async () => {
+router.get('/analytics', cached('er_analytics_v12_stable', 300000, async () => {
   const [
     baseAnalytics,
     percentiles,
@@ -44,51 +44,69 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
     dailyPattern,
     disposition,
     triageStayTime,
-    todayAcuity
+    todayAcuity,
+    todayBaseAnalytics,
+    activeDoctorsList,
+    activeNursesList,
+    activeStaffList,
+    returnVisit72h,
   ] = await Promise.all([
-    // 1. Combined ER Base Analytics (Summary, Returns, LWBS, SLA)
-    dbQueryOneHeavy('erBaseAnalytics30d', 60, `
+    // 1. Combined ER Base Analytics (Summary, LWBS, SLA)
+    // LWBS logic:
+    //   A) er_dch_type '4' = ปฏิเสธรักษา, '5' = LWBS/หนีกลับ — always LWBS
+    //   B) visit < 15 min with no doctor contact — LWBS proxy
+    //      Guard: exclude er_dch_type '2' (Admit IPD) and '3' (Refer) to prevent
+    //             false-positive when patient is transferred quickly
+    dbQueryOneHeavy('erBaseAnalytics30d_v2', 60, `
       SELECT
-        COUNT(*) as total_visits,
-        COUNT(DISTINCT DATE(e.vstdate)) as active_days,
+        COUNT(e.vn) as total_visits,
+        COUNT(DISTINCT e.vstdate) as active_days,
         ROUND(AVG(NULLIF(GREATEST(0, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))), 0)) / 60, 1) as avg_ttd,
         ROUND(STDDEV(NULLIF(GREATEST(0, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))), 0)) / 60, 1) as sd_ttd,
-        SUM(CASE WHEN e.er_dch_type IN ('4', '5') OR (e.door_to_doctor_second IS NULL AND e.doctor_tx_time IS NULL AND e.finish_time IS NOT NULL AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 15) THEN 1 ELSE 0 END) as lwbs_count,
-        SUM(CASE 
+        SUM(CASE
+          WHEN e.er_dch_type IN ('4', '5') THEN 1
+          WHEN e.door_to_doctor_second IS NULL
+            AND e.doctor_tx_time IS NULL
+            AND e.finish_time IS NOT NULL
+            AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 15
+            AND (e.er_dch_type IS NULL OR e.er_dch_type NOT IN ('2', '3'))
+          THEN 1
+          ELSE 0
+        END) as lwbs_count,
+        SUM(CASE
           WHEN e.er_emergency_type = '1' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 60 THEN 1
-          WHEN e.er_emergency_type = '2' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 600 THEN 1
+          WHEN e.er_emergency_type = '2' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 900 THEN 1
           WHEN e.er_emergency_type = '3' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 1800 THEN 1
           WHEN e.er_emergency_type > '3' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 3600 THEN 1
-          ELSE 0 END) as sla_pass_count,
-        (SELECT COUNT(DISTINCT e2.vn) 
-         FROM er_regist e1_sub 
-         INNER JOIN ovst o1 ON e1_sub.vn = o1.vn
-         INNER JOIN ovst o2 ON o1.hn = o2.hn 
-         INNER JOIN er_regist e2 ON o2.vn = e2.vn
-         WHERE e1_sub.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-           AND e2.vstdate BETWEEN e1_sub.vstdate AND DATE_ADD(e1_sub.vstdate, INTERVAL 3 DAY)
-           AND e1_sub.vn != e2.vn
-        ) as return_count
+          ELSE 0 END) as sla_pass_count
       FROM er_regist e WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
 
+
     // 2. Median & P90 TTD (MariaDB 10.1 Compatible Percentiles - Refined Sorting)
+    // PERF NOTE: This uses session variables (@row := @row + 1) for percentile calculation
+    // which is slow on MariaDB due to lack of window function support. If the DB is upgraded
+    // to MariaDB 10.2+ or MySQL 8.0+, replace with:
+    //   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY wait_min) as median_ttd,
+    //   PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY wait_min) as p90_ttd
+    // or use NTILE()/ROW_NUMBER() window functions for better performance.
+    // Not changing the SQL now to preserve MariaDB 10.1 compatibility.
     dbQueryOneHeavy('erPercentiles30d', 120, `
-      SELECT 
+      SELECT
         AVG(CASE WHEN row_num = ROUND(cnt * 0.5) THEN wait_min END) as median_ttd,
         AVG(CASE WHEN row_num = ROUND(cnt * 0.9) THEN wait_min END) as p90_ttd
       FROM (
-        SELECT 
+        SELECT
           t_inner.wait_min,
           @row := @row + 1 as row_num,
           t_inner.cnt
         FROM (
-          SELECT 
+          SELECT
             GREATEST(0.1, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))) / 60 as wait_min,
             (SELECT COUNT(*) FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND doctor_tx_time IS NOT NULL) as cnt
           FROM er_regist e
-          WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) 
-            AND e.doctor_tx_time IS NOT NULL 
+          WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            AND e.doctor_tx_time IS NOT NULL
           ORDER BY wait_min
         ) t_inner, (SELECT @row := 0) r
       ) t
@@ -96,8 +114,8 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
 
     // 3. Revenue & Cost
     dbQueryOneHeavy('erRevenue30d', 60, `
-      SELECT ROUND(AVG(v.income), 0) as avg_cost, ROUND(SUM(v.income), 0) as total_revenue, COUNT(*) as billable_visits
-      FROM er_regist e INNER JOIN vn_stat v ON e.vn = v.vn
+      SELECT ROUND(AVG(v.income), 0) as avg_cost, ROUND(SUM(v.income), 0) as total_revenue, COUNT(e.vn) as billable_visits
+      FROM er_regist e STRAIGHT_JOIN vn_stat v ON e.vn = v.vn
       WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND v.income > 0
     `).catch(() => null),
 
@@ -118,8 +136,8 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
 
     // 6. Age Distribution
     dbQueryHeavy('erAgeDist30d', 60, `
-      SELECT CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 12 THEN 'Children' WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 60 THEN 'Adult' ELSE 'Elderly' END as age_group, COUNT(*) as cnt
-      FROM er_regist e INNER JOIN patient p ON e.hn = p.hn WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY age_group
+      SELECT CASE WHEN p.birthday > DATE_SUB(CURDATE(), INTERVAL 12 YEAR) THEN 'Children' WHEN p.birthday < DATE_SUB(CURDATE(), INTERVAL 60 YEAR) THEN 'Elderly' ELSE 'Adult' END as age_group, COUNT(e.vn) as cnt
+      FROM er_regist e STRAIGHT_JOIN patient p ON e.hn = p.hn WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY age_group
     `).catch(() => []),
 
     // 7. Hourly Load Pattern (30 วัน)
@@ -144,18 +162,102 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
     dbQueryOne(`
       SELECT SUM(CASE WHEN e.er_emergency_type = '1' THEN 1 ELSE 0 END) as resus, SUM(CASE WHEN e.er_emergency_type = '2' THEN 1 ELSE 0 END) as emerg, SUM(CASE WHEN e.er_emergency_type = '3' THEN 1 ELSE 0 END) as urgent, SUM(CASE WHEN e.er_emergency_type = '4' THEN 1 ELSE 0 END) as semi, SUM(CASE WHEN e.er_emergency_type = '5' THEN 1 ELSE 0 END) as non_urg, COUNT(*) as total, ROUND(100.0 * SUM(CASE WHEN e.er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as acuity_pct
       FROM er_regist e WHERE e.vstdate = CURDATE()
-    `).catch(() => null)
+    `).catch(() => null),
+
+    // 11. Today Base Analytics (TTD & SLA)
+    dbQueryOne(`
+      SELECT
+        ROUND(AVG(NULLIF(GREATEST(0, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))), 0)) / 60, 1) as avg_ttd,
+        SUM(CASE 
+          WHEN e.er_emergency_type = '1' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 60 THEN 1
+          WHEN e.er_emergency_type = '2' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 900 THEN 1
+          WHEN e.er_emergency_type = '3' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 1800 THEN 1
+          WHEN e.er_emergency_type > '3' AND COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time)) <= 3600 THEN 1
+          ELSE 0 END) as sla_pass_count,
+        COUNT(*) as total_visits
+      FROM er_regist e WHERE e.vstdate = CURDATE()
+    `).catch(() => null),
+
+    // 12. Active ER Doctors Today
+    dbQuery(`
+      SELECT u.loginname as username, u.name as staff_name, COUNT(e.vn) as total_count
+      FROM er_regist e
+      JOIN opduser u ON e.er_doctor = u.doctorcode OR e.er_doctor = u.loginname
+      WHERE e.vstdate = CURDATE()
+      GROUP BY u.loginname, u.name
+      ORDER BY total_count DESC
+    `).catch(() => []),
+
+    // 13. Active ER Nurses Today (Activity in ER Depcodes)
+    dbQuery(`
+      SELECT u.loginname as username, u.name as staff_name,
+             SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
+             SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+             SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
+             COUNT(*) as total_count
+      FROM (
+          SELECT staff, screen_time as activity_time FROM opdscreen_bp WHERE screen_date = CURDATE() AND depcode IN ('013','076','128')
+          UNION ALL
+          SELECT staff, screen_time as activity_time FROM pq_screen WHERE screen_date = CURDATE() AND next_dep IN ('013','076','128')
+      ) activity
+      JOIN opduser u ON activity.staff = u.loginname
+      WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
+      GROUP BY u.loginname, u.name
+      ORDER BY total_count DESC
+    `).catch(() => []),
+
+    // 14. Active ER Staff Today (Reception/Support in ER Depcodes)
+    dbQuery(`
+      SELECT u.loginname as username, u.name as staff_name,
+             SUM(CASE WHEN HOUR(o.vsttime) < 12 THEN 1 ELSE 0 END) as morning_count,
+             SUM(CASE WHEN HOUR(o.vsttime) >= 12 AND HOUR(o.vsttime) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+             SUM(CASE WHEN HOUR(o.vsttime) >= 17 THEN 1 ELSE 0 END) as night_count,
+             COUNT(*) as total_count
+      FROM ovst o
+      JOIN opduser u ON o.staff = u.loginname
+      WHERE o.vstdate = CURDATE() AND o.main_dep IN ('013','076','128')
+        AND u.name NOT LIKE 'นพ.%' AND u.name NOT LIKE 'พญ.%'
+        AND u.name NOT LIKE 'พว.%' AND u.name NOT LIKE 'พยาบาล%' AND u.name NOT LIKE 'นป.%' AND u.name NOT LIKE 'พช.%'
+        AND u.loginname != 'kiosk'
+      GROUP BY u.loginname, u.name
+      ORDER BY total_count DESC
+    `).catch(() => []),
+
+    // 15. 72h Return Visit — ผู้ป่วยที่กลับมา ER ภายใน 72 ชั่วโมง (30 วัน)
+    // Window: นับจาก finish_time ของ visit แรก ถึง enter_er_time ของ visit ถัดไป
+    dbQueryOneHeavy('erReturn72h30d', 300, `
+      SELECT COUNT(DISTINCT e2.vn) as return_72h_count
+      FROM er_regist e2
+      INNER JOIN er_regist e1
+        ON e1.hn = e2.hn
+        AND e1.vstdate >= DATE_SUB(e2.vstdate, INTERVAL 3 DAY)
+        AND e1.vstdate < e2.vstdate
+        AND TIMESTAMPDIFF(HOUR,
+            COALESCE(e1.finish_time, CONCAT(e1.vstdate, ' 23:59:00')),
+            COALESCE(e2.enter_er_time, CONCAT(e2.vstdate, ' 00:01:00'))
+        ) <= 72
+      WHERE e2.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    `).catch(() => ({ return_72h_count: 0 })),
   ]);
 
-  // ━━ Calculations ━━
+  const activeDoctors = activeDoctorsList || [];
+  const activeNurses = activeNursesList || [];
+  const activeStaff = activeStaffList || [];
+
   const base = baseAnalytics || {};
-  const totalVisits = Number(base.total_visits || 0);
-  const avgTTD = Number(base.avg_ttd || 0);
+  const today = todayBaseAnalytics || {};
+  const avgCost = Number(revenueData?.avg_cost || 0);
+  const totalVisits30d = Number(base.total_visits || 0);
+  const totalVisitsToday = Number(today.total_visits || 0);
+
+  const avgTTD = Number(today.avg_ttd || 0);
+  const slaPassRate = totalVisitsToday > 0 ? Math.round((Number(today.sla_pass_count || 0) / totalVisitsToday) * 100 * 10) / 10 : 0;
+
   const lwbsCount = Number(base.lwbs_count || 0);
-  const lwbsRate = totalVisits > 0 ? Math.round((lwbsCount / totalVisits) * 100 * 10) / 10 : 0;
-  const returnCount = Number(base.return_count || 0);
-  const returnRate = totalVisits > 0 ? Math.round((returnCount / totalVisits) * 100 * 10) / 10 : 0;
-  const slaPassRate = totalVisits > 0 ? Math.round((Number(base.sla_pass_count || 0) / totalVisits) * 100 * 10) / 10 : 0;
+  const lwbsRate = totalVisits30d > 0 ? Math.round((lwbsCount / totalVisits30d) * 100 * 10) / 10 : 0;
+  // 72h return window — explicit label used throughout EPI and frontend
+  const returnCount = Number(returnVisit72h?.return_72h_count || 0);
+  const returnRate = totalVisits30d > 0 ? Math.round((returnCount / totalVisits30d) * 100 * 10) / 10 : 0;
 
   // Triage stay time data (formatted)
   const TRIAGE_NAMES = { 1: 'Resuscitation', 2: 'Emergency', 3: 'Urgent', 4: 'Semi-urgent', 5: 'Non-urgent' };
@@ -206,29 +308,27 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
     avg_stay: Number(m.avg_stay || 0),
   }));
 
-  // ━━ ER Performance Index (EPI) — Composite 0-100 ━━
-  const ttdScore = Math.max(0, Math.round(100 - (avgTTD - 10) * 3));
-  const lwbsScore = Math.max(0, Math.round(100 - lwbsRate * 10));
-  const returnScore = Math.max(0, Math.round(100 - returnRate * 5));
-  const acuityMatch = Number(todayAcuity?.acuity_pct || 0);
-  const acuityScore = Math.min(100, Math.round(50 + acuityMatch));
-  const avgCost = Number(revenueData?.avg_cost || 1500);
-  const costScore = Math.min(100, Math.round((5000 / Math.max(avgCost, 1)) * 50));
+  // ━━ ER Performance Index (EPI) — Composite 0-100+ ━━
+  // Formula: SLA×30% + (100−LWBS%)×20% + TTD_Score×30% + (100−Return%)×20%
+  // TTD_Score: 100 = 10min target. <10min = Bonus (e.g., 0min = 113.3 score)
+  const ttdScore = Math.max(0, Math.round(100 + (10 - avgTTD) * 1.333));
+  const lwbsScore = Math.max(0, 100 - lwbsRate);
+  const returnScore = Math.max(0, 100 - returnRate);
+  const slaScore = slaPassRate;
 
   const epi = Math.round(
-    (ttdScore * 0.30) +
+    (slaScore * 0.30) +
     (lwbsScore * 0.20) +
-    (returnScore * 0.20) +
-    (acuityScore * 0.15) +
-    (costScore * 0.15)
+    (ttdScore * 0.30) +
+    (returnScore * 0.20)
   );
 
   return {
     data_source: 'HOSxP XE · 8 AI Modules',
     epi,
-    epi_components: { time_to_doctor: ttdScore, lwbs: lwbsScore, return_visit: returnScore, acuity: acuityScore, cost: costScore },
-    total_visits_30d: totalVisits,
-    avg_daily_visits: totalVisits > 0 ? Math.round(totalVisits / Math.max(1, Number(base.active_days || 1)) * 10) / 10 : 0,
+    epi_components: { time_to_doctor: ttdScore, lwbs: lwbsScore, return_visit: returnScore, sla: slaScore },
+    total_visits_30d: totalVisits30d,
+    avg_daily_visits: totalVisits30d > 0 ? Math.round(totalVisits30d / Math.max(1, Number(base.active_days || 1)) * 10) / 10 : 0,
     return_visit_rate: returnRate,
     return_visit_count: returnCount,
     avg_time_to_doctor: avgTTD,
@@ -256,49 +356,37 @@ router.get('/analytics', cached('erAnalytics', 300000, async () => {
     peak_hour: { hour: peakHour?.hour, label: peakHour?.label, avg: peakHour?.avg },
     disposition: dispoData,
     monthly_trend: monthData,
+    on_duty: {
+      doctors: activeDoctors,
+      nurses: activeNurses,
+      staff: activeStaff
+    },
     timestamp: new Date().toISOString(),
   };
 }));
 
 // ━━━━━━ ER Estimated Revenue — Fiscal Year (3 ปีย้อนหลัง) ━━━━━━
-router.get('/revenue-fiscal', cached('erRevenueFiscal', 3600000, async () => {
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
-  const currentFiscalStartYear = currentMonth >= 10 ? currentYear : currentYear - 1;
+router.get('/revenue-fiscal', cached('erRevenueFiscal', 3600000, async (req) => {
+  const { getFiscalConfig } = await import('../helpers/fiscal.js');
+  const { fiscalYears, globalStart, globalEnd } = getFiscalConfig(req?.query?.start, req?.query?.end);
 
   const MONTH_TH = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
-  const fiscalYears = [];
-  for (let offset = 2; offset >= 0; offset--) {
-    const startYear = currentFiscalStartYear - offset;
-    fiscalYears.push({
-      startYear,
-      startDate: `${startYear}-10-01`,
-      endDate: `${startYear + 1}-09-30`,
-      fiscalBE: startYear + 543 + 1,
-    });
-  }
-
-  const globalStart = fiscalYears[0].startDate;
-  const globalEnd = `${currentFiscalStartYear + 1}-09-30`;
-
-  // Use dbQueryHeavy for the revenue fiscal query
-  const rows = await dbQueryHeavy('erRevenueFiscalQuery', 120, `
+  // Use dbQueryHeavy for the revenue fiscal query with STRAIGHT_JOIN for optimal performance
+  const rows = await dbQueryHeavy('erRevFiscalQ_v2', 120, `
     SELECT
       YEAR(e.vstdate) AS yr,
-    MONTH(e.vstdate) AS mo,
-    SUM(v.income) AS revenue,
-    COUNT(DISTINCT e.vn) AS visit_count,
-    COUNT(DISTINCT o.hn) AS patient_count
+      MONTH(e.vstdate) AS mo,
+      COALESCE(SUM(v.income), 0) AS revenue,
+      COUNT(DISTINCT e.vn) AS visit_count,
+      COUNT(DISTINCT v.hn) AS patient_count
     FROM er_regist e
-    INNER JOIN vn_stat v ON e.vn = v.vn
-    INNER JOIN ovst o ON e.vn = o.vn
-    WHERE e.vstdate BETWEEN '${globalStart}' AND LEAST('${globalEnd}', CURDATE())
+    STRAIGHT_JOIN vn_stat v ON e.vn = v.vn
+    WHERE e.vstdate BETWEEN ? AND LEAST(?, CURDATE())
       AND v.income > 0
     GROUP BY YEAR(e.vstdate), MONTH(e.vstdate)
     ORDER BY yr, mo
-    `);
+  `, [globalStart, globalEnd], { timeoutMs: 25000 });
 
   const result = fiscalYears.map(fy => {
     const months = [];
@@ -355,6 +443,81 @@ router.get('/revenue-fiscal', cached('erRevenueFiscal', 3600000, async () => {
   return {
     data_source: 'HOSxP XE · vn_stat + er_regist',
     fiscal_years: result,
+    timestamp: new Date().toISOString(),
+  };
+}));
+
+// ━━━━━━ ER Diversion Status — Auto-computed from Live Load ━━━━━━
+// DIVERTED  : รับผู้ป่วยไม่ได้ / ขอให้หน่วยกู้ชีพพิจารณาโรงพยาบาลอื่น
+// CAUTION   : รับได้ แต่อาจล่าช้า
+// OPEN      : รับผู้ป่วยได้ปกติ
+router.get('/diversion-status', cached('erDiversionStatus', 60000, async () => {
+  const [currentLoad, criticalToday, longWaiters] = await Promise.all([
+    dbQueryOne(`
+      SELECT
+        COUNT(*) as waiting_count,
+        ROUND(AVG(GREATEST(0, TIMESTAMPDIFF(MINUTE, e.enter_er_time, NOW()))), 0) as avg_wait_min
+      FROM er_regist e
+      WHERE e.vstdate = CURDATE()
+        AND e.er_dch_type IS NULL
+        AND e.enter_er_time IS NOT NULL
+    `).catch(() => null),
+
+    dbQueryOne(`
+      SELECT
+        SUM(CASE WHEN e.er_emergency_type = '1' THEN 1 ELSE 0 END) as resus_count,
+        SUM(CASE WHEN e.er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) as critical_count,
+        COUNT(*) as total_today
+      FROM er_regist e
+      WHERE e.vstdate = CURDATE()
+    `).catch(() => null),
+
+    dbQueryOne(`
+      SELECT COUNT(*) as long_wait_count
+      FROM er_regist e
+      WHERE e.vstdate = CURDATE()
+        AND e.er_dch_type IS NULL
+        AND e.enter_er_time IS NOT NULL
+        AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, NOW()) > 120
+    `).catch(() => null),
+  ]);
+
+  const waiting   = Number(currentLoad?.waiting_count || 0);
+  const avgWait   = Number(currentLoad?.avg_wait_min  || 0);
+  const resus     = Number(criticalToday?.resus_count   || 0);
+  const critical  = Number(criticalToday?.critical_count || 0);
+  const total     = Number(criticalToday?.total_today   || 0);
+  const longWait  = Number(longWaiters?.long_wait_count || 0);
+  const critPct   = total > 0 ? Math.round((critical / total) * 100) : 0;
+
+  // Diversion auto-logic:
+  // DIVERTED  : ≥30 กำลังรอ  OR  Resus ≥3 ราย  OR  (≥20 รอ AND เฉลี่ย ≥60 นาที)
+  // CAUTION   : ≥15 รอ  OR  เฉลี่ย ≥45 นาที  OR  Critical% ≥20%
+  // OPEN      : otherwise
+  let status, reason;
+  if (waiting >= 30 || resus >= 3 || (waiting >= 20 && avgWait >= 60)) {
+    status = 'diverted';
+    reason = waiting >= 30 ? `${waiting} รายรอ — เกินขีดความสามารถ`
+           : resus >= 3    ? `Resus ${resus} ราย — ทรัพยากรจำกัด`
+           :                 `${waiting} ราย รอเฉลี่ย ${avgWait} นาที`;
+  } else if (waiting >= 15 || avgWait >= 45 || critPct >= 20) {
+    status = 'caution';
+    reason = avgWait >= 45 ? `เวลารอเฉลี่ย ${avgWait} นาที`
+           :                  `${waiting} รายรอ — หนาแน่นปานกลาง`;
+  } else {
+    status = 'open';
+    reason = `${waiting} รายรอ — รับผู้ป่วยได้ปกติ`;
+  }
+
+  return {
+    status,           // 'open' | 'caution' | 'diverted'
+    reason,
+    waiting_count: waiting,
+    avg_wait_min:  avgWait,
+    resus_count:   resus,
+    critical_count: critical,
+    critical_pct:  critPct,
+    long_wait_count: longWait,
     timestamp: new Date().toISOString(),
   };
 }));

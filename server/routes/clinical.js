@@ -5,8 +5,17 @@
 import { Router } from 'express';
 import hosxp from '../db/hosxpIntegration.js';
 import { cacheMiddleware } from '../cache/redis.js';
+import { z } from 'zod';
+import { validate, validateParams } from '../middleware/validate.js';
 
 const router = Router();
+
+// ============================================================
+// Validation Schemas (Phase 2.4)
+// ============================================================
+const patientIdParamsSchema = z.object({
+  patient_id: z.string().min(1, 'patient_id is required'),
+});
 
 // ---- Risk scoring based on age + stay days ----
 function scorePatient(p) {
@@ -44,7 +53,7 @@ router.get('/patients', cacheMiddleware(120), async (req, res) => {
 });
 
 // ---- Vitals ----
-router.get('/vitals/:patient_id', async (req, res) => {
+router.get('/vitals/:patient_id', validateParams(patientIdParamsSchema), async (req, res) => {
   try {
     const vitals = await hosxp.getPatientVitals(req.params.patient_id);
     res.json({ data_source: 'HOSxP XE', vitals: vitals || [], patient_id: req.params.patient_id });
@@ -89,9 +98,6 @@ router.get('/risk-distribution', cacheMiddleware(300), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-import { z } from 'zod';
-import { validate } from '../middleware/validate.js';
 
 // ---- EWS Validation Schema ----
 const ewsSchema = z.object({
@@ -157,11 +163,10 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           ROUND(STDDEV(os.o2sat), 1) as sd_spo2,
           COUNT(*) as total_measurements,
           COUNT(DISTINCT o.hn) as patients_measured
-        FROM opdscreen os
-        INNER JOIN ovst o ON os.vn = o.vn
-        INNER JOIN ipt i ON o.hn = i.hn AND i.dchdate IS NULL
-        WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-          AND os.bps > 0
+        FROM ipt i
+        INNER JOIN ovst o ON i.hn = o.hn AND o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        INNER JOIN opdscreen os ON o.vn = os.vn
+        WHERE i.dchdate IS NULL AND os.bps > 0
       `).catch(() => null),
 
       // 3. Mortality Trend — 6 เดือนย้อนหลัง
@@ -224,11 +229,10 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           SUM(CASE WHEN os.pulse > 100 THEN 1 ELSE 0 END) as tachycardia,
           SUM(CASE WHEN os.temperature > 38.3 THEN 1 ELSE 0 END) as fever,
           SUM(CASE WHEN os.o2sat < 94 AND os.o2sat > 0 THEN 1 ELSE 0 END) as hypoxia
-        FROM opdscreen os
-        INNER JOIN ovst o ON os.vn = o.vn
-        INNER JOIN ipt i ON o.hn = i.hn AND i.dchdate IS NULL
-        WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
-          AND os.bps > 0
+        FROM ipt i
+        INNER JOIN ovst o ON i.hn = o.hn AND o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
+        INNER JOIN opdscreen os ON o.vn = os.vn
+        WHERE i.dchdate IS NULL AND os.bps > 0
       `).catch(() => null),
 
       // 7. Fall Risk Stratification — อายุ + LOS + ประวัติ
@@ -265,16 +269,17 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
       // 9. Top Diagnoses — การวินิจฉัยที่พบบ่อย (ผู้ป่วยปัจจุบัน)
       dbQuery(`
         SELECT
-          i.pdx as icd10,
+          d.icd10,
           icd.icdname as dx_name,
           COUNT(*) as count,
           ROUND(AVG(DATEDIFF(NOW(), i.regdate)), 1) as avg_los,
           ROUND(AVG(TIMESTAMPDIFF(YEAR, p.birthday, NOW())), 0) as avg_age
         FROM ipt i
         INNER JOIN patient p ON i.hn = p.hn
-        LEFT JOIN icd101 icd ON i.pdx = icd.code
-        WHERE i.dchdate IS NULL AND i.ward != '06' AND i.pdx IS NOT NULL AND i.pdx != ''
-        GROUP BY i.pdx, icd.icdname
+        INNER JOIN iptdiag d ON i.an = d.an AND d.diagtype = '1'
+        LEFT JOIN icd101 icd ON d.icd10 = icd.icd10
+        WHERE i.dchdate IS NULL AND i.ward != '06' AND d.icd10 IS NOT NULL AND d.icd10 != ''
+        GROUP BY d.icd10, icd.icdname
         ORDER BY count DESC
         LIMIT 10
       `).catch(() => []),

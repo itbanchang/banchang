@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "timestamp": "2026-03-19T16:56:45.161Z",
+    "source": "BCH-360-INTELLIGENCE-V10",
+    "category": "dashboard_summary"
+  },
+  "payload": {
+    "opd_today": 731,
+    "ipd_current": 76,
+    "er_today": 76,
+    "revenue_this_month": 8166535.720000001,
+    "revenue_ytd": 33157067.669999976,
+    "total_beds": 407,
+    "beds_occupied": 76,
+    "occupancy_rate": 19
+  }
+}

@@ -1,51 +1,47 @@
 // ============================================================
-// BCH 360° Intelligence V.10 — KPI Card
-// Material Dashboard 3 PRO — พร้อม Trend Indicator
+// BCH 360° Intelligence V.10 — Ultra Premium KPI Card
+// Dynamic Glassmorphism & AI Hover Micro-animations
 // ============================================================
 import React from 'react';
 import { useDashboard } from '../context/DashboardContext.jsx';
 
 const colorMap = {
-    blue: { accent: '#7c3aed', gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)', bg: 'rgba(124,58,237,.07)' },
-    green: { accent: '#10b981', gradient: 'linear-gradient(135deg,#10b981,#059669)', bg: 'rgba(16,185,129,.07)' },
-    red: { accent: '#f43f5e', gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)', bg: 'rgba(244,63,94,.07)' },
-    yellow: { accent: '#f59e0b', gradient: 'linear-gradient(135deg,#f59e0b,#d97706)', bg: 'rgba(245,158,11,.07)' },
-    purple: { accent: '#8b5cf6', gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)', bg: 'rgba(139,92,246,.07)' },
-    teal: { accent: '#0ea5e9', gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)', bg: 'rgba(14,165,233,.07)' },
+    blue: { accent: '#7c3aed', gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)', bg: 'rgba(124,58,237,.07)', shadow: 'rgba(124,58,237,.35)' },
+    green: { accent: '#10b981', gradient: 'linear-gradient(135deg,#10b981,#059669)', bg: 'rgba(16,185,129,.07)', shadow: 'rgba(16,185,129,.35)' },
+    red: { accent: '#f43f5e', gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)', bg: 'rgba(244,63,94,.07)', shadow: 'rgba(244,63,94,.35)' },
+    yellow: { accent: '#f59e0b', gradient: 'linear-gradient(135deg,#f59e0b,#d97706)', bg: 'rgba(245,158,11,.07)', shadow: 'rgba(245,158,11,.35)' },
+    purple: { accent: '#8b5cf6', gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)', bg: 'rgba(139,92,246,.07)', shadow: 'rgba(139,92,246,.35)' },
+    teal: { accent: '#0ea5e9', gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)', bg: 'rgba(14,165,233,.07)', shadow: 'rgba(14,165,233,.35)' },
 };
 
 const TrendBadge = React.memo(function TrendBadge({ trend, trendLabel }) {
     if (trend == null) return null;
     const isUp = trend > 0;
     const isDown = trend < 0;
-    const isFlat = trend === 0;
 
-    const color = isUp ? '#10b981'
-        : isDown ? '#f43f5e'
-            : '#94a3b8';
-
-    const arrow = isUp ? '▲'
-        : isDown ? '▼'
-            : '→';
-
+    const color = isUp ? '#10b981' : isDown ? '#f43f5e' : '#94a3b8';
+    const arrow = isUp ? '▲' : isDown ? '▼' : '→';
     const label = trendLabel || (isUp ? 'เพิ่มขึ้น' : isDown ? 'ลดลง' : 'คงที่');
 
     return (
         <div style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '4px',
-            marginTop: '4px',
-            padding: '3px 8px',
+            gap: '6px',
+            marginTop: '8px',
+            padding: '4px 10px',
             borderRadius: '999px',
-            background: `${color}12`,
-            border: `1px solid ${color}25`,
-        }}>
-            <span style={{ color, fontSize: '10px', lineHeight: 1, fontWeight: 900 }}>{arrow}</span>
-            <span style={{ color, fontSize: 'var(--fs-xs)', fontWeight: 700, lineHeight: 1 }}>
+            background: `linear-gradient(135deg, ${color}12, ${color}22)`,
+            border: `1px solid ${color}40`,
+            boxShadow: `0 2px 8px ${color}15`,
+            backdropFilter: 'blur(4px)',
+            transition: 'all 0.3s ease'
+        }} className="hover:scale-105">
+            <span style={{ color, fontSize: '11px', lineHeight: 1, fontWeight: 900 }}>{arrow}</span>
+            <span style={{ color, fontSize: 'var(--fs-xs)', fontWeight: 800, lineHeight: 1 }}>
                 {Math.abs(trend)}%
             </span>
-            <span style={{ color: '#9ca3af', fontSize: 'var(--fs-xs)', fontWeight: 500, lineHeight: 1 }}>
+            <span style={{ color: '#9ca3af', fontSize: 'var(--fs-xs)', fontWeight: 600, lineHeight: 1 }}>
                 {label}
             </span>
         </div>
@@ -81,17 +77,16 @@ function KPICard({
         }
     };
 
-    /* ---- Skeleton ---- */
     if (loading) {
         return (
-            <div className="glass-card" style={{ padding: '0.875rem', minHeight: '88px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '100%', gap: '0.75rem' }}>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <div className="skeleton" style={{ height: '8px', width: '64px' }} />
-                        <div className="skeleton" style={{ height: '22px', width: '96px' }} />
-                        <div className="skeleton" style={{ height: '16px', width: '72px', borderRadius: '999px' }} />
+            <div className="glass-card animate-pulse" style={{ padding: '1rem', minHeight: '100px', borderRadius: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '100%', gap: '1rem' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        <div className="skeleton bg-gray-200 dark:bg-gray-700" style={{ height: '10px', width: '80px', borderRadius: '4px' }} />
+                        <div className="skeleton bg-gray-200 dark:bg-gray-700" style={{ height: '28px', width: '120px', borderRadius: '6px' }} />
+                        <div className="skeleton bg-gray-200 dark:bg-gray-700" style={{ height: '18px', width: '90px', borderRadius: '999px' }} />
                     </div>
-                    <div className="skeleton" style={{ width: '40px', height: '40px', borderRadius: '12px', flexShrink: 0 }} />
+                    <div className="skeleton bg-gray-200 dark:bg-gray-700" style={{ width: '48px', height: '48px', borderRadius: '16px', flexShrink: 0 }} />
                 </div>
             </div>
         );
@@ -99,33 +94,54 @@ function KPICard({
 
     return (
         <div
-            className={`ai-glow-card group ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
-            style={{ padding: '0.875rem 1rem', minHeight: '88px', transition: 'all 0.2s ease', position: 'relative' }}
+            className={`group ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+            style={{
+                padding: '1.25rem 1.5rem',
+                minHeight: '110px',
+                transition: 'all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                position: 'relative',
+                borderRadius: '20px',
+                background: `linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01))`,
+                border: `1px solid ${c.accent}30`,
+                boxShadow: `0 8px 32px rgba(0,0,0,0.1)`,
+                backdropFilter: 'blur(16px)',
+                overflow: 'hidden'
+            }}
             onClick={handleClick}
+            onMouseEnter={e => {
+                e.currentTarget.style.transform = 'translateY(-6px)';
+                e.currentTarget.style.boxShadow = `0 15px 40px ${c.accent}40`;
+                e.currentTarget.style.borderColor = `${c.accent}80`;
+            }}
+            onMouseLeave={e => {
+                e.currentTarget.style.transform = 'none';
+                e.currentTarget.style.boxShadow = `0 8px 32px rgba(0,0,0,0.1)`;
+                e.currentTarget.style.borderColor = `${c.accent}30`;
+            }}
         >
-            {/* Hover tint */}
+            {/* Dynamic Hover Glow */}
             <div
                 style={{
-                    position: 'absolute', inset: 0,
-                    borderRadius: 'inherit',
-                    background: c.bg,
+                    position: 'absolute', top: '-50%', left: '-50%',
+                    width: '200%', height: '200%',
+                    background: `radial-gradient(circle, ${c.accent}15 0%, transparent 60%)`,
                     opacity: 0,
-                    transition: 'opacity 0.25s ease',
+                    transition: 'opacity 0.5s ease',
                     pointerEvents: 'none',
+                    transform: 'scale(0.8)',
                 }}
-                className="group-hover:opacity-100"
+                className="group-hover:opacity-100 group-hover:animate-spin-slow"
             />
 
-            <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem', height: '100%' }}>
-                {/* Text block */}
+            <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', height: '100%' }}>
+                {/* Text Block */}
                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    {/* Label */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                         <p style={{
-                            fontSize: 'var(--fs-2xs)',
-                            fontWeight: 700,
+                            fontSize: 'var(--fs-xs)',
+                            fontWeight: 800,
                             textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
+                            letterSpacing: '0.12em',
                             color: 'var(--md-text-tertiary)',
                             margin: 0,
                             whiteSpace: 'nowrap',
@@ -135,57 +151,59 @@ function KPICard({
                             {title}
                         </p>
                         {isClickable && (
-                            <span style={{ fontSize: '10px', opacity: 0.5 }} className="group-hover:opacity-100 transition-opacity">
-                                🔍
+                            <span style={{ fontSize: '12px', opacity: 0, transform: 'translateX(-10px)', transition: 'all 0.3s ease' }} className="group-hover:opacity-100 group-hover:transform-none">
+                                ↗
                             </span>
                         )}
                     </div>
 
-                    {/* Value */}
                     <p style={{
-                        fontSize: 'var(--fs-2xl)',
+                        fontSize: '32px',
                         fontWeight: 900,
-                        letterSpacing: '-0.02em',
+                        letterSpacing: '-0.03em',
                         lineHeight: 1.1,
-                        color: 'var(--md-text-primary)',
-                        marginBottom: '2px',
+                        background: c.gradient,
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        marginBottom: '6px',
+                        display: 'inline-block'
                     }}>
                         {formatValue(value)}
                     </p>
 
-                    {/* Subtitle (optional) */}
                     {subtitle && (
                         <p style={{
                             fontSize: 'var(--fs-2xs)',
-                            color: 'var(--md-text-tertiary)',
-                            fontWeight: 500,
-                            marginBottom: '2px',
+                            color: 'var(--md-text-secondary)',
+                            fontWeight: 600,
+                            marginBottom: '4px',
+                            opacity: 0.8
                         }}>
                             {subtitle}
                         </p>
                     )}
 
-                    {/* Trend badge */}
                     <TrendBadge trend={trend} trendLabel={trendLabel} />
                 </div>
 
-                {/* Icon */}
+                {/* Intelligent Icon Container */}
                 {icon && (
                     <div
                         style={{
-                            width: '42px', height: '42px',
-                            borderRadius: '12px',
+                            width: '56px', height: '56px',
+                            borderRadius: '16px',
                             background: c.gradient,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
                             flexShrink: 0,
-                            boxShadow: `0 4px 12px ${c.accent}30`,
-                            transition: 'transform 0.2s ease',
+                            boxShadow: `0 8px 20px ${c.accent}50`,
+                            transition: 'all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                            border: `2px solid rgba(255,255,255,0.2)`
                         }}
-                        className="group-hover:scale-110"
+                        className="group-hover:scale-110 group-hover:rotate-6"
                     >
-                        <span style={{ fontSize: '1.125rem', lineHeight: 1 }}>{icon}</span>
+                        <span style={{ fontSize: '1.5rem', lineHeight: 1, filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }}>{icon}</span>
                     </div>
                 )}
             </div>

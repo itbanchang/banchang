@@ -3,9 +3,52 @@
 // ============================================================
 import { Router } from 'express';
 import hosxp from '../db/hosxpIntegration.js';
+import { getCachedOccupancy } from '../jobs/occupancySync.js';
 import { cacheMiddleware } from '../cache/redis.js';
+import { dbQuery, dbQueryOne } from '../db/mysql.js';
+import { calculateNEWS2 } from '../ai/ewsEngine.js';
+import logger from '../logger.js';
+import { maskPatientData, maskPatientList } from '../middleware/dataMasking.js';
+import { z } from 'zod';
+import { validate, validateQuery, validateParams } from '../middleware/validate.js';
 
 const router = Router();
+
+// ============================================================
+// Validation Schemas (Phase 2.4)
+// ============================================================
+const admissionsQuerySchema = z.object({
+    ward_id: z.string().optional(),
+});
+
+const alosQuerySchema = z.object({
+    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    ward_id: z.string().optional(),
+});
+
+const fiscalQuerySchema = z.object({
+    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    ward_id: z.string().optional(),
+    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+const drilldownQuerySchema = z.object({
+    type: z.enum(['beds', 'readmit', 'alos', 'cmi', 'mortality']),
+});
+
+const anParamsSchema = z.object({
+    an: z.string().min(1),
+});
+
+const highRiskQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(500).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+});
+
+// Ward '06' = Home Ward (หอผู้ป่วยโฮมวาร์ด) — ผู้ป่วยไม่ครองเตียงจริงในโรงพยาบาล
+// ต้อง exclude ออกจากการคำนวณ Occupancy, Turnover, และ Analytics ทุกตัว
+const HOME_WARD = '06';
 
 // ---- Bed Occupancy (cached 1 min) ----
 router.get('/bed-occupancy', cacheMiddleware(60), async (req, res) => {
@@ -18,8 +61,9 @@ router.get('/bed-occupancy', cacheMiddleware(60), async (req, res) => {
             available: (w.total_beds || 0) - (w.occupied || 0),
             occupancy_rate: w.total_beds > 0 ? Math.round((w.occupied / w.total_beds) * 100) : 0
         }));
-        const tb = 120; // จำนวนเตียงจริงของโรงพยาบาล
-        const oc = wards.filter(w => w.id !== '06').reduce((s, w) => s + w.occupied, 0);
+        // ดึงจำนวนเตียงจริงจาก ward data (ไม่รวม Home Ward)
+        const tb = wards.filter(w => w.id !== HOME_WARD).reduce((s, w) => s + (w.total_beds || 0), 0) || 1;
+        const oc = wards.filter(w => w.id !== HOME_WARD).reduce((s, w) => s + w.occupied, 0);
         res.json({
             data_source: 'HOSxP XE', wards,
             summary: {
@@ -34,7 +78,7 @@ router.get('/bed-occupancy', cacheMiddleware(60), async (req, res) => {
 });
 
 // ---- Admissions (cached 1 min) ----
-router.get('/admissions', cacheMiddleware(60), async (req, res) => {
+router.get('/admissions', validateQuery(admissionsQuerySchema), cacheMiddleware(60), async (req, res) => {
     try {
         const data = await hosxp.getActiveAdmissions(req.query.ward_id);
         const admissions = (data || []).map(a => ({
@@ -43,8 +87,8 @@ router.get('/admissions', cacheMiddleware(60), async (req, res) => {
             doctor_name: a.doctor, diagnosis_code: a.icd10, diagnosis_name: a.dx_name,
             current_stay_days: a.stay_days, payer_type: a.payer,
             age: a.age, gender: a.sex,
-            is_over_stay: a.stay_days > 14,
-            over_stay_days: a.stay_days > 14 ? a.stay_days - 14 : 0
+            is_over_stay: (a.stay_days ?? 0) > 14,
+            over_stay_days: (a.stay_days ?? 0) > 14 ? a.stay_days - 14 : 0
         }));
         res.json({
             data_source: 'HOSxP XE', admissions,
@@ -57,9 +101,9 @@ router.get('/admissions', cacheMiddleware(60), async (req, res) => {
 });
 
 // ---- ALOS (cached 5 min) ----
-router.get('/alos', cacheMiddleware(300), async (req, res) => {
+router.get('/alos', validateQuery(alosQuerySchema), cacheMiddleware(300), async (req, res) => {
     try {
-        const year = parseInt(req.query.year) || new Date().getFullYear();
+        const year = req.query.year || new Date().getFullYear();
         const data = await hosxp.getALOSData({ year, wardId: req.query.ward_id });
         const details = (data || []).map(d => ({
             drg_code: d.drg, ward_name: d.ward,
@@ -94,13 +138,21 @@ router.get('/wards', cacheMiddleware(300), async (req, res) => {
 router.get('/analytics', cacheMiddleware(600), async (req, res) => {
     try {
         const { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } = await import('../db/mysql.js');
-        const totalBeds = 120;
 
-        // ━━ ALL 13 queries run in PARALLEL — no extra latency ━━
+        // ━━ ALL queries run in PARALLEL — no extra latency ━━
         const [
+            totalBedsRow,
             turnover, alosVariance, revPerBedDay, admTrend, genderAge, overstay,
-            readmitData, cmiData, dischPlanData, mortalityData, currentAcuity, revPerDisch, dowPattern
+            readmitData, cmiData, dischPlanData, mortalityData, currentAcuity, revPerDisch, dowPattern,
+            activeDoctors, activeNurses, activeStaff
         ] = await Promise.all([
+
+            // 0. Total beds — ดึงจาก ward table จริง (ไม่รวม Home Ward '06' และ Ward '17')
+            dbQueryOne(`
+                SELECT SUM(COALESCE(real_bedcount, bedcount, 0)) as total
+                FROM ward
+                WHERE ward_active = 'Y' AND ward NOT IN ('${HOME_WARD}', '17')
+            `).catch(() => null),
 
             // 1. Bed Turnover Rate — จำนวน discharge ใน 30 วัน / จำนวนเตียง
             dbQueryOneHeavy('ipdTurnover30d', 30, `
@@ -153,7 +205,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, NOW()) >= 60 THEN 1 ELSE 0 END) as elderly,
                     SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, NOW()) < 15 THEN 1 ELSE 0 END) as pediatric
                 FROM ipt i INNER JOIN patient p ON i.hn = p.hn
-                WHERE i.dchdate IS NULL AND i.ward != '06'
+                WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}'
             `),
 
             // 6. Overstay Analysis
@@ -163,7 +215,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     ROUND(AVG(CASE WHEN DATEDIFF(NOW(), i.regdate) > 14
                         THEN DATEDIFF(NOW(), i.regdate) - 14 END), 1) as avg_excess_days,
                     COUNT(*) as total_current
-                FROM ipt i WHERE i.dchdate IS NULL AND i.ward != '06'
+                FROM ipt i WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}'
             `),
 
             // ━━━━━━━━━━ NEW PROFESSIONAL KPIs ━━━━━━━━━━
@@ -181,7 +233,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
                 WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
                   AND i1.dchdate IS NOT NULL
-                  AND i1.ward != '06'
+                  AND i1.ward != '${HOME_WARD}'
             `).catch(() => null),
 
             // 8. Case Mix Index (CMI) — ระดับความซับซ้อน
@@ -214,7 +266,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                 WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                   AND i.dchdate IS NOT NULL
                   AND i.dchtime IS NOT NULL
-                  AND i.ward != '06'
+                  AND i.ward != '${HOME_WARD}'
             `).catch(() => null),
 
             // 10. Mortality Rate — อัตราตาย (dchtype 9 = ตาย)
@@ -229,7 +281,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                 FROM ipt i
                 WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
                   AND i.dchdate IS NOT NULL
-                  AND i.ward != '06'
+                  AND i.ward != '${HOME_WARD}'
             `).catch(() => null),
 
             // 11. Current Average Acuity — ผู้ป่วยที่นอนอยู่ตอนนี้
@@ -242,7 +294,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     COUNT(*) as total_with_rw
                 FROM ipt i
                 INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.dchdate IS NULL AND i.ward != '06' AND a.rw > 0
+                WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}' AND a.rw > 0
             `).catch(() => null),
 
             // 12. Revenue per Discharge
@@ -268,13 +320,71 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     ROUND(AVG(DATEDIFF(IFNULL(dchdate, CURDATE()), regdate)), 1) as avg_los
                 FROM ipt
                 WHERE regdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-                  AND ward != '06'
+                  AND ward != '${HOME_WARD}'
                 GROUP BY DAYOFWEEK(regdate)
                 ORDER BY dow
+            `).catch(() => []),
+
+            // 14. Active IPD Doctors (from Current Admissions)
+            dbQuery(`
+                SELECT 
+                    u.loginname as username, 
+                    u.name as staff_name,
+                    COUNT(i.an) as total_count
+                FROM ipt i
+                JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
+                WHERE i.dchdate IS NULL
+                GROUP BY u.loginname, u.name
+                ORDER BY total_count DESC
+            `).catch(() => []),
+
+            // 15. Active IPD Nurses Today (Activity: Assessment, Nurse Note)
+            dbQuery(`
+                SELECT 
+                    u.loginname as username, 
+                    u.name as staff_name, 
+                    SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
+                    SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+                    SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
+                    COUNT(*) as total_count
+                FROM (
+                    SELECT assessment_head_staff as staff, assessment_head_datetime as activity_time FROM assessment_head WHERE DATE(assessment_head_datetime) = CURDATE() AND patient_type = 'IPD'
+                    UNION ALL
+                    SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
+                ) as activity
+                JOIN opduser u ON activity.staff = u.loginname
+                WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
+                GROUP BY u.loginname, u.name
+                ORDER BY total_count DESC
+            `).catch(() => []),
+
+            // 16. Active IPD Staff Today (Activity: Assessment, Nurse Note)
+            dbQuery(`
+                SELECT 
+                    u.loginname as username, 
+                    u.name as staff_name, 
+                    SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
+                    SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+                    SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
+                    COUNT(*) as total_count
+                FROM (
+                    SELECT assessment_head_staff as staff, assessment_head_datetime as activity_time FROM assessment_head WHERE DATE(assessment_head_datetime) = CURDATE() AND patient_type = 'IPD'
+                    UNION ALL
+                    SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
+                ) as activity
+                JOIN opduser u ON activity.staff = u.loginname
+                WHERE u.name NOT LIKE 'นพ.%' AND u.name NOT LIKE 'พญ.%'
+                    AND u.name NOT LIKE 'พว.%' AND u.name NOT LIKE 'พยาบาล%' AND u.name NOT LIKE 'นป.%' AND u.name NOT LIKE 'พช.%'
+                    AND u.loginname != 'kiosk'
+                GROUP BY u.loginname, u.name
+                ORDER BY total_count DESC
             `).catch(() => [])
         ]);
 
         // ━━ Calculations ━━
+
+        // ใช้จำนวนเตียงจริงจาก DB — fallback 120 กรณี query ล้มเหลว (เช่น ward table ยังไม่มีข้อมูล)
+        const totalBeds = Number(totalBedsRow?.total || 0) || 120;
 
         // Bed Turnover Rate = discharges / total beds
         const discharged = Number(turnover?.discharged_30d || 0);
@@ -399,8 +509,15 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
             max_charge: Number(revPerDisch?.max_charge || 0),
             avg_unpaid: Number(revPerDisch?.avg_unpaid || 0),
 
-            // Day-of-Week Pattern
+            // ━━ Day-of-Week Pattern ━━
             dow_pattern: dowData,
+
+            // ━━ On-Duty Personnel (IPD) ━━
+            on_duty: {
+                doctors: (activeDoctors || []),
+                nurses: (activeNurses || []),
+                staff: (activeStaff || [])
+            },
 
             // ━━ Composite (Enhanced) ━━
             wei,  // Ward Efficiency Index v2 (0-100)
@@ -444,30 +561,13 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
 });
 
 // ━━━━━━ IPD Estimated Revenue — Fiscal Year (3 ปีย้อนหลัง) ━━━━━━
-router.get('/revenue-fiscal', cacheMiddleware(3600), async (req, res) => {
+router.get('/revenue-fiscal', validateQuery(fiscalQuerySchema), cacheMiddleware(3600), async (req, res) => {
     try {
         const { dbQuery: dbQ } = await import('../db/mysql.js');
-        const now = new Date();
-        const currentMonth = now.getMonth() + 1;
-        const currentYear = now.getFullYear();
-
-        const currentFiscalStartYear = currentMonth >= 10 ? currentYear : currentYear - 1;
+        const { getFiscalConfig } = await import('../helpers/fiscal.js');
+        const { fiscalYears, globalStart, globalEnd } = getFiscalConfig(req.query.start, req.query.end);
 
         const MONTH_TH = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
-
-        const fiscalYears = [];
-        for (let offset = 2; offset >= 0; offset--) {
-            const startYear = currentFiscalStartYear - offset;
-            fiscalYears.push({
-                startYear,
-                startDate: `${startYear}-10-01`,
-                endDate: `${startYear + 1}-09-30`,
-                fiscalBE: startYear + 543 + 1,
-            });
-        }
-
-        const globalStart = fiscalYears[0].startDate;
-        const globalEnd = `${currentFiscalStartYear + 1}-09-30`;
 
         const rows = await dbQ(`
             SELECT
@@ -483,7 +583,7 @@ router.get('/revenue-fiscal', cacheMiddleware(3600), async (req, res) => {
             WHERE i.dchdate BETWEEN '${globalStart}' AND LEAST('${globalEnd}', CURDATE())
               AND i.dchdate IS NOT NULL
               AND a.income > 0
-              AND i.ward != '06'
+              AND i.ward != '${HOME_WARD}'
             GROUP BY YEAR(i.dchdate), MONTH(i.dchdate)
             ORDER BY yr, mo
         `);
@@ -559,7 +659,7 @@ router.get('/revenue-fiscal', cacheMiddleware(3600), async (req, res) => {
 });
 
 // ---- IPD Drill-Down (cached 1 min) ----
-router.get('/drilldown', cacheMiddleware(60), async (req, res) => {
+router.get('/drilldown', validateQuery(drilldownQuerySchema), cacheMiddleware(60), async (req, res) => {
     const { type } = req.query;
     try {
         if (type === 'beds') {
@@ -602,6 +702,390 @@ router.get('/drilldown', cacheMiddleware(60), async (req, res) => {
         }
         res.status(400).json({ error: 'Unsupported drill-down type' });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// PHASE 2: Real-Time Occupancy Synchronization
+// ============================================================
+
+// ---- GET /api/ipd/occupancy-now — Instant cached occupancy ----
+router.get('/occupancy-now', async (req, res) => {
+    try {
+        const cached = getCachedOccupancy();
+        
+        if (!cached) {
+            return res.status(503).json({ 
+                error: 'Occupancy data not yet available',
+                message: 'Cache still initializing, try again in 30s'
+            });
+        }
+        
+        res.json({
+            lastUpdated: cached.lastUpdated,
+            totalOccupied: cached.totalOccupied,
+            totalBeds: cached.totalBeds,
+            occupancyRate: cached.totalBeds > 0 
+                ? Math.round((cached.totalOccupied / cached.totalBeds) * 100)
+                : 0,
+            summary: cached.summary,
+            cacheAge: Math.round((Date.now() - cached.lastUpdated.getTime()) / 1000) + 's'
+        });
+    } catch (err) {
+        logger.error('Occupancy cache error', { error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// PHASE 2: Vital Signs Time-Series Endpoints
+// ============================================================
+
+// ---- Validation Schemas ----
+const vitalSignsSchema = z.object({
+    an: z.string().min(1, 'an required'),
+    hn: z.string().optional(),
+    rr: z.coerce.number().nullable().optional(),
+    spo2: z.coerce.number().nullable().optional(),
+    bps: z.coerce.number().int().nullable().optional(),
+    bpd: z.coerce.number().int().nullable().optional(),
+    pulse: z.coerce.number().int().nullable().optional(),
+    temperature: z.coerce.number().nullable().optional()
+});
+
+const queryVitalHistorySchema = z.object({
+    hours: z.coerce.number().int().min(1).max(168).default(24),
+    limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+// ---- POST /api/ipd/vitals — Log new vital signs ----
+router.post('/vitals', validate(vitalSignsSchema), async (req, res) => {
+    try {
+        const { an, hn, rr, spo2, bps, bpd, pulse, temperature } = req.body;
+        
+        // Validate at least one vital sign provided
+        if (rr == null && spo2 == null && bps == null && bpd == null && 
+            pulse == null && temperature == null) {
+            return res.status(400).json({ 
+                error: 'At least one vital sign required',
+                requiredFields: ['rr', 'spo2', 'bps', 'bpd', 'pulse', 'temperature']
+            });
+        }
+        
+        // Calculate NEWS2 score
+        const news2 = calculateNEWS2({ rr, spo2, bps, bpd, pulse, temperature });
+        
+        // Insert into ipt_vitals
+        await dbQuery(`
+            INSERT INTO ipt_vitals 
+            (an, hn, check_datetime, rr, spo2, bps, bpd, pulse, temperature, 
+             news2_score, news2_risk_level, created_by)
+            VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [an, hn, rr, spo2, bps, bpd, pulse, temperature, 
+            news2.total_score, news2.risk_level, req.user?.username || 'api']);
+        
+        // Alert if critical
+        if (news2.risk_level === 'critical') {
+            logger.warn('Critical EWS score recorded', {
+                an, hn, news2_score: news2.total_score,
+                risk_level: news2.risk_level,
+                userId: req.user?.username
+            });
+            
+            // Broadcast WebSocket alert if available
+            if (req.app.get('io')) {
+                req.app.get('io').emit('clinical_alert', {
+                    type: 'HIGH_EWS',
+                    an: an,
+                    hn: hn,
+                    news2_score: news2.total_score,
+                    risk_level: news2.risk_level,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+        
+        res.json({ 
+            success: true, 
+            news2_score: news2.total_score, 
+            risk_level: news2.risk_level,
+            action_required: news2.risk_level === 'critical'
+        });
+        
+    } catch (err) {
+        logger.error('Vital signs logging error', { error: err.message, an: req.body.an });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---- GET /api/ipd/:an/vitals-history — 24h vital trend ----
+router.get('/:an/vitals-history', validateParams(anParamsSchema), async (req, res) => {
+    try {
+        const { an } = req.params;
+        const { hours = 24, limit = 100 } = req.query;
+        
+        const vitals = await dbQuery(`
+            SELECT check_datetime, rr, spo2, bps, bpd, pulse, temperature, 
+                   news2_score, news2_risk_level
+            FROM ipt_vitals
+            WHERE an = ? AND check_datetime > DATE_SUB(NOW(), INTERVAL ? HOUR)
+            ORDER BY check_datetime ASC
+            LIMIT ?
+        `, [an, parseInt(hours), parseInt(limit)]);
+        
+        res.json({
+            an,
+            period_hours: parseInt(hours),
+            vitals_count: vitals.length,
+            data: vitals,
+            last_update: vitals.length > 0 ? vitals[vitals.length - 1].check_datetime : null
+        });
+        
+    } catch (err) {
+        logger.error('Vital history query error', { error: err.message, an: req.params.an });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---- GET /api/ipd/high-risk-patients — Filter by latest NEWS2 ----
+router.get('/high-risk-patients', validateQuery(highRiskQuerySchema), async (req, res) => {
+    try {
+        const patients = await dbQuery(`
+            SELECT DISTINCT
+                i.an,
+                p.hn,
+                p.fname,
+                p.lname,
+                TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) as age_y,
+                p.sex,
+                i.ward,
+                i.cur_bedno,
+                i.regdate,
+                DATEDIFF(NOW(), i.regdate) as stay_days,
+                iv.check_datetime,
+                iv.news2_score,
+                iv.news2_risk_level
+            FROM ipt i
+            JOIN patient p ON i.hn = p.hn
+            JOIN ipt_vitals iv ON i.an = iv.an
+            WHERE i.dchdate IS NULL
+            AND (iv.news2_score >= 5 OR iv.news2_risk_level IN ('high', 'critical'))
+            AND iv.check_datetime = (
+                SELECT MAX(check_datetime) FROM ipt_vitals iv2 WHERE iv2.an = i.an
+            )
+            ORDER BY iv.news2_score DESC, iv.check_datetime DESC
+            LIMIT 50
+        `);
+        
+        const masked = maskPatientList(patients, req.user?.role || 'director');
+        res.json({
+            critical_count: patients.filter(p => p.news2_risk_level === 'critical').length,
+            high_count: patients.filter(p => p.news2_risk_level === 'high').length,
+            total_high_risk: patients.length,
+            patients: masked
+        });
+        
+    } catch (err) {
+        logger.error('High-risk patients query error', { error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// PHASE 2: Debt Aging Endpoints
+// ============================================================
+
+const debtAgingQuerySchema = z.object({
+    bucket: z.enum(['not_due', '0-30_days', '31-60_days', '61-90_days', '>90_days']).optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+// ---- GET /api/ipd/debt-aging — Debt aging summary ----
+router.get('/debt-aging', async (req, res) => {
+    try {
+        const summary = await dbQuery(`
+            SELECT aging_bucket, patient_count, debt_incident_count, 
+                   total_debt_amount, avg_debt_per_incident, oldest_debt_date, 
+                   oldest_days_overdue
+            FROM debt_aging_summary
+            ORDER BY 
+                CASE 
+                    WHEN aging_bucket = 'not_due' THEN 0
+                    WHEN aging_bucket = '0-30_days' THEN 1
+                    WHEN aging_bucket = '31-60_days' THEN 2
+                    WHEN aging_bucket = '61-90_days' THEN 3
+                    WHEN aging_bucket = '>90_days' THEN 4
+                    ELSE 5
+                END
+        `);
+        
+        res.json({
+            summary,
+            total_unpaid_patients: summary.reduce((sum, row) => sum + row.patient_count, 0),
+            total_unpaid_amount: summary.reduce((sum, row) => sum + row.total_debt_amount, 0),
+            critical_count: summary.find(s => s.aging_bucket === '>90_days')?.patient_count || 0
+        });
+        
+    } catch (err) {
+        logger.error('Debt aging summary error', { error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---- GET /api/ipd/debt-aging/details — Patients by aging bucket ----
+router.get('/debt-aging/details', async (req, res) => {
+    try {
+        const bucket = req.query.bucket || '>90_days';
+        const limit = req.query.limit ? parseInt(req.query.limit) : 100;
+        
+        const details = await dbQuery(`
+            SELECT pdh.debt_id, pdh.hn, p.fname, p.lname, pdh.remain_amount,
+                   pdh.due_date, pdh.days_overdue, pdh.aging_bucket,
+                   pdh.created_date, pdh.payment_method, pdh.an, pdh.vn,
+                   p.informtel, p.hometel
+            FROM patient_debt_history pdh
+            JOIN patient p ON pdh.hn = p.hn
+            WHERE pdh.aging_bucket = ? AND pdh.paid_date IS NULL
+            ORDER BY pdh.days_overdue DESC, pdh.remain_amount DESC
+            LIMIT ?
+        `, [bucket, limit]);
+        
+        const masked = maskPatientList(details, req.user?.role || 'finance');
+        res.json({
+            aging_bucket: bucket,
+            patient_count: details.length,
+            total_debt: details.reduce((sum, d) => sum + d.remain_amount, 0),
+            patients: masked
+        });
+        
+    } catch (err) {
+        logger.error('Debt aging details error', { error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// Discharge Planning Board — ผู้ป่วยที่คาดว่าจำหน่ายวันนี้/พรุ่งนี้
+// คาดการณ์จาก: regdate + (adjRW × 4 วัน) เทียบกับวันปัจจุบัน
+// Cache 5 นาที
+// ============================================================
+router.get('/discharge-planning', cacheMiddleware(300), async (req, res) => {
+    try {
+        const patients = await dbQuery(`
+            SELECT
+                i.an,
+                i.hn,
+                CONCAT(p.fname, ' ', p.lname) as patient_name,
+                TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) as age,
+                p.sex,
+                i.ward,
+                i.regdate,
+                DATEDIFF(CURDATE(), i.regdate) as current_los,
+                ROUND(a.rw * 4) as expected_los,
+                DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY) as expected_discharge,
+                DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) as days_until_discharge,
+                a.rw,
+                d.icd10 as main_diag,
+                COALESCE(u.name, i.admdoctor) as doctor_name,
+                CASE
+                    WHEN DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) <= 0 THEN 'today'
+                    WHEN DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) = 1 THEN 'tomorrow'
+                    ELSE 'upcoming'
+                END as discharge_window
+            FROM ipt i
+            JOIN patient p ON i.hn = p.hn
+            JOIN an_stat a ON i.an = a.an
+            LEFT JOIN iptdiag d ON i.an = d.an AND d.diagtype = 1
+            LEFT JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
+            WHERE i.dchdate IS NULL
+              AND i.ward != '${HOME_WARD}'
+              AND a.rw > 0
+              AND DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY) <= DATE_ADD(CURDATE(), INTERVAL 2 DAY)
+            ORDER BY days_until_discharge ASC, a.rw DESC
+            LIMIT 60
+        `);
+
+        const today = patients.filter(p => p.discharge_window === 'today');
+        const tomorrow = patients.filter(p => p.discharge_window === 'tomorrow');
+
+        res.json({
+            data_source: 'HOSxP XE · an_stat (adjRW × 4d proxy)',
+            today_count: today.length,
+            tomorrow_count: tomorrow.length,
+            total: patients.length,
+            patients: patients.map(p => ({
+                ...p,
+                patient_name: maskPatientData(p, req.user?.role || 'director').patient_name ?? p.patient_name,
+            })),
+        });
+    } catch (err) {
+        logger.error('Discharge planning error', { error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// Bed Flow (Ward Daily Admit/Discharge) — สำหรับ Gantt Chart
+// 14 วันย้อนหลัง รายวอร์ด
+// Cache 10 นาที
+// ============================================================
+router.get('/bed-flow', cacheMiddleware(600), async (req, res) => {
+    try {
+        const [admitRows, dischargeRows] = await Promise.all([
+            dbQuery(`
+                SELECT
+                    i.ward,
+                    w.shortname as ward_name,
+                    DATE(i.regdate) as date,
+                    COUNT(*) as admissions
+                FROM ipt i
+                LEFT JOIN ward w ON i.ward = w.ward
+                WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                  AND i.ward != '${HOME_WARD}'
+                GROUP BY i.ward, w.shortname, DATE(i.regdate)
+                ORDER BY i.ward, DATE(i.regdate)
+            `),
+            dbQuery(`
+                SELECT
+                    i.ward,
+                    w.shortname as ward_name,
+                    DATE(i.dchdate) as date,
+                    COUNT(*) as discharges
+                FROM ipt i
+                LEFT JOIN ward w ON i.ward = w.ward
+                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                  AND i.dchdate IS NOT NULL
+                  AND i.ward != '${HOME_WARD}'
+                GROUP BY i.ward, w.shortname, DATE(i.dchdate)
+                ORDER BY i.ward, DATE(i.dchdate)
+            `),
+        ]);
+
+        // Merge admit + discharge into per-ward per-day records
+        const map = {};
+        for (const r of admitRows || []) {
+            const k = `${r.ward}|${r.date}`;
+            if (!map[k]) map[k] = { ward: r.ward, ward_name: r.ward_name || r.ward, date: r.date, admissions: 0, discharges: 0 };
+            map[k].admissions = Number(r.admissions || 0);
+        }
+        for (const r of dischargeRows || []) {
+            const k = `${r.ward}|${r.date}`;
+            if (!map[k]) map[k] = { ward: r.ward, ward_name: r.ward_name || r.ward, date: r.date, admissions: 0, discharges: 0 };
+            map[k].discharges = Number(r.discharges || 0);
+        }
+
+        const flow = Object.values(map).sort((a, b) => a.ward.localeCompare(b.ward) || a.date.localeCompare(b.date));
+        const wards = [...new Set(flow.map(f => f.ward))];
+
+        res.json({
+            data_source: 'HOSxP XE · ipt',
+            wards,
+            flow,
+            days: 14,
+        });
+    } catch (err) {
+        logger.error('Bed flow error', { error: err.message });
         res.status(500).json({ error: err.message });
     }
 });

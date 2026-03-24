@@ -3,7 +3,7 @@
 // 🧠 AI: Bed Demand Forecast + Readmission Risk + LOS Predictor
 // ⏱️ Professional Data Analytics KPIs Edition
 // ============================================================
-import React, { useEffect, useMemo, useCallback } from 'react';
+import React, { useEffect, useMemo, useCallback, useState } from 'react';
 
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -11,36 +11,54 @@ import {
     ComposedChart, Area, Line, ReferenceLine, Legend
 } from 'recharts';
 import { useDashboard } from '../context/DashboardContext.jsx';
-import KPICard from './KPICard.jsx';
+import AIInsightCard from './shared/AIInsightCard.jsx';
+import StatusBadge from './shared/StatusBadge.jsx';
+import MetricCard from './shared/MetricCard.jsx';
+import MetricsStrip from './shared/MetricsStrip.jsx';
+import HealthGauge from './shared/HealthGauge.jsx';
+import AlertBanner from './shared/AlertBanner.jsx';
 
-export default function IPDTab() {
-    const { state, fetchData } = useDashboard();
+function IPDTab() {
+    const { state, fetchData, openDrillDown, closeDrillDown } = useDashboard();
     const { bedOccupancy, alosData } = state;
     const bedDemand = state.bedDemand;
     const readmission = state.readmission;
     const losPrediction = state.losPrediction;
     const loading = state.loading;
+    const [showReadmitList, setShowReadmitList] = useState(false);
+    const [hoverHero, setHoverHero] = useState(false);
+    const [hoverKpi, setHoverKpi] = useState(null);
+    const [hoverTierCard, setHoverTierCard] = useState(null);
 
     const ipdAnalytics = state.ipdAnalytics;
     const mrToday = state.medRecToday;
     const today = mrToday || {};
 
     useEffect(() => {
+        // Tier 1: Core operational data — load immediately
         fetchData('bedOccupancy', '/api/ipd/bed-occupancy');
-        fetchData('medRecToday', '/api/medrec/today');
-
         fetchData('alosData', '/api/ipd/alos');
         fetchData('ipdAnalytics', '/api/ipd/analytics');
-        fetchData('bedDemand', '/api/ai/bed-demand');
-        fetchData('readmission', '/api/ai/readmission');
-        fetchData('losPrediction', '/api/ai/los-predictor');
-        fetchData('ipdRevenueFiscal', '/api/ipd/revenue-fiscal');
+        // Tier 2: Supporting data — deferred 400ms
+        const t1 = setTimeout(() => {
+            fetchData('medRecToday', '/api/medrec/today');
+            fetchData('ipdRevenueFiscal', '/api/ipd/revenue-fiscal');
+        }, 400);
+        // Tier 3: AI modules + new IPD features — deferred 600ms (reduced from 1s)
+        const t2 = setTimeout(() => {
+            fetchData('bedDemand', '/api/ai/bed-demand');
+            fetchData('readmission', '/api/ai/readmission');
+            fetchData('losPrediction', '/api/ai/los-predictor');
+            fetchData('dischargePlanning', '/api/ipd/discharge-planning');
+            fetchData('bedFlow', '/api/ipd/bed-flow');
+        }, 600);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
     }, [fetchData]);
 
     const wardChart = useMemo(() => {
         if (!bedOccupancy?.wards) return [];
         return bedOccupancy.wards.filter(w => w.total_beds > 0).map(w => ({
-            name: w.name.length > 10 ? w.shortname || w.name.substring(0, 10) : w.name,
+            name: (w.name?.length ?? 0) > 10 ? w.shortname || w.name.substring(0, 10) : (w.name ?? ''),
             occupancy: w.occupancy_rate, occupied: w.occupied, total: w.total_beds
         }));
     }, [bedOccupancy]);
@@ -89,16 +107,12 @@ export default function IPDTab() {
                         backdropFilter: 'blur(12px)',
                         position: 'relative', overflow: 'hidden',
                         cursor: 'pointer',
-                        transition: 'transform 0.2s, box-shadow 0.2s'
+                        transition: 'transform 0.2s, box-shadow 0.2s',
+                        transform: hoverHero ? 'translateY(-2px)' : 'none',
+                        boxShadow: hoverHero ? '0 10px 30px -10px rgba(99,102,241,.3)' : 'none',
                     }}
-                    onMouseEnter={e => {
-                        e.currentTarget.style.transform = 'translateY(-2px)';
-                        e.currentTarget.style.boxShadow = '0 10px 30px -10px rgba(99, 102, 241, 0.3)';
-                    }}
-                    onMouseLeave={e => {
-                        e.currentTarget.style.transform = 'none';
-                        e.currentTarget.style.boxShadow = 'none';
-                    }}
+                    onMouseEnter={() => setHoverHero(true)}
+                    onMouseLeave={() => setHoverHero(false)}
                 >
                     <div style={{ position: 'absolute', top: '-30px', right: '-30px', width: '120px', height: '120px', borderRadius: '50%', background: 'radial-gradient(circle, rgba(99,102,241,.15) 0%, transparent 70%)', pointerEvents: 'none' }} />
 
@@ -118,19 +132,19 @@ export default function IPDTab() {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative', zIndex: 1 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <p style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#6366f1', margin: 0 }}>
-                                        🏥 ผู้ป่วยนอนอยู่ ณ ขณะนี้ <span style={{ fontSize: '8px', opacity: 0.7, textTransform: 'none' }}>(ไม่รวม Home Ward)</span>
+                                    <p style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#6366f1', margin: 0 }}>
+                                        🏥 ผู้ป่วยนอนอยู่ ณ ขณะนี้ <span style={{ fontSize: '11px', opacity: 0.7, textTransform: 'none' }}>(ไม่รวม Home Ward)</span>
                                     </p>
-                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(99,102,241,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(99,102,241,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                                         Real-time
                                     </span>
                                 </div>
 
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                                     <span style={{ fontSize: '42px', fontWeight: 900, color: '#6366f1', letterSpacing: '-0.04em', lineHeight: 1, textShadow: '0 0 40px rgba(99,102,241,.3)' }}>
-                                        {occ}
+                                        {occ.toLocaleString('th-TH')}
                                     </span>
-                                    <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>/ {total} เตียง</span>
+                                    <span style={{ fontSize: '14px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>/ {total.toLocaleString('th-TH')} เตียง</span>
                                     <span style={{
                                         fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '99px',
                                         background: `${occColor}15`, color: occColor,
@@ -142,8 +156,8 @@ export default function IPDTab() {
                                 {/* Occupancy bar */}
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: occColor }}>🛏️ ครองเตียง {occ} ({rate}%)</span>
-                                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#10b981' }}>ว่าง {avail} เตียง</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: occColor }}>🛏️ ครองเตียง {occ} ({rate}%)</span>
+                                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#10b981' }}>ว่าง {avail} เตียง</span>
                                     </div>
                                     <div style={{ height: '6px', borderRadius: '99px', overflow: 'hidden', background: 'rgba(16,185,129,.12)', display: 'flex' }}>
                                         <div style={{ width: `${Math.min(100, rate)}%`, background: `linear-gradient(90deg, ${occColor}, ${occColor}cc)`, borderRadius: '99px 0 0 99px', transition: 'width 0.8s ease' }} />
@@ -190,14 +204,11 @@ export default function IPDTab() {
                             position: 'relative', overflow: 'hidden',
                             transition: 'transform 0.2s, box-shadow 0.2s',
                             cursor: kpi.drillDownId ? 'pointer' : 'default',
+                            transform: hoverKpi === i ? 'translateY(-2px)' : 'none',
+                            boxShadow: hoverKpi === i ? `0 8px 25px ${kpi.glow}` : 'none',
                         }}
-                        onMouseEnter={e => {
-                            if (kpi.drillDownId) {
-                                e.currentTarget.style.transform = 'translateY(-2px)';
-                                e.currentTarget.style.boxShadow = `0 8px 25px ${kpi.glow}`;
-                            }
-                        }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                        onMouseEnter={() => kpi.drillDownId && setHoverKpi(i)}
+                        onMouseLeave={() => setHoverKpi(null)}
                     >
                         {kpi.loading ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -207,7 +218,7 @@ export default function IPDTab() {
                         ) : (
                             <>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                    <span style={{ fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--md-text-tertiary)' }}>
                                         {kpi.title}
                                     </span>
                                     <span style={{ fontSize: '18px' }}>{kpi.icon}</span>
@@ -224,13 +235,187 @@ export default function IPDTab() {
                 ))}
             </div>
 
+            {/* ━━━━━━ 👨‍⚕️ On-Duty Personnel (IPD) ━━━━━━ */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
+                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #5e72e4, #11cdef)', borderRadius: '99px' }} />
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                    🩺 บุคลากรที่ปฏิบัติหน้าที่วันนี้ (On-Duty IPD)
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(94,114,228,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                    Activity Logs · Clinical Database
+                </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                {/* ── Active Doctors List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(94,114,228,.05)', borderBottom: '1px solid rgba(94,114,228,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👨‍⚕️</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#5e72e4' }}>แผนกแพทย์ (IPD)</span>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#5e72e4', opacity: 0.8 }}>{ipdAnalytics?.on_duty?.doctors?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.ipdAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (ipdAnalytics?.on_duty?.doctors?.length > 0) ? (
+                            ipdAnalytics.on_duty.doctors.map((dr, i) => (
+                                <div key={i} style={{
+                                    display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                    borderRadius: '10px', transition: 'background 0.2s', cursor: 'default',
+                                    borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                }}>
+                                    <div style={{
+                                        width: '32px', height: '32px', borderRadius: '8px',
+                                        background: 'linear-gradient(135deg, #5e72e4, #8b5cf6)',
+                                        color: '#fff', fontSize: '12px', fontWeight: 800,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                    }}>
+                                        {dr.staff_name?.substring(0, 2).replace('น.', '').replace('พ.', '').trim() || 'D'}
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{dr.staff_name}</p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>Attending Doctor</p>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#5e72e4' }}>{dr.total_count}</p>
+                                        <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>เคส</p>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Nurses List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(17,205,239,.05)', borderBottom: '1px solid rgba(17,205,239,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>👩‍⚕️</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#11cdef' }}>ทีมพยาบาล (IPD)</span>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#11cdef', opacity: 0.8 }}>{ipdAnalytics?.on_duty?.nurses?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.ipdAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (ipdAnalytics?.on_duty?.nurses?.length > 0) ? (
+                            ipdAnalytics.on_duty.nurses.map((nr, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && nr.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && nr.afternoon_count > 0) ||
+                                    (currentHour >= 17 && nr.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}>
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #11cdef, #1171ef)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {nr.staff_name?.substring(0, 1) || 'N'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nr.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: nr.morning_count > 0 ? '#5e72e4' : '#ccc' }}>🌅{nr.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: nr.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{nr.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: nr.night_count > 0 ? '#172b4d' : '#ccc' }}>🌙{nr.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#11cdef' }}>{nr.total_count}</p>
+                                            <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>งาน</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Active Staff List ── */}
+                <div className="glass-card" style={{ padding: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: '12px 16px', background: 'rgba(45,206,137,.05)', borderBottom: '1px solid rgba(45,206,137,.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>🏢</span>
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: '#2dce89' }}>หน้าที่สนับสนุน (IPD)</span>
+                        </div>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#2dce89', opacity: 0.8 }}>{ipdAnalytics?.on_duty?.staff?.length || 0}</span>
+                    </div>
+                    <div style={{ maxHeight: '240px', overflowY: 'auto', padding: '8px' }} className="custom-scrollbar">
+                        {loading.ipdAnalytics ? (
+                            Array(3).fill(0).map((_, i) => <div key={i} className="skeleton" style={{ height: '50px', margin: '4px 0', borderRadius: '10px' }} />)
+                        ) : (ipdAnalytics?.on_duty?.staff?.length > 0) ? (
+                            ipdAnalytics.on_duty.staff.map((st, i) => {
+                                const currentHour = new Date().getHours();
+                                const isActiveNow = (currentHour < 12 && st.morning_count > 0) ||
+                                    (currentHour >= 12 && currentHour < 17 && st.afternoon_count > 0) ||
+                                    (currentHour >= 17 && st.night_count > 0);
+
+                                return (
+                                    <div key={i} style={{
+                                        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px',
+                                        borderRadius: '10px', borderBottom: '1px solid rgba(0,0,0,0.03)'
+                                    }}>
+                                        <div style={{
+                                            width: '32px', height: '32px', borderRadius: '8px',
+                                            background: isActiveNow ? 'linear-gradient(135deg, #2dce89, #2dcecc)' : 'rgba(0,0,0,0.05)',
+                                            color: isActiveNow ? '#fff' : 'var(--md-text-tertiary)',
+                                            fontSize: '12px', fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            position: 'relative'
+                                        }}>
+                                            {st.staff_name?.substring(0, 1) || 'S'}
+                                            {isActiveNow && <span style={{ position: 'absolute', bottom: '-1px', right: '-1px', width: '8px', height: '8px', background: '#2dce89', border: '1.5px solid #fff', borderRadius: '50%' }} />}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.staff_name}</p>
+                                            <div style={{ display: 'flex', gap: '3px', marginTop: '3px' }}>
+                                                <span title="เช้า" style={{ fontSize: '8px', fontWeight: 800, color: st.morning_count > 0 ? '#5e72e4' : '#ccc' }}>🌅{st.morning_count || 0}</span>
+                                                <span title="บ่าย" style={{ fontSize: '8px', fontWeight: 800, color: st.afternoon_count > 0 ? '#fb6340' : '#ccc' }}>☀️{st.afternoon_count || 0}</span>
+                                                <span title="ดึก" style={{ fontSize: '8px', fontWeight: 800, color: st.night_count > 0 ? '#172b4d' : '#ccc' }}>🌙{st.night_count || 0}</span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 900, color: '#2dce89' }}>{st.total_count}</p>
+                                            <p style={{ margin: 0, fontSize: '8px', fontWeight: 700, color: 'var(--md-text-tertiary)' }}>งาน</p>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : (
+                            <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--md-text-tertiary)' }}>
+                                <p style={{ fontSize: '11px' }}>ไม่พบข้อมูล</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
             {/* ━━━━━━ WEI v2 + Advanced Analytics Panel ━━━━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
                 <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #0ea5e9, #6366f1)', borderRadius: '99px' }} />
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     🔬 Advanced Analytics — IPD
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(14,165,233,.08)', padding: '2px 8px', borderRadius: '99px' }}>
                     {new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: '2-digit' }).format(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))} - {new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: '2-digit' }).format(new Date())} · HOSxP XE
                 </span>
             </div>
@@ -500,18 +685,18 @@ export default function IPDTab() {
 
                                     {/* WEI Component Bars */}
                                     <div style={{ width: '100%', marginTop: '6px' }}>
-                                        <p style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>
+                                        <p style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px', textAlign: 'center' }}>
                                             WEI v2 Components
                                         </p>
                                         {weiRadar.map((c, i) => {
                                             const barColor = c.score >= 70 ? '#10b981' : c.score >= 40 ? '#f59e0b' : '#f43f5e';
                                             return (
                                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                                                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '54px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', width: '54px', textAlign: 'right', flexShrink: 0 }}>{c.name}</span>
                                                     <div style={{ flex: 1, height: '6px', background: 'rgba(203,213,225,.2)', borderRadius: '99px', overflow: 'hidden' }}>
                                                         <div style={{ width: `${c.score}%`, height: '100%', background: barColor, borderRadius: '99px', transition: 'width 0.8s ease' }} />
                                                     </div>
-                                                    <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: barColor, width: '24px', textAlign: 'right' }}>{c.score}</span>
                                                 </div>
                                             );
                                         })}
@@ -543,38 +728,35 @@ export default function IPDTab() {
                                                             background: `${k.color}06`, border: `1px solid ${k.color}20`,
                                                             cursor: k.drillDownId ? 'pointer' : 'default',
                                                             transition: 'transform 0.2s',
+                                                            transform: hoverTierCard === `${ti}-${i}` ? 'translateY(-1px)' : 'none',
+                                                            boxShadow: hoverTierCard === `${ti}-${i}` ? `0 4px 12px ${k.color}20` : 'none',
                                                         }}
-                                                        onMouseEnter={e => {
-                                                            if (k.drillDownId) {
-                                                                e.currentTarget.style.transform = 'translateY(-1px)';
-                                                                e.currentTarget.style.boxShadow = `0 4px 12px ${k.color}20`;
-                                                            }
-                                                        }}
-                                                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                                                        onMouseEnter={() => k.drillDownId && setHoverTierCard(`${ti}-${i}`)}
+                                                        onMouseLeave={() => setHoverTierCard(null)}
                                                     >
                                                         {/* Header */}
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                                             <span style={{ fontSize: '18px', flexShrink: 0 }}>{k.icon}</span>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</p>
-                                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
+                                                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--md-text-tertiary)', fontStyle: 'italic', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k.desc}</p>
                                                             </div>
                                                             <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                                                 <p style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 900, color: k.color, letterSpacing: '-0.02em' }}>{k.value}</p>
-                                                                <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>{k.sub}</p>
                                                             </div>
                                                         </div>
                                                         {/* Problem */}
                                                         {k.problem && (
                                                             <div style={{ marginTop: '6px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(203,213,225,.04)', borderLeft: `3px solid ${k.color}` }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: k.color, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>📊 วิเคราะห์สถานการณ์</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.problem}</p>
                                                             </div>
                                                         )}
                                                         {/* Recommend */}
                                                         {k.recommend && (
                                                             <div style={{ marginTop: '4px', padding: '5px 10px', borderRadius: '6px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
+                                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>💡 แนะนำเชิงนโยบาย</p>
                                                                 <p style={{ margin: 0, fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5, fontWeight: 500 }}>{k.recommend}</p>
                                                             </div>
                                                         )}
@@ -895,7 +1077,7 @@ export default function IPDTab() {
                             <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                                 🔥 Deep Root-Cause Analysis
                             </span>
-                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis IPD</span>
+                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(244,63,94,.08)', padding: '2px 8px', borderRadius: '99px' }}>Cross-analysis IPD</span>
                         </div>
 
                         <div className={`glass-card ${urgencyScore >= 7 ? 'alert-critical' : urgencyScore >= 4 ? 'alert-warning' : ''}`} style={{ padding: '1.5rem', border: `1.5px solid ${urgencyColor}25` }}>
@@ -912,7 +1094,7 @@ export default function IPDTab() {
                                             ⚡ ระดับความเร่งด่วนรวม — IPD
                                         </span>
                                         <span style={{
-                                            fontSize: '10px', fontWeight: 700, color: urgencyColor,
+                                            fontSize: '11px', fontWeight: 700, color: urgencyColor,
                                             background: `${urgencyColor}15`, padding: '2px 8px', borderRadius: '999px',
                                             border: `1px solid ${urgencyColor}25`,
                                         }}>{urgencyLabel}</span>
@@ -923,7 +1105,7 @@ export default function IPDTab() {
                                             {warningCount > 0 && <> + <strong style={{ color: '#f59e0b' }}>{warningCount} ปัญหาเตือน</strong></>}
                                             {problems[0]?.severity === 'good' && <strong style={{ color: '#10b981' }}>ไม่พบปัญหา</strong>}
                                         </span>
-                                        <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
                                             WEI: {wei}/100 · Occ: {occRate}% · Turnover: {turnover}x · Mortality: {mortalityRate}%
                                         </span>
                                     </div>
@@ -935,16 +1117,16 @@ export default function IPDTab() {
                                         }} />
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
-                                        <span style={{ fontSize: '9px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
-                                        <span style={{ fontSize: '9px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
-                                        <span style={{ fontSize: '9px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
+                                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>ปกติ</span>
+                                        <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 600 }}>เตือน</span>
+                                        <span style={{ fontSize: '11px', color: '#f43f5e', fontWeight: 600 }}>วิกฤต</span>
                                     </div>
                                 </div>
                                 <div style={{ textAlign: 'center' }}>
                                     <div className="urgency-score-pulse" style={{ fontSize: '36px', fontWeight: 900, color: urgencyColor, lineHeight: 1, letterSpacing: '-0.03em' }}>
                                         {Math.round(urgencyScore)}<span style={{ fontSize: '16px', fontWeight: 700 }}>/10</span>
                                     </div>
-                                    <div style={{ fontSize: '10px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
+                                    <div style={{ fontSize: '11px', fontWeight: 700, color: urgencyColor, marginTop: '2px' }}>Urgency</div>
                                 </div>
                             </div>
 
@@ -970,7 +1152,7 @@ export default function IPDTab() {
                                                 {p.title}
                                             </span>
                                             <span style={{
-                                                marginLeft: 'auto', flexShrink: 0, fontSize: '9px', fontWeight: 700,
+                                                marginLeft: 'auto', flexShrink: 0, fontSize: '11px', fontWeight: 700,
                                                 textTransform: 'uppercase', letterSpacing: '0.08em',
                                                 padding: '3px 8px', borderRadius: '999px',
                                                 background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}25`,
@@ -981,7 +1163,7 @@ export default function IPDTab() {
 
                                         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(244,63,94,.03)', borderLeft: '3px solid #f43f5e' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f43f5e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     🔍 ปัญหาที่แท้จริง (Root Cause)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -989,7 +1171,7 @@ export default function IPDTab() {
                                                 </p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,.03)', borderLeft: '3px solid #f59e0b' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     ⚡ ผลกระทบลูกโซ่ (Cascade Effect)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -997,7 +1179,7 @@ export default function IPDTab() {
                                                 </p>
                                             </div>
                                             <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(124,58,237,.04)', borderLeft: '3px solid #7c3aed' }}>
-                                                <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     🔧 แก้ไขก่อน — ด่วนที่ {p.priority > 0 ? p.priority : '—'} (Fix First)
                                                 </p>
                                                 <p style={{ margin: 0, fontSize: '11.5px', color: 'var(--md-text-secondary)', lineHeight: 1.65, fontWeight: 500 }}>
@@ -1128,135 +1310,156 @@ export default function IPDTab() {
             </div>
 
             {/* ━━━━━━ AI Deep Readmission Risk ━━━━━━ */}
-            {(readmission?.patients?.filter(p => p.risk_level === 'high' || p.risk_level === 'moderate')?.length > 0) && (
-                <div className="chart-container" style={{ marginBottom: '1.5rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-                        <div>
-                            <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em', margin: 0 }}>
-                                🚨 รายชื่อผู้ป่วยเสี่ยง Re-admit (LACE+ & Comorbidity)
-                            </h3>
-                            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>
-                                ควบคุมคุณภาพการจำหน่าย (Discharge Planning & Follow-up Prevention)
-                            </p>
+            {(readmission?.patients?.filter(p => p.risk_level === 'high' || p.risk_level === 'moderate')?.length > 0) && (() => {
+                const riskyPatients = readmission.patients.filter(p => p.risk_level === 'high' || p.risk_level === 'moderate');
+                return (
+                    <div className="chart-container" style={{ marginBottom: '1.5rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showReadmitList ? '1.25rem' : '0' }}>
+                            <div>
+                                <h3 style={{ fontSize: 'var(--fs-md)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em', margin: 0 }}>
+                                    🚨 รายชื่อผู้ป่วยเสี่ยง Re-admit (LACE+ & Comorbidity)
+                                </h3>
+                                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>
+                                    ควบคุมคุณภาพการจำหน่าย (Discharge Planning & Follow-up Prevention)
+                                </p>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontSize: '11px', fontWeight: 700, color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '4px 10px', borderRadius: '6px' }}>
+                                    {riskyPatients.length} ราย
+                                </span>
+                                <button
+                                    onClick={() => setShowReadmitList(prev => !prev)}
+                                    style={{
+                                        fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                                        color: showReadmitList ? '#f43f5e' : '#7c3aed',
+                                        background: showReadmitList ? 'rgba(244,63,94,.08)' : 'rgba(124,58,237,.08)',
+                                        border: `1px solid ${showReadmitList ? 'rgba(244,63,94,.2)' : 'rgba(124,58,237,.2)'}`,
+                                        padding: '4px 12px', borderRadius: '6px',
+                                        display: 'flex', alignItems: 'center', gap: '4px',
+                                        transition: 'all .2s ease',
+                                    }}
+                                >
+                                    {showReadmitList ? '🔽 ซ่อนรายชื่อ' : '▶ แสดงรายชื่อ'}
+                                </button>
+                            </div>
                         </div>
-                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '4px 10px', borderRadius: '6px' }}>
-                            {readmission.patients.filter(p => p.risk_level === 'high' || p.risk_level === 'moderate').length} ราย
-                        </span>
-                    </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px' }}>
-                        {readmission.patients.filter(p => p.risk_level === 'high' || p.risk_level === 'moderate')
-                            .map((p, i) => (
-                                <div key={i} style={{
-                                    padding: '1rem', borderRadius: '12px',
-                                    background: p.risk_level === 'high' ? 'linear-gradient(to right, rgba(244,63,94,.05), transparent)' : 'linear-gradient(to right, rgba(245,158,11,.05), transparent)',
-                                    border: `1px solid ${p.risk_level === 'high' ? 'rgba(244,63,94,.2)' : 'rgba(245,158,11,.2)'}`,
-                                    position: 'relative',
-                                    display: 'flex', flexDirection: 'column',
-                                    gap: '10px'
-                                }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                        <div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{p.name}</span>
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
-                                                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)' }}>{Number(p.age || 0)} ปี · {p.ward}</span>
-                                                {p.drg && <span style={{ fontSize: '9px', fontWeight: 700, background: 'var(--md-bg-body)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--md-border)', color: 'var(--md-text-secondary)' }}>DRG: {p.drg}</span>}
-                                            </div>
-                                            <div style={{ marginTop: '4px' }}>
-                                                <span style={{ fontSize: '10px', color: 'var(--md-text-primary)' }}>
-                                                    <strong>อ.:</strong> {p.doctor || 'ไม่ระบุ'} <span style={{ opacity: 0.6 }}>({new Date(p.regdate).toLocaleDateString('th-TH')})</span>
-                                                </span>
-                                            </div>
-                                            <div style={{ marginTop: '2px' }}>
-                                                <span style={{ fontSize: '10px', color: 'var(--md-text-primary)' }}>
-                                                    <strong>Primary Dx:</strong> {p.dx_icd10} - {p.dx_name}
-                                                </span>
-                                            </div>
-                                            {p.comorbidity_count > 0 && (
-                                                <div style={{ marginTop: '2px', lineHeight: 1.3 }}>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-secondary)' }}>
-                                                        <strong>โรคร่วม:</strong> <span style={{ opacity: 0.85 }}>{p.comorbidity_details}</span>
+                        {showReadmitList && (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px', animation: 'fadeIn .3s ease' }}>
+                                {riskyPatients
+                                    .map((p, i) => (
+                                        <div key={i} style={{
+                                            padding: '1rem', borderRadius: '12px',
+                                            background: p.risk_level === 'high' ? 'linear-gradient(to right, rgba(244,63,94,.05), transparent)' : 'linear-gradient(to right, rgba(245,158,11,.05), transparent)',
+                                            border: `1px solid ${p.risk_level === 'high' ? 'rgba(244,63,94,.2)' : 'rgba(245,158,11,.2)'}`,
+                                            position: 'relative',
+                                            display: 'flex', flexDirection: 'column',
+                                            gap: '10px'
+                                        }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                                <div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                        <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{p.name}</span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>{Number(p.age || 0)} ปี · {p.ward}</span>
+                                                        {p.drg && <span style={{ fontSize: '11px', fontWeight: 700, background: 'var(--md-bg-body)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--md-border)', color: 'var(--md-text-secondary)' }}>DRG: {p.drg}</span>}
+                                                    </div>
+                                                    <div style={{ marginTop: '4px' }}>
+                                                        <span style={{ fontSize: '11px', color: 'var(--md-text-primary)' }}>
+                                                            <strong>อ.:</strong> {p.doctor || 'ไม่ระบุ'} <span style={{ opacity: 0.6 }}>({new Date(p.regdate).toLocaleDateString('th-TH')})</span>
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ marginTop: '2px' }}>
+                                                        <span style={{ fontSize: '11px', color: 'var(--md-text-primary)' }}>
+                                                            <strong>Primary Dx:</strong> {p.dx_icd10} - {p.dx_name}
+                                                        </span>
+                                                    </div>
+                                                    {p.comorbidity_count > 0 && (
+                                                        <div style={{ marginTop: '2px', lineHeight: 1.3 }}>
+                                                            <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)' }}>
+                                                                <strong>โรคร่วม:</strong> <span style={{ opacity: 0.85 }}>{p.comorbidity_details}</span>
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    {p.op_names && (
+                                                        <div style={{ marginTop: '2px' }}>
+                                                            <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)' }}>
+                                                                <strong>Oper:</strong> {p.op_names}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    {p.vitals && (
+                                                        <div style={{ marginTop: '2px', display: 'flex', gap: '6px', fontSize: '11px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
+                                                            <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>BP: {Math.round(p.vitals.bps || 0)}/{Math.round(p.vitals.bpd || 0)}</span>
+                                                            <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>PR: {Math.round(p.vitals.pulse || 0)}</span>
+                                                            <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px', color: (p.vitals.temperature >= 37.5) ? '#f43f5e' : 'inherit' }}>T: {p.vitals.temperature || '-'}°C</span>
+                                                            <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px', color: (p.vitals.o2sat < 95 && p.vitals.o2sat > 0) ? '#f43f5e' : 'inherit' }}>SpO2: {p.vitals.o2sat || '-'}%</span>
+                                                        </div>
+                                                    )}
+                                                    {p.labs && p.labs.length > 0 && (
+                                                        <div style={{ marginTop: '4px', display: 'flex', gap: '6px', fontSize: '11px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
+                                                            {p.labs.map((lab, i) => (
+                                                                <span key={`lab-${i}`} style={{ background: 'rgba(139,92,246,.08)', padding: '2px 6px', borderRadius: '4px', color: '#7c3aed', fontWeight: 600, border: '1px solid rgba(139,92,246,.15)' }}>{lab}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div style={{ textAlign: 'right' }}>
+                                                    <span style={{
+                                                        fontSize: '11px', fontWeight: 800, color: p.risk_level === 'high' ? '#f43f5e' : '#f59e0b',
+                                                        background: p.risk_level === 'high' ? 'rgba(244,63,94,.1)' : 'rgba(245,158,11,.1)', padding: '2px 8px', borderRadius: '99px',
+                                                        whiteSpace: 'nowrap'
+                                                    }}>
+                                                        LACE+ {p.total_score} ({p.risk_pct}%)
                                                     </span>
                                                 </div>
-                                            )}
-                                            {p.op_names && (
-                                                <div style={{ marginTop: '2px' }}>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-secondary)' }}>
-                                                        <strong>Oper:</strong> {p.op_names}
+                                            </div>
+
+                                            {/* Deep Reasons */}
+                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                {p.los > 3 && (
+                                                    <span style={{ fontSize: '11px', color: '#6366f1', background: 'rgba(99,102,241,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(99,102,241,.2)', fontWeight: 600 }}>
+                                                        L - นอนนาน {p.los} วัน
                                                     </span>
-                                                </div>
-                                            )}
-                                            {p.vitals && (
-                                                <div style={{ marginTop: '2px', display: 'flex', gap: '6px', fontSize: '9px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
-                                                    <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>BP: {Math.round(p.vitals.bps || 0)}/{Math.round(p.vitals.bpd || 0)}</span>
-                                                    <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>PR: {Math.round(p.vitals.pulse || 0)}</span>
-                                                    <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px', color: (p.vitals.temperature >= 37.5) ? '#f43f5e' : 'inherit' }}>T: {p.vitals.temperature || '-'}°C</span>
-                                                    <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px', color: (p.vitals.o2sat < 95 && p.vitals.o2sat > 0) ? '#f43f5e' : 'inherit' }}>SpO2: {p.vitals.o2sat || '-'}%</span>
-                                                </div>
-                                            )}
-                                            {p.labs && p.labs.length > 0 && (
-                                                <div style={{ marginTop: '4px', display: 'flex', gap: '6px', fontSize: '9px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
-                                                    {p.labs.map((lab, i) => (
-                                                        <span key={`lab-${i}`} style={{ background: 'rgba(139,92,246,.08)', padding: '2px 6px', borderRadius: '4px', color: '#7c3aed', fontWeight: 600, border: '1px solid rgba(139,92,246,.15)' }}>{lab}</span>
+                                                )}
+                                                {p.er_visits_6m > 0 && (
+                                                    <span style={{ fontSize: '11px', color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(244,63,94,.2)', fontWeight: 600 }}>
+                                                        A - เข้า ER {p.er_visits_6m} ครั้ง (6 ด.)
+                                                    </span>
+                                                )}
+                                                {p.comorbidity_count > 0 && (
+                                                    <span style={{ fontSize: '11px', color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(245,158,11,.2)', fontWeight: 600 }}>
+                                                        C - โรคร่วม {p.comorbidity_count} โรค
+                                                    </span>
+                                                )}
+                                                {p.rw > 1.5 && (
+                                                    <span style={{ fontSize: '11px', color: '#8b5cf6', background: 'rgba(139,92,246,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(139,92,246,.2)', fontWeight: 600 }}>
+                                                        RW สูง ({Number(p.rw || 0).toFixed(2)})
+                                                    </span>
+                                                )}
+                                                {p.age >= 70 && (
+                                                    <span style={{ fontSize: '11px', color: '#64748b', background: 'rgba(100,116,139,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(100,116,139,.2)', fontWeight: 600 }}>
+                                                        วัยผู้สูงอายุ
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '8px 10px', background: 'var(--md-surface)', borderRadius: '6px', border: '1px solid var(--md-border)' }}>
+                                                <span style={{ fontSize: '13px', paddingTop: '1px' }}>💡</span>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                    {p.recommendation.split(' | ').map((rec, i) => (
+                                                        <span key={i} style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-primary)' }}>{rec}</span>
                                                     ))}
                                                 </div>
-                                            )}
+                                            </div>
                                         </div>
-                                        <div style={{ textAlign: 'right' }}>
-                                            <span style={{
-                                                fontSize: '11px', fontWeight: 800, color: p.risk_level === 'high' ? '#f43f5e' : '#f59e0b',
-                                                background: p.risk_level === 'high' ? 'rgba(244,63,94,.1)' : 'rgba(245,158,11,.1)', padding: '2px 8px', borderRadius: '99px',
-                                                whiteSpace: 'nowrap'
-                                            }}>
-                                                LACE+ {p.total_score} ({p.risk_pct}%)
-                                            </span>
-                                        </div>
-                                    </div>
-
-                                    {/* Deep Reasons */}
-                                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                        {p.los > 3 && (
-                                            <span style={{ fontSize: '10px', color: '#6366f1', background: 'rgba(99,102,241,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(99,102,241,.2)', fontWeight: 600 }}>
-                                                L - นอนนาน {p.los} วัน
-                                            </span>
-                                        )}
-                                        {p.er_visits_6m > 0 && (
-                                            <span style={{ fontSize: '10px', color: '#f43f5e', background: 'rgba(244,63,94,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(244,63,94,.2)', fontWeight: 600 }}>
-                                                A - เข้า ER {p.er_visits_6m} ครั้ง (6 ด.)
-                                            </span>
-                                        )}
-                                        {p.comorbidity_count > 0 && (
-                                            <span style={{ fontSize: '10px', color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(245,158,11,.2)', fontWeight: 600 }}>
-                                                C - โรคร่วม {p.comorbidity_count} โรค
-                                            </span>
-                                        )}
-                                        {p.rw > 1.5 && (
-                                            <span style={{ fontSize: '10px', color: '#8b5cf6', background: 'rgba(139,92,246,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(139,92,246,.2)', fontWeight: 600 }}>
-                                                RW สูง ({Number(p.rw || 0).toFixed(2)})
-                                            </span>
-                                        )}
-                                        {p.age >= 70 && (
-                                            <span style={{ fontSize: '10px', color: '#64748b', background: 'rgba(100,116,139,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(100,116,139,.2)', fontWeight: 600 }}>
-                                                วัยผู้สูงอายุ
-                                            </span>
-                                        )}
-                                    </div>
-
-                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '8px 10px', background: 'var(--md-surface)', borderRadius: '6px', border: '1px solid var(--md-border)' }}>
-                                        <span style={{ fontSize: '13px', paddingTop: '1px' }}>💡</span>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                            {p.recommendation.split(' | ').map((rec, i) => (
-                                                <span key={i} style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-primary)' }}>{rec}</span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
+                                    ))}
+                            </div>
+                        )}
                     </div>
-                </div>
-            )}
+                );
+            })()}
 
             {/* ━━━━━━ AI Deep Overstay Predictor ━━━━━━ */}
             {(losPrediction?.patients?.filter(p => p.status === 'over_stay' || p.status === 'at_risk')?.length > 0) && (
@@ -1292,23 +1495,23 @@ export default function IPDTab() {
                                                 <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)' }}>{p.name}</span>
                                             </div>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
-                                                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)' }}>{Number(p.age || 0)} ปี · {p.ward}</span>
-                                                {p.drg && <span style={{ fontSize: '9px', fontWeight: 700, background: 'var(--md-bg-body)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--md-border)', color: 'var(--md-text-secondary)' }}>DRG: {p.drg}</span>}
+                                                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>{Number(p.age || 0)} ปี · {p.ward}</span>
+                                                {p.drg && <span style={{ fontSize: '11px', fontWeight: 700, background: 'var(--md-bg-body)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--md-border)', color: 'var(--md-text-secondary)' }}>DRG: {p.drg}</span>}
                                             </div>
                                             <div style={{ marginTop: '4px' }}>
-                                                <span style={{ fontSize: '10px', color: 'var(--md-text-primary)' }}>
+                                                <span style={{ fontSize: '11px', color: 'var(--md-text-primary)' }}>
                                                     <strong>Dx:</strong> {p.dx_icd10} - {p.dx_name}
                                                 </span>
                                             </div>
                                             {p.op_names && (
                                                 <div style={{ marginTop: '2px' }}>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-secondary)' }}>
+                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)' }}>
                                                         <strong>Oper:</strong> {p.op_names}
                                                     </span>
                                                 </div>
                                             )}
                                             {p.vitals && (
-                                                <div style={{ marginTop: '2px', display: 'flex', gap: '6px', fontSize: '9px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
+                                                <div style={{ marginTop: '2px', display: 'flex', gap: '6px', fontSize: '11px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
                                                     <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>BP: {Math.round(p.vitals.bps || 0)}/{Math.round(p.vitals.bpd || 0)}</span>
                                                     <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px' }}>PR: {Math.round(p.vitals.pulse || 0)}</span>
                                                     <span style={{ background: 'var(--md-bg-body)', padding: '1px 4px', borderRadius: '3px', color: (p.vitals.temperature >= 37.5) ? '#f43f5e' : 'inherit' }}>T: {p.vitals.temperature || '-'}°C</span>
@@ -1316,7 +1519,7 @@ export default function IPDTab() {
                                                 </div>
                                             )}
                                             {p.labs && p.labs.length > 0 && (
-                                                <div style={{ marginTop: '4px', display: 'flex', gap: '6px', fontSize: '9px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
+                                                <div style={{ marginTop: '4px', display: 'flex', gap: '6px', fontSize: '11px', color: 'var(--md-text-tertiary)', flexWrap: 'wrap' }}>
                                                     {p.labs.map((lab, i) => (
                                                         <span key={`lab-${i}`} style={{ background: 'rgba(139,92,246,.08)', padding: '2px 6px', borderRadius: '4px', color: '#7c3aed', fontWeight: 600, border: '1px solid rgba(139,92,246,.15)' }}>{lab}</span>
                                                     ))}
@@ -1337,22 +1540,22 @@ export default function IPDTab() {
                                     {/* Deep Reasons */}
                                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                         {p.gap >= 0 && (
-                                            <span style={{ fontSize: '10px', color: p.status === 'over_stay' ? '#f43f5e' : '#f59e0b', background: p.status === 'over_stay' ? 'rgba(244,63,94,.1)' : 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: `1px solid ${p.status === 'over_stay' ? 'rgba(244,63,94,.2)' : 'rgba(245,158,11,.2)'}`, fontWeight: 600 }}>
+                                            <span style={{ fontSize: '11px', color: p.status === 'over_stay' ? '#f43f5e' : '#f59e0b', background: p.status === 'over_stay' ? 'rgba(244,63,94,.1)' : 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: `1px solid ${p.status === 'over_stay' ? 'rgba(244,63,94,.2)' : 'rgba(245,158,11,.2)'}`, fontWeight: 600 }}>
                                                 เกินกำหนด {Number(p.gap || 0).toFixed(1)} วัน
                                             </span>
                                         )}
                                         {p.comorbidity_count > 0 && (
-                                            <span style={{ fontSize: '10px', color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(245,158,11,.2)', fontWeight: 600 }}>
+                                            <span style={{ fontSize: '11px', color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(245,158,11,.2)', fontWeight: 600 }}>
                                                 C - โรคร่วม {p.comorbidity_count} โรค
                                             </span>
                                         )}
                                         {p.rw > 1.5 && (
-                                            <span style={{ fontSize: '10px', color: '#8b5cf6', background: 'rgba(139,92,246,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(139,92,246,.2)', fontWeight: 600 }}>
+                                            <span style={{ fontSize: '11px', color: '#8b5cf6', background: 'rgba(139,92,246,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(139,92,246,.2)', fontWeight: 600 }}>
                                                 RW สูง ({Number(p.rw || 0).toFixed(2)})
                                             </span>
                                         )}
                                         {p.age >= 70 && (
-                                            <span style={{ fontSize: '10px', color: '#64748b', background: 'rgba(100,116,139,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(100,116,139,.2)', fontWeight: 600 }}>
+                                            <span style={{ fontSize: '11px', color: '#64748b', background: 'rgba(100,116,139,.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(100,116,139,.2)', fontWeight: 600 }}>
                                                 วัยผู้สูงอายุ
                                             </span>
                                         )}
@@ -1380,7 +1583,7 @@ export default function IPDTab() {
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
                     💰 รายได้โดยประมาณ IPD — ปีงบประมาณ (3 ปีย้อนหลัง)
                 </span>
-                <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(139,92,246,.08)', padding: '2px 8px', borderRadius: '99px' }}>an_stat · HOSxP XE</span>
+                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(139,92,246,.08)', padding: '2px 8px', borderRadius: '99px' }}>an_stat · HOSxP XE</span>
             </div>
 
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
@@ -1427,17 +1630,17 @@ export default function IPDTab() {
                                         }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                                                 <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color }} />
-                                                <span style={{ fontSize: '10px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                                <span style={{ fontSize: '11px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                                     {fy.fiscal_label}
                                                 </span>
                                                 {isLatest && (
-                                                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#7c3aed', background: 'rgba(124,58,237,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>
+                                                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#7c3aed', background: 'rgba(124,58,237,.1)', padding: '1px 6px', borderRadius: '99px', marginLeft: 'auto' }}>ปัจจุบัน</span>
                                                 )}
                                             </div>
                                             <p style={{ fontSize: '22px', fontWeight: 900, color, margin: '0 0 2px', letterSpacing: '-0.02em' }}>
                                                 ฿{(fy.total_revenue / 1e6).toFixed(1)}M
                                             </p>
-                                            <p style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
+                                            <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_cases.toLocaleString()} cases · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_case.toLocaleString()}/case
                                             </p>
                                             {isLatest && prevYear && (
@@ -1445,7 +1648,7 @@ export default function IPDTab() {
                                                     <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
                                                         {yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%
                                                     </span>
-                                                    <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
                                                         vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)
                                                     </span>
                                                 </div>
@@ -1495,6 +1698,206 @@ export default function IPDTab() {
                 })()}
             </div>
 
+            {/* ══════════════════════════════════════════════════════
+                📅 BED FLOW GANTT CHART — 14 วันย้อนหลัง
+            ══════════════════════════════════════════════════════ */}
+            <BedFlowChart
+                data={state.bedFlow}
+                loading={loading.bedFlow}
+            />
+
+            {/* ══════════════════════════════════════════════════════
+                📋 DISCHARGE PLANNING BOARD — วันนี้ / พรุ่งนี้
+            ══════════════════════════════════════════════════════ */}
+            <DischargePlanningBoard
+                data={state.dischargePlanning}
+                loading={loading.dischargePlanning}
+            />
+
         </div>
     );
 }
+
+// ─── Bed Flow Gantt Chart ─────────────────────────────────────────────────────
+function BedFlowChart({ data, loading }) {
+    const [activeWard, setActiveWard] = React.useState('all');
+
+    if (loading) {
+        return (
+            <div style={{ marginTop: '24px', padding: '20px', background: 'var(--md-surface-1)', borderRadius: '14px', border: '1px solid var(--md-border)' }}>
+                <div style={{ height: '20px', width: '200px', background: 'var(--md-surface-2)', borderRadius: '6px', marginBottom: '14px' }} />
+                <div style={{ height: '180px', background: 'var(--md-surface-2)', borderRadius: '10px' }} />
+            </div>
+        );
+    }
+    if (!data?.flow?.length) return null;
+
+    const wards = ['all', ...(data.wards || [])];
+    const wardNames = {};
+    data.flow.forEach(f => { wardNames[f.ward] = f.ward_name || f.ward; });
+
+    const filtered = activeWard === 'all' ? data.flow : data.flow.filter(f => f.ward === activeWard);
+
+    // Group by date, sum across selected wards
+    const byDate = {};
+    filtered.forEach(f => {
+        if (!byDate[f.date]) byDate[f.date] = { date: f.date, admissions: 0, discharges: 0 };
+        byDate[f.date].admissions += f.admissions;
+        byDate[f.date].discharges += f.discharges;
+    });
+    const chartData = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
+        ...d,
+        label: new Date(d.date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
+        net: d.admissions - d.discharges,
+    }));
+
+    return (
+        <div style={{ marginTop: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                <div style={{ width: '4px', height: '28px', background: 'linear-gradient(180deg,#0ea5e9,#6366f1)', borderRadius: '2px' }} />
+                <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: 'var(--md-text-primary)' }}>📊 Bed Flow — 14 วันย้อนหลัง</h3>
+                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>Admit vs Discharge per Ward · HOSxP XE</span>
+                </div>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {wards.slice(0, 6).map(w => (
+                        <button key={w} onClick={() => setActiveWard(w)} style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, border: 'none', cursor: 'pointer', background: activeWard === w ? '#6366f1' : 'var(--md-surface-2)', color: activeWard === w ? '#fff' : 'var(--md-text-secondary)', transition: 'all 0.15s' }}>
+                            {w === 'all' ? 'ทุกวอร์ด' : (wardNames[w] || w)}
+                        </button>
+                    ))}
+                </div>
+            </div>
+            <div style={{ background: 'var(--md-surface-2)', borderRadius: '14px', border: '1px solid var(--md-border)', padding: '16px' }}>
+                <ResponsiveContainer width="100%" height={200}>
+                    <ComposedChart data={chartData} margin={{ top: 4, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--md-border)" />
+                        <XAxis dataKey="label" tick={{ fill: 'var(--md-text-tertiary)', fontSize: 10 }} />
+                        <YAxis tick={{ fill: 'var(--md-text-tertiary)', fontSize: 10 }} />
+                        <Tooltip
+                            contentStyle={{ background: 'var(--md-surface-1)', border: '1px solid var(--md-border)', borderRadius: '8px', fontSize: '11px' }}
+                            formatter={(v, n) => [`${v} ราย`, n === 'admissions' ? 'รับใหม่' : n === 'discharges' ? 'จำหน่าย' : 'Net Flow']}
+                        />
+                        <Legend wrapperStyle={{ fontSize: '10px' }} formatter={v => v === 'admissions' ? 'รับใหม่' : v === 'discharges' ? 'จำหน่าย' : 'Net'} />
+                        <Bar dataKey="admissions" fill="#6366f1" fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="discharges" fill="#10b981" fillOpacity={0.8} radius={[3, 3, 0, 0]} />
+                        <Line type="monotone" dataKey="net" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                    </ComposedChart>
+                </ResponsiveContainer>
+                <div style={{ display: 'flex', gap: '16px', marginTop: '10px', justifyContent: 'center' }}>
+                    {[
+                        { label: 'รวมรับ 14 วัน', value: chartData.reduce((s, d) => s + d.admissions, 0), color: '#6366f1' },
+                        { label: 'รวมจำหน่าย 14 วัน', value: chartData.reduce((s, d) => s + d.discharges, 0), color: '#10b981' },
+                        { label: 'Net (รับ - จำหน่าย)', value: chartData.reduce((s, d) => s + d.net, 0), color: '#f59e0b' },
+                    ].map((s, i) => (
+                        <div key={i} style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '18px', fontWeight: 900, color: s.color }}>{s.value >= 0 ? '+' : ''}{s.value}</div>
+                            <div style={{ fontSize: '10px', color: 'var(--md-text-tertiary)' }}>{s.label}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Discharge Planning Board ─────────────────────────────────────────────────
+function DischargePlanningBoard({ data, loading }) {
+    const [filter, setFilter] = React.useState('all');
+
+    if (loading) {
+        return (
+            <div style={{ marginTop: '24px', marginBottom: '32px', padding: '20px', background: 'var(--md-surface-1)', borderRadius: '14px', border: '1px solid var(--md-border)' }}>
+                <div style={{ height: '20px', width: '240px', background: 'var(--md-surface-2)', borderRadius: '6px', marginBottom: '14px' }} />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '8px' }}>
+                    {[1, 2, 3].map(i => <div key={i} style={{ height: '60px', background: 'var(--md-surface-2)', borderRadius: '10px' }} />)}
+                </div>
+            </div>
+        );
+    }
+    if (!data) return null;
+
+    const { today_count = 0, tomorrow_count = 0, total = 0, patients = [] } = data;
+    const filtered = filter === 'all' ? patients : patients.filter(p => p.discharge_window === filter);
+
+    const windowColor = { today: '#f43f5e', tomorrow: '#f59e0b', upcoming: '#10b981' };
+    const windowLabel = { today: 'วันนี้', tomorrow: 'พรุ่งนี้', upcoming: 'กำลังมา' };
+
+    return (
+        <div style={{ marginTop: '24px', marginBottom: '32px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                <div style={{ width: '4px', height: '28px', background: 'linear-gradient(180deg,#10b981,#0ea5e9)', borderRadius: '2px' }} />
+                <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: 'var(--md-text-primary)' }}>📋 Discharge Planning Board</h3>
+                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)' }}>คาดการณ์จาก adjRW × 4d — ผู้ป่วยที่น่าจะจำหน่ายวันนี้/พรุ่งนี้</span>
+                </div>
+            </div>
+
+            {/* Summary KPIs */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '10px', marginBottom: '16px' }}>
+                {[
+                    { label: 'จำหน่ายวันนี้', value: today_count, color: '#f43f5e', key: 'today' },
+                    { label: 'จำหน่ายพรุ่งนี้', value: tomorrow_count, color: '#f59e0b', key: 'tomorrow' },
+                    { label: 'รวมทั้งหมด', value: total, color: '#10b981', key: 'all' },
+                ].map((k, i) => (
+                    <button key={i} onClick={() => setFilter(k.key)} style={{ padding: '14px', background: filter === k.key ? `${k.color}15` : 'var(--md-surface-2)', border: `1px solid ${filter === k.key ? k.color : 'var(--md-border)'}`, borderTop: `3px solid ${k.color}`, borderRadius: '12px', cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '4px' }}>{k.label}</div>
+                        <div style={{ fontSize: '24px', fontWeight: 900, color: k.color }}>{k.value}</div>
+                        <div style={{ fontSize: '10px', color: 'var(--md-text-tertiary)' }}>ราย</div>
+                    </button>
+                ))}
+            </div>
+
+            {/* Patient table */}
+            {filtered.length === 0 ? (
+                <div style={{ padding: '32px', textAlign: 'center', background: 'var(--md-surface-2)', borderRadius: '12px', border: '1px solid var(--md-border)' }}>
+                    <div style={{ fontSize: '24px', marginBottom: '8px' }}>✅</div>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--md-text-secondary)' }}>ไม่มีผู้ป่วยที่คาดว่าจะจำหน่ายในช่วงนี้</div>
+                </div>
+            ) : (
+                <div style={{ background: 'var(--md-surface-2)', borderRadius: '14px', border: '1px solid var(--md-border)', overflow: 'hidden' }}>
+                    <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                            <thead>
+                                <tr style={{ borderBottom: '1px solid var(--md-border)', background: 'var(--md-surface-1)' }}>
+                                    {['ผู้ป่วย', 'Ward', 'รับวันที่', 'LOS ปัจจุบัน', 'คาดจำหน่าย', 'adjRW', 'แพทย์', 'สถานะ'].map(h => (
+                                        <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 700, color: 'var(--md-text-tertiary)', fontSize: '10px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filtered.slice(0, 20).map((p, i) => {
+                                    const wColor = windowColor[p.discharge_window] || '#64748b';
+                                    const expectedDate = p.expected_discharge ? new Date(p.expected_discharge).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }) : '—';
+                                    const admitDate = p.regdate ? new Date(p.regdate).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }) : '—';
+                                    return (
+                                        <tr key={i} style={{ borderBottom: '1px solid var(--md-border)', background: i % 2 === 0 ? 'transparent' : 'rgba(0,0,0,0.01)' }}>
+                                            <td style={{ padding: '9px 12px', fontWeight: 600 }}>{p.patient_name || `HN ${p.hn}`}</td>
+                                            <td style={{ padding: '9px 12px', color: 'var(--md-text-secondary)' }}>{p.ward}</td>
+                                            <td style={{ padding: '9px 12px', color: 'var(--md-text-tertiary)' }}>{admitDate}</td>
+                                            <td style={{ padding: '9px 12px', fontWeight: 700, color: p.current_los > p.expected_los ? '#f43f5e' : 'var(--md-text-primary)' }}>{p.current_los} วัน</td>
+                                            <td style={{ padding: '9px 12px', fontWeight: 700 }}>{expectedDate}</td>
+                                            <td style={{ padding: '9px 12px', color: '#8b5cf6', fontWeight: 700 }}>{Number(p.rw).toFixed(2)}</td>
+                                            <td style={{ padding: '9px 12px', color: 'var(--md-text-tertiary)', fontSize: '11px', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.doctor_name || '—'}</td>
+                                            <td style={{ padding: '9px 12px' }}>
+                                                <span style={{ background: `${wColor}15`, color: wColor, border: `1px solid ${wColor}40`, borderRadius: '99px', padding: '2px 8px', fontSize: '10px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                                    {windowLabel[p.discharge_window] || '—'}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                    {filtered.length > 20 && (
+                        <div style={{ padding: '8px 16px', textAlign: 'center', fontSize: '11px', color: 'var(--md-text-tertiary)', borderTop: '1px solid var(--md-border)' }}>
+                            แสดง 20 จาก {filtered.length} ราย
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default React.memo(IPDTab);

@@ -68,18 +68,18 @@ const VIEW_DEFINITIONS = [
         refreshIntervalMs: 15 * 60 * 1000,  // Every 15 minutes
         sql: `
             SELECT 
-                DATE_FORMAT(o.vstdate, '%Y-%m') as month,
-                YEAR(o.vstdate) as yr,
-                MONTH(o.vstdate) as mo,
+                DATE_FORMAT(v.vstdate, '%Y-%m') as month,
+                YEAR(v.vstdate) as yr,
+                MONTH(v.vstdate) as mo,
                 k.depcode,
                 k.department as dept_name,
-                COUNT(DISTINCT o.vn) as visit_count,
-                COUNT(DISTINCT o.hn) as patient_count,
+                COUNT(DISTINCT v.vn) as visit_count,
+                COUNT(DISTINCT v.hn) as patient_count,
                 SUM(v.income) as revenue
-            FROM ovst o
-            INNER JOIN vn_stat v ON o.vn = v.vn
+            FROM vn_stat v FORCE INDEX (idx_vnstat_vstdate_income)
+            STRAIGHT_JOIN ovst o ON v.vn = o.vn
             INNER JOIN kskdepartment k ON o.main_dep = k.depcode
-            WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
               AND v.income > 0
             GROUP BY month, yr, mo, k.depcode, k.department
             ORDER BY month DESC, revenue DESC
@@ -132,13 +132,13 @@ const VIEW_DEFINITIONS = [
                     ELSE NULL END), 1) as avg_wait_min,
                 SUM(CASE WHEN st.service7 IS NOT NULL OR r.bill_time IS NOT NULL THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN st.service7 IS NULL AND r.bill_time IS NULL THEN 1 ELSE 0 END) as waiting
-            FROM ovst o
+            FROM ovst o FORCE INDEX (ix_vstdate)
             LEFT JOIN service_time st ON o.vn = st.vn
             LEFT JOIN rcpt_print r ON o.vn = r.vn
             WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
               AND o.vsttime IS NOT NULL
             GROUP BY o.vstdate, HOUR(o.vsttime)
-            ORDER BY o.vstdate DESC, hour
+            ORDER BY o.vstdate DESC, hour DESC
         `
     },
 
@@ -269,15 +269,15 @@ const VIEW_DEFINITIONS = [
         sql: `
             SELECT 
                 d.icd10 as code,
-                icd.tname as name,
+                MAX(icd.tname) as name,
                 COUNT(*) as cases,
                 COUNT(DISTINCT d.vn) as visits,
                 MONTH(d.vstdate) as mo,
                 YEAR(d.vstdate) as yr
             FROM ovstdiag d
             LEFT JOIN icd101 icd ON d.icd10 = icd.code
-            WHERE d.vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-            GROUP BY d.icd10, icd.tname, MONTH(d.vstdate), YEAR(d.vstdate)
+            WHERE d.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            GROUP BY d.icd10, MONTH(d.vstdate), YEAR(d.vstdate)
             ORDER BY cases DESC
             LIMIT 200
         `
@@ -293,7 +293,8 @@ async function refreshView(viewDef) {
     };
 
     try {
-        const rows = await dbQuery(viewDef.sql);
+        // MV refreshes are background tasks → use 25s timeout instead of default 10s
+        const rows = await dbQuery(viewDef.sql, [], { timeoutMs: 25000 });
         MV_STORE[viewDef.name] = rows;
 
         const duration = Date.now() - startTime;
@@ -345,8 +346,8 @@ export async function initMaterializedViews() {
 
     // Phase 2: Set up periodic refresh with jitter
     for (const vd of VIEW_DEFINITIONS) {
-        // Add random jitter (±10%) to prevent all views refreshing simultaneously
-        const jitter = vd.refreshIntervalMs * (0.9 + Math.random() * 0.2);
+        // Add random jitter (up to +50%) to spread refreshes and prevent thundering herd
+        const jitter = vd.refreshIntervalMs + (Math.random() * vd.refreshIntervalMs * 0.5);
         const timer = setInterval(() => refreshView(vd), jitter);
         timers.push(timer);
     }
