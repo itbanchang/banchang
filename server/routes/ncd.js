@@ -26,42 +26,15 @@ router.get('/today', cached('ncdToday', 30000, async () => {
         dbQueryOne(`SELECT COUNT(CASE WHEN v.income > 0 THEN 1 END) as completed
       FROM ovst o LEFT JOIN vn_stat v ON v.vn = o.vn
       WHERE o.vstdate = CURDATE() AND o.main_dep = '024'`).catch(() => null),
-        // Disease breakdown: use today's dx if coded, else look up patient's historical NCD dx (last 365 days)
+        // Disease breakdown: look up patient's historical NCD dx (last 365 days)
+        // since today's visits are usually not yet coded
         dbQuery(`SELECT
-        CASE WHEN dx.icd10 LIKE 'E1%' THEN 'DM'
-             WHEN dx.icd10 LIKE 'I1%' THEN 'HT'
-             WHEN dx.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
-             WHEN dx.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
-             WHEN dx.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
-             WHEN dx.icd10 LIKE 'N18%' THEN 'CKD'
-             ELSE 'Other' END as disease,
-        COUNT(DISTINCT o.vn) as visits, COUNT(DISTINCT o.hn) as patients
-      FROM ovst o
-      LEFT JOIN ovstdiag od_today ON o.vn = od_today.vn AND ${NCD_ICD_WHERE.replace(/od\./g, 'od_today.')}
-      LEFT JOIN (
-        SELECT DISTINCT prev_od.hn, prev_diag.icd10
-        FROM ovst prev_od
-        INNER JOIN ovstdiag prev_diag ON prev_od.vn = prev_diag.vn
-        WHERE prev_od.vstdate >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
-          AND prev_od.main_dep = '024'
-          AND (prev_diag.icd10 LIKE 'E1%' OR prev_diag.icd10 LIKE 'I1%'
-            OR prev_diag.icd10 BETWEEN 'I20' AND 'I259' OR prev_diag.icd10 BETWEEN 'I60' AND 'I699'
-            OR prev_diag.icd10 BETWEEN 'J40' AND 'J479' OR prev_diag.icd10 LIKE 'N18%')
-      ) hist ON o.hn = hist.hn
-      CROSS JOIN LATERAL (
-        SELECT COALESCE(od_today.icd10, hist.icd10) as icd10
-      ) dx
-      WHERE o.vstdate = CURDATE() AND o.main_dep = '024'
-        AND dx.icd10 IS NOT NULL
-      GROUP BY disease ORDER BY visits DESC`).catch(() =>
-        // Fallback: if LATERAL not supported, use simple historical lookup
-        dbQuery(`SELECT
-          CASE WHEN prev_diag.icd10 LIKE 'E1%' THEN 'DM'
-               WHEN prev_diag.icd10 LIKE 'I1%' THEN 'HT'
-               WHEN prev_diag.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
-               WHEN prev_diag.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
-               WHEN prev_diag.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
-               WHEN prev_diag.icd10 LIKE 'N18%' THEN 'CKD'
+          CASE WHEN hist.icd10 LIKE 'E1%' THEN 'DM'
+               WHEN hist.icd10 LIKE 'I1%' THEN 'HT'
+               WHEN hist.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
+               WHEN hist.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
+               WHEN hist.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
+               WHEN hist.icd10 LIKE 'N18%' THEN 'CKD'
                ELSE 'Other' END as disease,
           COUNT(DISTINCT o.vn) as visits, COUNT(DISTINCT o.hn) as patients
         FROM ovst o
@@ -74,10 +47,9 @@ router.get('/today', cached('ncdToday', 30000, async () => {
             AND (pd.icd10 LIKE 'E1%' OR pd.icd10 LIKE 'I1%'
               OR pd.icd10 BETWEEN 'I20' AND 'I259' OR pd.icd10 BETWEEN 'I60' AND 'I699'
               OR pd.icd10 BETWEEN 'J40' AND 'J479' OR pd.icd10 LIKE 'N18%')
-        ) prev_diag ON o.hn = prev_diag.hn
+        ) hist ON o.hn = hist.hn
         WHERE o.vstdate = CURDATE() AND o.main_dep = '024'
-        GROUP BY disease ORDER BY visits DESC`).catch(() => [])
-      ),
+        GROUP BY disease ORDER BY visits DESC`).catch(() => []),
         dbQuery(`SELECT HOUR(o.vsttime) as hr, COUNT(DISTINCT o.vn) as cnt FROM ovst o
       WHERE o.vstdate = CURDATE() AND o.main_dep = '024' AND o.vsttime IS NOT NULL
       GROUP BY HOUR(o.vsttime) ORDER BY hr`).catch(() => []),
