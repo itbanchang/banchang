@@ -1,38 +1,25 @@
 // ============================================================
-// BCH 360° Intelligence V.10 — Ultra Smart AI Assistant Widget
+// BCH 360° Intelligence V.10 — น้องขวัญใจ AI Assistant
 // AI Live Telemetry & Micro-animations
 // Context-Aware with Dynamic Phrases & Clinical Insights
 // ============================================================
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 
-const STATIC_PHRASES = [
-    "ระบบพยากรณ์พร้อมทำงาน 100% ครับ มีอะไรให้ผมช่วยวิเคราะห์ไหม?",
-    "ผมกำลังประมวลผลข้อมูล HOSxP XE แบบ Real-time ครับ"
+const GREETINGS = [
+    "สวัสดีค่ะ ขวัญใจพร้อมดูแลข้อมูลให้แล้วค่ะ",
+    "กำลังวิเคราะห์ข้อมูล Real-time จาก HOSxP XE ค่ะ",
+    "วันนี้ขวัญใจจะช่วยเฝ้าระวังทุกตัวชี้วัดให้นะคะ",
 ];
 
-const AIAssistant = React.memo(function AIAssistant() {
+const KAWAII_FACES = ['(◕‿◕)', '(◠‿◠)', '(◕ᴗ◕)', '(⁎ᵕᴗᵕ⁎)'];
+
+const AIAssistant = React.memo(function AIAssistant({ clinicalData = null }) {
     const [phraseIndex, setPhraseIndex] = useState(0);
     const [isThinking, setIsThinking] = useState(false);
     const [expanded, setExpanded] = useState(false);
-    const [clinicalData, setClinicalData] = useState(null);
+    const [faceIndex, setFaceIndex] = useState(0);
+    const [bounceKey, setBounceKey] = useState(0);
 
-    // Fetch clinical insights on mount and every 2 minutes
-    const fetchClinical = useCallback(async () => {
-        try {
-            const res = await fetch('/api/ai/clinical-insights', { credentials: 'include' });
-            if (res.ok) setClinicalData(await res.json());
-        } catch {
-            // Silently ignore fetch errors
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchClinical();
-        const interval = setInterval(fetchClinical, 120000);
-        return () => clearInterval(interval);
-    }, [fetchClinical]);
-
-    // Extract counts from nested structure: {doctor:[], nurse:[], admin:[], summary:{}}
     const counts = useMemo(() => {
         if (!clinicalData) return { sepsis: 0, deterioration: 0, labs: 0, fallRisk: 0, monitorGaps: 0, criticalWards: 0, totalInsights: 0, criticalCount: 0 };
         const doc = clinicalData.doctor || [];
@@ -51,176 +38,270 @@ const AIAssistant = React.memo(function AIAssistant() {
         };
     }, [clinicalData]);
 
-    // Generate dynamic phrases from real data
     const dynamicPhrases = useMemo(() => {
-        const phrases = [...STATIC_PHRASES];
-        if (counts.sepsis > 0) phrases.push(`ตรวจพบผู้ป่วยเสี่ยง Sepsis ${counts.sepsis} ราย กรุณาเฝ้าระวังอย่างใกล้ชิด`);
-        if (counts.deterioration > 0) phrases.push(`แจ้งเตือน: ผู้ป่วย ${counts.deterioration} ราย มีแนวโน้มอาการทรุดลง`);
-        if (counts.labs > 0) phrases.push(`พบผล Lab วิกฤต ${counts.labs} รายการ รอแพทย์ตรวจสอบ`);
-        if (counts.fallRisk > 0) phrases.push(`ผู้ป่วยเสี่ยงล้ม ${counts.fallRisk} ราย — เฝ้าระวัง`);
+        const phrases = [...GREETINGS];
+        if (counts.sepsis > 0) phrases.push(`ขวัญใจตรวจพบผู้ป่วยเสี่ยง Sepsis ${counts.sepsis} ราย เฝ้าระวังด้วยนะคะ`);
+        if (counts.deterioration > 0) phrases.push(`แจ้งเตือนค่ะ ผู้ป่วย ${counts.deterioration} ราย มีแนวโน้มอาการทรุดลง`);
+        if (counts.labs > 0) phrases.push(`พบผล Lab วิกฤต ${counts.labs} รายการ รอแพทย์ตรวจสอบค่ะ`);
+        if (counts.fallRisk > 0) phrases.push(`ผู้ป่วยเสี่ยงล้ม ${counts.fallRisk} ราย — ขวัญใจเฝ้าระวังอยู่ค่ะ`);
         if (counts.monitorGaps > 0) phrases.push(`${counts.monitorGaps} ราย ไม่ได้วัด Vital Signs ≥ 6 ชม.`);
-        if (counts.criticalWards > 0) phrases.push(`${counts.criticalWards} ward Acuity สูง — ต้องเพิ่มพยาบาล`);
-        if (counts.totalInsights > 0 && counts.criticalCount === 0) phrases.push(`ระบบเฝ้าระวังปกติ — ไม่พบสถานการณ์วิกฤต`);
+        if (counts.criticalWards > 0) phrases.push(`${counts.criticalWards} ward Acuity สูง — ต้องเพิ่มพยาบาลค่ะ`);
+        if (counts.totalInsights > 0 && counts.criticalCount === 0) phrases.push(`ระบบเฝ้าระวังปกติค่ะ ไม่พบสถานการณ์วิกฤต`);
         return phrases;
     }, [counts]);
 
-    // Critical count for badge
     const criticalCount = counts.criticalCount;
-
     const isCritical = criticalCount > 0;
 
-    // Cycle phrases
+    // Cycle phrases + face
     useEffect(() => {
         const interval = setInterval(() => {
             setIsThinking(true);
             setTimeout(() => {
                 setPhraseIndex(prev => (prev + 1) % dynamicPhrases.length);
+                setFaceIndex(prev => (prev + 1) % KAWAII_FACES.length);
                 setIsThinking(false);
-            }, 500);
+                setBounceKey(prev => prev + 1);
+            }, 600);
         }, 8000);
         return () => clearInterval(interval);
     }, [dynamicPhrases.length]);
 
+    const kwanJaiStyle = `
+        @keyframes kwanjai-float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            25% { transform: translateY(-6px) rotate(2deg); }
+            75% { transform: translateY(-3px) rotate(-2deg); }
+        }
+        @keyframes kwanjai-glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(168, 85, 247, 0.3), 0 8px 32px rgba(124, 58, 237, 0.2); }
+            50% { box-shadow: 0 0 30px rgba(168, 85, 247, 0.5), 0 8px 40px rgba(124, 58, 237, 0.3); }
+        }
+        @keyframes kwanjai-ring {
+            0% { transform: scale(1); opacity: 0.6; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+        @keyframes kwanjai-sparkle {
+            0%, 100% { opacity: 0; transform: scale(0) rotate(0deg); }
+            50% { opacity: 1; transform: scale(1) rotate(180deg); }
+        }
+        @keyframes kwanjai-bounce-in {
+            0% { transform: scale(0.9) translateY(5px); opacity: 0; }
+            50% { transform: scale(1.02) translateY(-2px); }
+            100% { transform: scale(1) translateY(0); opacity: 1; }
+        }
+        @keyframes kwanjai-wave {
+            0%, 100% { transform: rotate(0deg); }
+            25% { transform: rotate(20deg); }
+            75% { transform: rotate(-10deg); }
+        }
+    `;
+
     return (
         <div className="fixed bottom-10 right-10 z-[100] group">
+            <style>{kwanJaiStyle}</style>
             <div className="relative">
-                {/* Expanded live stats panel */}
-                {expanded && clinicalData && (
+                {/* Expanded panel */}
+                {expanded && (
                     <div
-                        className="absolute bottom-full right-0 mb-4 w-72 p-4 rounded-2xl shadow-2xl"
+                        className="absolute bottom-full right-0 mb-4 w-80"
                         style={{
+                            animation: 'kwanjai-bounce-in 0.4s ease-out',
                             background: 'rgba(255, 255, 255, 0.97)',
-                            backdropFilter: 'blur(12px)',
-                            border: isCritical ? '2px solid rgba(239,68,68,0.5)' : '1px solid rgba(124,58,237,0.2)',
-                            boxShadow: '0 20px 40px rgba(0,0,0,0.18), 0 0 20px rgba(124,58,237,0.1)',
+                            backdropFilter: 'blur(16px)',
+                            border: isCritical ? '2px solid rgba(239,68,68,0.4)' : '2px solid rgba(168,85,247,0.25)',
+                            borderRadius: '24px',
+                            boxShadow: '0 20px 60px rgba(0,0,0,0.15), 0 0 30px rgba(168,85,247,0.08)',
+                            padding: '20px',
                         }}
                     >
-                        <div className="flex items-center justify-between mb-3">
-                            <p className="font-black uppercase text-purple-700 text-[10px] tracking-widest">
-                                Clinical Intelligence
-                            </p>
-                            <button
-                                onClick={() => setExpanded(false)}
-                                className="text-slate-400 hover:text-slate-600 text-sm font-bold"
-                            >
+                        {/* Header */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontSize: '24px', animation: 'kwanjai-wave 2s ease-in-out infinite' }}>👩‍⚕️</span>
+                                <div>
+                                    <p style={{ margin: 0, fontSize: '14px', fontWeight: 900, background: 'linear-gradient(135deg, #7c3aed, #ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                                        น้องขวัญใจ
+                                    </p>
+                                    <p style={{ margin: 0, fontSize: '9px', fontWeight: 700, color: '#a78bfa', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                                        BCH AI Clinical Intelligence
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setExpanded(false)}
+                                style={{ width: '28px', height: '28px', borderRadius: '50%', border: 'none', background: 'rgba(148,163,184,0.1)', cursor: 'pointer', fontSize: '14px', color: '#94a3b8', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                 ✕
                             </button>
                         </div>
-                        <div className="space-y-2">
-                            {counts.sepsis > 0 && (
-                                <div className="flex justify-between items-center text-xs p-2 bg-red-50 rounded-lg border border-red-200">
-                                    <span className="font-bold text-red-700">🔴 Sepsis Risk</span>
-                                    <span className="font-extrabold text-red-800">{counts.sepsis} ราย</span>
-                                </div>
-                            )}
-                            {counts.deterioration > 0 && (
-                                <div className="flex justify-between items-center text-xs p-2 bg-amber-50 rounded-lg border border-amber-200">
-                                    <span className="font-bold text-amber-700">⚠️ Deteriorating</span>
-                                    <span className="font-extrabold text-amber-800">{counts.deterioration} ราย</span>
-                                </div>
-                            )}
-                            {counts.labs > 0 && (
-                                <div className="flex justify-between items-center text-xs p-2 bg-orange-50 rounded-lg border border-orange-200">
-                                    <span className="font-bold text-orange-700">🧪 Critical Labs</span>
-                                    <span className="font-extrabold text-orange-800">{counts.labs} รายการ</span>
-                                </div>
-                            )}
-                            {counts.fallRisk > 0 && (
-                                <div className="flex justify-between items-center text-xs p-2 bg-purple-50 rounded-lg border border-purple-200">
-                                    <span className="font-bold text-purple-700">⚠️ Fall Risk</span>
-                                    <span className="font-extrabold text-purple-800">{counts.fallRisk} ราย</span>
-                                </div>
-                            )}
-                            {counts.monitorGaps > 0 && (
-                                <div className="flex justify-between items-center text-xs p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-                                    <span className="font-bold text-indigo-700">📋 V/S Gap</span>
-                                    <span className="font-extrabold text-indigo-800">{counts.monitorGaps} ราย</span>
-                                </div>
-                            )}
-                            <div className="flex justify-between items-center text-xs p-2 bg-slate-50 rounded-lg border border-slate-200">
-                                <span className="font-bold text-slate-700">🧠 Total Insights</span>
-                                <span className="font-extrabold text-slate-800">{counts.totalInsights}</span>
+
+                        {/* Message bubble */}
+                        <div style={{
+                            background: 'linear-gradient(135deg, rgba(168,85,247,0.06), rgba(236,72,153,0.04))',
+                            borderRadius: '16px', padding: '12px 14px', marginBottom: '12px',
+                            border: '1px solid rgba(168,85,247,0.1)',
+                        }}>
+                            <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#475569', lineHeight: 1.6, transition: 'opacity 0.4s' }}
+                               key={bounceKey}>
+                                {dynamicPhrases[phraseIndex % dynamicPhrases.length]} {KAWAII_FACES[faceIndex]}
+                            </p>
+                        </div>
+
+                        {/* Clinical alerts */}
+                        {clinicalData && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {counts.sepsis > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', padding: '8px 12px', background: 'rgba(239,68,68,0.06)', borderRadius: '10px', border: '1px solid rgba(239,68,68,0.15)' }}>
+                                        <span style={{ fontWeight: 700, color: '#dc2626' }}>🔴 Sepsis Risk</span>
+                                        <span style={{ fontWeight: 900, color: '#b91c1c' }}>{counts.sepsis} ราย</span>
+                                    </div>
+                                )}
+                                {counts.deterioration > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', padding: '8px 12px', background: 'rgba(245,158,11,0.06)', borderRadius: '10px', border: '1px solid rgba(245,158,11,0.15)' }}>
+                                        <span style={{ fontWeight: 700, color: '#d97706' }}>⚠️ Deteriorating</span>
+                                        <span style={{ fontWeight: 900, color: '#b45309' }}>{counts.deterioration} ราย</span>
+                                    </div>
+                                )}
+                                {counts.labs > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', padding: '8px 12px', background: 'rgba(249,115,22,0.06)', borderRadius: '10px', border: '1px solid rgba(249,115,22,0.15)' }}>
+                                        <span style={{ fontWeight: 700, color: '#ea580c' }}>🧪 Critical Labs</span>
+                                        <span style={{ fontWeight: 900, color: '#c2410c' }}>{counts.labs} รายการ</span>
+                                    </div>
+                                )}
+                                {counts.fallRisk > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', padding: '8px 12px', background: 'rgba(168,85,247,0.06)', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.15)' }}>
+                                        <span style={{ fontWeight: 700, color: '#7c3aed' }}>⚠️ Fall Risk</span>
+                                        <span style={{ fontWeight: 900, color: '#6d28d9' }}>{counts.fallRisk} ราย</span>
+                                    </div>
+                                )}
+                                {criticalCount === 0 && (
+                                    <div style={{ textAlign: 'center', fontSize: '12px', fontWeight: 700, color: '#059669', padding: '10px', background: 'rgba(16,185,129,0.06)', borderRadius: '10px', border: '1px solid rgba(16,185,129,0.15)' }}>
+                                        ✅ ระบบปกติค่ะ ไม่พบสถานการณ์วิกฤต
+                                    </div>
+                                )}
                             </div>
-                            {criticalCount === 0 && (
-                                <div className="text-xs text-center text-green-600 font-bold p-2 bg-green-50 rounded-lg">
-                                    ✅ ระบบปกติ — ไม่พบสถานการณ์วิกฤต
-                                </div>
-                            )}
+                        )}
+
+                        {/* Footer */}
+                        <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid rgba(148,163,184,0.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 600 }}>
+                                Powered by BCH 360° AI Engine
+                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: isCritical ? '#ef4444' : '#10b981', animation: 'kwanjai-glow 2s infinite' }} />
+                                <span style={{ fontSize: '9px', color: isCritical ? '#ef4444' : '#10b981', fontWeight: 700 }}>
+                                    {isCritical ? 'ALERT' : 'ONLINE'}
+                                </span>
+                            </div>
                         </div>
                     </div>
                 )}
 
-                {/* Dynamic tooltip bubble (show when not expanded) */}
+                {/* Hover tooltip */}
                 {!expanded && (
-                    <div className="absolute bottom-full right-0 mb-4 w-64 opacity-0 group-hover:opacity-100
-                                    transition-all duration-300 translate-y-4 group-hover:translate-y-0
-                                    pointer-events-none origin-bottom-right">
-                        <div
-                            className="p-4 rounded-3xl shadow-2xl relative overflow-hidden"
-                            style={{
-                                background: 'rgba(255, 255, 255, 0.95)',
-                                backdropFilter: 'blur(10px)',
-                                border: '1px solid rgba(124,58,237,0.2)',
-                                boxShadow: '0 20px 40px rgba(0,0,0,0.15), 0 0 20px rgba(124,58,237,0.1)',
-                            }}
-                        >
-                            {/* Shimmer effect */}
-                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-purple-500/10 to-transparent -translate-x-full group-hover:animate-[shimmer_2s_infinite]" />
-
-                            <div className="flex items-center gap-2 mb-2">
-                                <div className={`w-2 h-2 rounded-full ${isThinking ? 'bg-amber-400 animate-pulse' : isCritical ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`} />
-                                <p className="font-black uppercase text-purple-700 text-[10px] tracking-widest">
-                                    BCH-AI Executive v10
+                    <div className="absolute bottom-full right-0 mb-4 opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-4 group-hover:translate-y-0 pointer-events-none"
+                        style={{ width: '240px' }}>
+                        <div style={{
+                            padding: '14px 16px', borderRadius: '20px',
+                            background: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(12px)',
+                            border: '1px solid rgba(168,85,247,0.2)',
+                            boxShadow: '0 16px 40px rgba(0,0,0,0.12), 0 0 20px rgba(168,85,247,0.08)',
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: isThinking ? '#f59e0b' : isCritical ? '#ef4444' : '#10b981', animation: isThinking ? 'pulse 1s infinite' : undefined }} />
+                                <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, color: '#7c3aed', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                                    น้องขวัญใจ AI
                                 </p>
                             </div>
-
-                            <p className={`font-medium leading-relaxed text-slate-700 text-xs transition-opacity duration-500 ${isThinking ? 'opacity-0' : 'opacity-100'}`}>
+                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 600, color: '#475569', lineHeight: 1.5, transition: 'opacity 0.4s', opacity: isThinking ? 0.3 : 1 }}>
                                 {dynamicPhrases[phraseIndex % dynamicPhrases.length]}
                             </p>
-
-                            {/* Pointer arrow */}
-                            <div
-                                className="absolute -bottom-2 right-6 w-4 h-4 rotate-45"
-                                style={{ background: 'rgba(255, 255, 255, 0.95)', borderRight: '1px solid rgba(124,58,237,0.2)', borderBottom: '1px solid rgba(124,58,237,0.2)' }}
-                            />
+                            {/* Arrow */}
+                            <div style={{
+                                position: 'absolute', bottom: '-6px', right: '24px', width: '12px', height: '12px',
+                                transform: 'rotate(45deg)', background: 'rgba(255,255,255,0.95)',
+                                borderRight: '1px solid rgba(168,85,247,0.2)', borderBottom: '1px solid rgba(168,85,247,0.2)',
+                            }} />
                         </div>
                     </div>
                 )}
 
-                {/* FAB button */}
+                {/* Sparkles */}
+                {[0, 1, 2].map(i => (
+                    <div key={i} style={{
+                        position: 'absolute',
+                        top: `${-5 + i * 15}px`, left: `${-8 + i * 20}px`,
+                        width: '8px', height: '8px', borderRadius: '50%',
+                        background: ['#f472b6', '#a78bfa', '#38bdf8'][i],
+                        animation: `kwanjai-sparkle ${2 + i * 0.5}s ease-in-out infinite`,
+                        animationDelay: `${i * 0.7}s`,
+                        pointerEvents: 'none',
+                    }} />
+                ))}
+
+                {/* Main FAB */}
                 <button
                     onClick={() => setExpanded(prev => !prev)}
-                    className="w-16 h-16 rounded-full flex items-center justify-center relative shadow-2xl
-                               transition-transform duration-300 group-hover:scale-110 active:scale-95"
                     style={{
+                        width: '68px', height: '68px', borderRadius: '50%',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        position: 'relative', border: 'none', cursor: 'pointer',
                         background: isCritical
-                            ? 'linear-gradient(135deg, #dc2626, #b91c1c)'
-                            : 'linear-gradient(135deg, #6d28d9, #4f46e5)',
+                            ? 'linear-gradient(135deg, #ef4444, #dc2626)'
+                            : 'linear-gradient(135deg, #8b5cf6, #6d28d9, #4f46e5)',
+                        animation: 'kwanjai-float 4s ease-in-out infinite, kwanjai-glow 3s ease-in-out infinite',
+                        transition: 'transform 0.3s',
                     }}
-                    title="BCH Intelligence AI"
+                    onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.12)'}
+                    onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                    title="น้องขวัญใจ — BCH AI Assistant"
                 >
-                    {/* Ring animation */}
-                    <div className={`absolute inset-0 rounded-full border-2 ${isCritical ? 'border-red-400/50' : 'border-purple-400/50'} animate-[ping_3s_infinite] scale-150 opacity-0 group-hover:opacity-100`} />
+                    {/* Pulse ring */}
+                    <div style={{
+                        position: 'absolute', inset: '-4px', borderRadius: '50%',
+                        border: `2px solid ${isCritical ? 'rgba(239,68,68,0.4)' : 'rgba(168,85,247,0.4)'}`,
+                        animation: 'kwanjai-ring 3s ease-out infinite',
+                    }} />
 
-                    {/* Inner AI Core */}
-                    <div className="w-8 h-8 relative flex items-center justify-center">
-                        <div className="absolute inset-0 border-2 border-white/30 rounded-full border-t-white animate-spin-slow" />
-                        <div className="w-3 h-3 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.8)] animate-pulse" />
-                    </div>
+                    {/* Avatar */}
+                    <span style={{ fontSize: '32px', filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.2))' }}>
+                        👩‍⚕️
+                    </span>
 
-                    {/* Critical count badge */}
+                    {/* Critical badge */}
                     {isCritical && (
-                        <span className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white text-[10px] font-extrabold rounded-full flex items-center justify-center shadow-lg border-2 border-white animate-bounce">
+                        <span style={{
+                            position: 'absolute', top: '-4px', right: '-4px',
+                            width: '24px', height: '24px', borderRadius: '50%',
+                            background: '#ef4444', color: 'white', fontSize: '11px', fontWeight: 900,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            border: '2px solid white', boxShadow: '0 2px 8px rgba(239,68,68,0.5)',
+                            animation: 'bounce 1s infinite',
+                        }}>
                             {criticalCount}
                         </span>
                     )}
+
+                    {/* Online indicator */}
+                    {!isCritical && (
+                        <div style={{
+                            position: 'absolute', bottom: '2px', right: '2px',
+                            width: '14px', height: '14px', borderRadius: '50%',
+                            background: '#10b981', border: '2px solid white',
+                            boxShadow: '0 0 8px rgba(16,185,129,0.6)',
+                        }} />
+                    )}
                 </button>
 
-                {/* Shadow pedestal */}
-                <div
-                    className="w-12 h-2 rounded-full mx-auto mt-3 blur-md transform scale-90 group-hover:scale-110 transition-transform"
-                    style={{ background: isCritical ? 'rgba(220, 38, 38, 0.4)' : 'rgba(109, 40, 217, 0.4)' }}
-                />
+                {/* Name label */}
+                <div style={{
+                    textAlign: 'center', marginTop: '6px',
+                    fontSize: '10px', fontWeight: 800,
+                    background: 'linear-gradient(135deg, #7c3aed, #ec4899)',
+                    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+                    letterSpacing: '0.05em',
+                }}>
+                    น้องขวัญใจ
+                </div>
             </div>
         </div>
     );
