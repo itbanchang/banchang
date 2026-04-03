@@ -194,6 +194,7 @@ function MedRecTab() {
         fetchData('medRecAnalytics','/api/medrec/analytics');
         fetchData('medRecDrgOpt',   '/api/medrec/drg-optimization');
         fetchData('medRecFiscal',   '/api/medrec/revenue-fiscal');
+        fetchData('medRecHeatmap', '/api/medrec/coding-heatmap');
     }, [fetchData]);
 
     // ── Hourly chart data ──
@@ -900,6 +901,116 @@ function MedRecTab() {
                     </div>
                 )}
             </Section>
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                🔥 SECTION 6 — Coding Quality Heatmap (Coder × Ward)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const hm = state.medRecHeatmap;
+                if (!hm?.coders?.length) return null;
+                const coders = hm.coders;
+                const wards = hm.wards || [];
+                const weakSpots = hm.weak_spots || [];
+
+                // Color scale: CC rate → color
+                const ccColor = (rate) => {
+                    if (rate >= 80) return { bg: '#059669', text: '#fff' };
+                    if (rate >= 60) return { bg: '#10b981', text: '#fff' };
+                    if (rate >= 40) return { bg: '#fbbf24', text: '#1e1b4b' };
+                    if (rate >= 20) return { bg: '#f97316', text: '#fff' };
+                    if (rate > 0) return { bg: '#ef4444', text: '#fff' };
+                    return { bg: '#1e1b4b', text: '#6b7280' };
+                };
+
+                return (
+                    <Section color="#e11d48" icon="🔥" title="Coding Quality Heatmap" sub="Coder × Ward — CC/MCC Completeness (30 วัน)" badge="AI Analytics">
+                        {/* Heatmap Grid */}
+                        <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
+                            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '3px', fontSize: '10px' }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 800, color: C.sub, fontSize: '10px', minWidth: '140px', position: 'sticky', left: 0, background: 'var(--md-surface, #fff)', zIndex: 1 }}>
+                                            Coder
+                                        </th>
+                                        {wards.map((w, i) => (
+                                            <th key={i} style={{ padding: '4px 6px', textAlign: 'center', fontWeight: 700, color: C.sub, fontSize: '9px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', writingMode: wards.length > 4 ? 'vertical-rl' : undefined, height: wards.length > 4 ? '80px' : undefined }}>
+                                                {w?.replace('หอผู้ป่วย', '').replace('สามัญ', '')}
+                                            </th>
+                                        ))}
+                                        <th style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 800, color: C.sub, fontSize: '10px' }}>AVG</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {coders.map((c, ci) => (
+                                        <tr key={ci}>
+                                            <td style={{ padding: '6px 10px', fontWeight: 700, color: C.text, fontSize: '10px', position: 'sticky', left: 0, background: 'var(--md-surface, #fff)', zIndex: 1, borderRight: '2px solid var(--md-border, #e2e8f0)' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{ fontSize: '12px' }}>👩‍💻</span>
+                                                    <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                                                </div>
+                                                <span style={{ fontSize: '9px', color: C.muted }}>{c.total_cases} เคส</span>
+                                            </td>
+                                            {wards.map((w, wi) => {
+                                                const cell = c.wards?.[w];
+                                                if (!cell) return <td key={wi} style={{ padding: '4px', textAlign: 'center', borderRadius: '6px', background: 'var(--md-surface-2, #f8fafc)', color: C.muted }}>—</td>;
+                                                const clr = ccColor(cell.cc_rate);
+                                                return (
+                                                    <td key={wi} title={`${c.name} × ${w}: CC ${cell.cc_rate}% · ${cell.cases} เคส · ${cell.diag_per_case} dx/case`}
+                                                        style={{ padding: '4px 6px', textAlign: 'center', borderRadius: '8px', background: clr.bg, color: clr.text, fontWeight: 800, fontSize: '11px', cursor: 'default', transition: 'transform 0.15s', minWidth: '44px' }}>
+                                                        {cell.cc_rate}%
+                                                        <div style={{ fontSize: '8px', fontWeight: 600, opacity: 0.8 }}>{cell.cases}เคส</div>
+                                                    </td>
+                                                );
+                                            })}
+                                            <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 900, fontSize: '12px', color: c.avg_cc >= 60 ? '#059669' : c.avg_cc >= 40 ? '#f59e0b' : '#ef4444', background: `${c.avg_cc >= 60 ? '#059669' : c.avg_cc >= 40 ? '#f59e0b' : '#ef4444'}10`, borderRadius: '8px' }}>
+                                                {c.avg_cc}%
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            {[{ label: '≥80% ดีเยี่ยม', bg: '#059669' }, { label: '60-79% ดี', bg: '#10b981' }, { label: '40-59% พอใช้', bg: '#fbbf24' }, { label: '20-39% ต่ำ', bg: '#f97316' }, { label: '<20% วิกฤต', bg: '#ef4444' }, { label: '0% ไม่มี CC', bg: '#1e1b4b' }].map((l, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <div style={{ width: '14px', height: '14px', borderRadius: '4px', background: l.bg }} />
+                                    <span style={{ fontSize: '9px', color: C.sub, fontWeight: 600 }}>{l.label}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Weak Spots — AI Coaching Recommendations */}
+                        {weakSpots.length > 0 && (
+                            <div style={{ background: 'rgba(239,68,68,0.04)', borderRadius: '14px', padding: '14px', border: '1px solid rgba(239,68,68,0.12)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                                    <span style={{ fontSize: '14px' }}>🎯</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#e11d48' }}>AI Coaching Targets — จุดที่ต้องปรับปรุง</span>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {weakSpots.map((ws, i) => (
+                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', background: 'rgba(255,255,255,0.7)', borderRadius: '10px', border: '1px solid rgba(239,68,68,0.1)' }}>
+                                            <span style={{ fontSize: '16px', fontWeight: 900, color: '#e11d48', minWidth: '20px' }}>{i + 1}</span>
+                                            <div style={{ flex: 1 }}>
+                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: C.text }}>{ws.coder} — {ws.ward}</p>
+                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: C.sub }}>
+                                                    CC Rate <b style={{ color: '#ef4444' }}>{ws.cc_rate}%</b> · {ws.cases} เคส · {ws.diag_per_case} dx/case
+                                                </p>
+                                            </div>
+                                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#e11d48', background: 'rgba(239,68,68,0.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                                {ws.cc_rate === 0 ? 'อบรมเร่งด่วน' : 'Peer Review'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </Section>
+                );
+            })()}
             </SubErrorBoundary>
 
         </div>

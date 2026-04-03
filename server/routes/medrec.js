@@ -804,6 +804,96 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
   }
 }));
 
+// ━━━━━━ Coding Quality Heatmap — Coder × Ward ━━━━━━
+router.get('/coding-heatmap', cached('mrCodingHeatmap', 1800000, async () => {
+  try {
+    // Query: per coder × ward → diagnosis depth, CC rate, case count (30 days)
+    const rows = await dbQueryHeavy('mrHeatmap_v1', 60, `
+      SELECT
+        COALESCE(u.name, d.staff) as coder_name,
+        w.name as ward_name,
+        COUNT(DISTINCT d.an) as case_count,
+        -- CC/MCC rate: % of cases with at least one secondary dx (diagtype 2 or 3)
+        ROUND(100.0 * COUNT(DISTINCT CASE WHEN d.diagtype IN ('2','3') THEN d.an END)
+          / NULLIF(COUNT(DISTINCT d.an), 0), 0) as cc_rate,
+        -- Avg diagnoses per case
+        ROUND(COUNT(*) / NULLIF(COUNT(DISTINCT d.an), 0), 1) as diag_per_case,
+        -- Diagnosis depth breakdown
+        ROUND(SUM(CASE WHEN d.diagtype = '1' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as pdx_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype = '2' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as cc_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype = '3' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as mcc_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype IN ('4','5') THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as proc_per_case
+      FROM iptdiag d
+      INNER JOIN ipt i ON d.an = i.an
+      INNER JOIN ward w ON i.ward = w.ward
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%'
+      GROUP BY d.staff, u.name, i.ward, w.name
+      HAVING COUNT(DISTINCT d.an) >= 3
+      ORDER BY coder_name, case_count DESC
+    `).catch(() => []);
+
+    // Build matrix structure
+    const coders = new Map();
+    const wards = new Set();
+    for (const r of (rows || [])) {
+      wards.add(r.ward_name);
+      if (!coders.has(r.coder_name)) coders.set(r.coder_name, { name: r.coder_name, total_cases: 0, avg_cc: 0, wards: {} });
+      const c = coders.get(r.coder_name);
+      c.total_cases += Number(r.case_count);
+      c.wards[r.ward_name] = {
+        cases: Number(r.case_count),
+        cc_rate: Number(r.cc_rate),
+        diag_per_case: Number(r.diag_per_case),
+        pdx: Number(r.pdx_per_case),
+        cc: Number(r.cc_per_case),
+        mcc: Number(r.mcc_per_case),
+        proc: Number(r.proc_per_case),
+      };
+    }
+
+    // Calculate avg CC rate per coder
+    for (const c of coders.values()) {
+      const wardEntries = Object.values(c.wards);
+      const totalCases = wardEntries.reduce((s, w) => s + w.cases, 0);
+      c.avg_cc = totalCases > 0
+        ? Math.round(wardEntries.reduce((s, w) => s + w.cc_rate * w.cases, 0) / totalCases)
+        : 0;
+    }
+
+    // Find weak spots (coder × ward with low CC rate)
+    const weakSpots = [];
+    for (const c of coders.values()) {
+      for (const [ward, data] of Object.entries(c.wards)) {
+        if (data.cc_rate < 50 && data.cases >= 5) {
+          weakSpots.push({
+            coder: c.name, ward, cases: data.cases, cc_rate: data.cc_rate,
+            diag_per_case: data.diag_per_case,
+            recommendation: data.cc_rate === 0
+              ? `${c.name} ไม่มี CC/MCC เลยใน ${ward} (${data.cases} เคส) — ต้องอบรมเร่งด่วน`
+              : `${c.name} CC Rate ต่ำ ${data.cc_rate}% ใน ${ward} — ควร peer review`,
+          });
+        }
+      }
+    }
+    weakSpots.sort((a, b) => a.cc_rate - b.cc_rate);
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + ward + opduser',
+      coders: Array.from(coders.values()).sort((a, b) => b.total_cases - a.total_cases),
+      wards: Array.from(wards).sort(),
+      weak_spots: weakSpots.slice(0, 10),
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Coding heatmap error', { error: err.message });
+    return { coders: [], wards: [], weak_spots: [] };
+  }
+}));
+
 // ---- Revenue Fiscal — hospital-wide (MedRec covers all coding) ----
 router.get('/revenue-fiscal', cached('medrecRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (MedRec)', req?.query?.start, req?.query?.end)));
 
