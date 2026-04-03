@@ -5,7 +5,8 @@
 import React, { useEffect, useMemo } from 'react';
 import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
-    LineChart, Line, Legend, CartesianGrid, ReferenceLine
+    LineChart, Line, Legend, CartesianGrid, ReferenceLine,
+    PieChart, Pie, Cell
 } from 'recharts';
 import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
@@ -1188,6 +1189,113 @@ function MedRecTab() {
                                 </div>
                             </div>
                         )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                🧬 SECTION 9 — Diagnosis Depth Analysis (Nested Donut per Coder)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const hm = state.medRecHeatmap;
+                if (!hm?.coders?.length) return null;
+
+                const DEPTH_COLORS = ['#7c3aed', '#0ea5e9', '#f59e0b', '#10b981'];
+                const DEPTH_LABELS = ['PDx (หลัก)', 'CC (ร่วม)', 'MCC (แทรกซ้อน)', 'Procedure (หัตถการ)'];
+
+                // Aggregate per-coder depth from heatmap wards data
+                const coderDepth = hm.coders.map(c => {
+                    let totalCases = 0, sumPdx = 0, sumCc = 0, sumMcc = 0, sumProc = 0;
+                    for (const wd of Object.values(c.wards || {})) {
+                        totalCases += wd.cases;
+                        sumPdx += (wd.pdx || 0) * wd.cases;
+                        sumCc += (wd.cc || 0) * wd.cases;
+                        sumMcc += (wd.mcc || 0) * wd.cases;
+                        sumProc += (wd.proc || 0) * wd.cases;
+                    }
+                    const avg = (v) => totalCases > 0 ? Math.round(v / totalCases * 100) / 100 : 0;
+                    return {
+                        name: c.name, cases: totalCases,
+                        pdx: avg(sumPdx), cc: avg(sumCc), mcc: avg(sumMcc), proc: avg(sumProc),
+                        total: avg(sumPdx + sumCc + sumMcc + sumProc),
+                    };
+                }).filter(c => c.cases >= 5).sort((a, b) => b.total - a.total);
+
+                if (!coderDepth.length) return null;
+
+                // Hospital average
+                const hospAvg = {
+                    pdx: Math.round(coderDepth.reduce((s, c) => s + c.pdx * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    cc: Math.round(coderDepth.reduce((s, c) => s + c.cc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    mcc: Math.round(coderDepth.reduce((s, c) => s + c.mcc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    proc: Math.round(coderDepth.reduce((s, c) => s + c.proc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                };
+
+                return (
+                    <Section color="#7c3aed" icon="🧬" title="Diagnosis Depth Analysis" sub="ความลึกของ Coding แยก Coder — PDx / CC / MCC / Procedure (30 วัน)" badge="Per Coder">
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            {DEPTH_LABELS.map((l, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                    <div style={{ width: '12px', height: '12px', borderRadius: '3px', background: DEPTH_COLORS[i] }} />
+                                    <span style={{ fontSize: '10px', fontWeight: 700, color: C.sub }}>{l}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Donut Charts Grid */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                            {/* Hospital Average */}
+                            <div style={{ padding: '16px', borderRadius: '16px', background: 'linear-gradient(135deg, rgba(124,58,237,0.06), rgba(124,58,237,0.02))', border: '2px solid rgba(124,58,237,0.2)', textAlign: 'center' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 900, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🏥 ค่าเฉลี่ย รพ.</p>
+                                <ResponsiveContainer width="100%" height={120}>
+                                    <PieChart>
+                                        <Pie data={[{ v: hospAvg.pdx }, { v: hospAvg.cc }, { v: hospAvg.mcc }, { v: hospAvg.proc }].filter(d => d.v > 0)}
+                                            dataKey="v" cx="50%" cy="50%" innerRadius={30} outerRadius={50} paddingAngle={3} strokeWidth={0}>
+                                            {[hospAvg.pdx, hospAvg.cc, hospAvg.mcc, hospAvg.proc].filter(v => v > 0).map((_, i) => <Cell key={i} fill={DEPTH_COLORS[i]} />)}
+                                        </Pie>
+                                    </PieChart>
+                                </ResponsiveContainer>
+                                <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: '#7c3aed' }}>{(hospAvg.pdx + hospAvg.cc + hospAvg.mcc + hospAvg.proc).toFixed(1)}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: C.muted }}>dx/case</p>
+                            </div>
+
+                            {/* Per Coder */}
+                            {coderDepth.slice(0, 5).map((c, ci) => {
+                                const pieData = [{ v: c.pdx, l: 'PDx' }, { v: c.cc, l: 'CC' }, { v: c.mcc, l: 'MCC' }, { v: c.proc, l: 'Proc' }].filter(d => d.v > 0);
+                                const isLow = c.total < (hospAvg.pdx + hospAvg.cc + hospAvg.mcc + hospAvg.proc) * 0.7;
+                                return (
+                                    <div key={ci} style={{ padding: '14px', borderRadius: '14px', background: isLow ? 'rgba(239,68,68,0.04)' : C.bg, border: `1px solid ${isLow ? 'rgba(239,68,68,0.2)' : C.border}`, textAlign: 'center' }}>
+                                        <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {c.name}
+                                        </p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: C.muted }}>{c.cases} เคส</p>
+                                        <ResponsiveContainer width="100%" height={100}>
+                                            <PieChart>
+                                                <Pie data={pieData} dataKey="v" cx="50%" cy="50%" innerRadius={24} outerRadius={42} paddingAngle={3} strokeWidth={0}>
+                                                    {pieData.map((_, i) => <Cell key={i} fill={DEPTH_COLORS[i]} />)}
+                                                </Pie>
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                        <p style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: isLow ? '#ef4444' : '#7c3aed' }}>{c.total.toFixed(1)}</p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: C.muted }}>dx/case</p>
+                                        {isLow && <span style={{ fontSize: '8px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '1px 6px', borderRadius: '99px' }}>ต่ำกว่าค่าเฉลี่ย</span>}
+                                        {/* Breakdown bar */}
+                                        <div style={{ display: 'flex', height: '6px', borderRadius: '99px', overflow: 'hidden', marginTop: '6px', gap: '1px' }}>
+                                            {[c.pdx, c.cc, c.mcc, c.proc].map((v, i) => v > 0 ? <div key={i} style={{ flex: v, background: DEPTH_COLORS[i], borderRadius: '99px' }} /> : null)}
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '8px', color: C.muted }}>
+                                            <span>PDx {c.pdx}</span>
+                                            <span>CC {c.cc}</span>
+                                            <span>MCC {c.mcc}</span>
+                                            <span>Proc {c.proc}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </Section>
                 );
             })()}
