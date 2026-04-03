@@ -324,8 +324,8 @@ function LaboratoryTab() {
                     {
                         label: 'Completed',
                         value: labToday.completed ?? '—',
-                        unit: completionPct > 0 ? completionPct + '%' : '',
-                        target: 95,
+                        unit: completionPct > 0 ? `${completionPct}%` : '',
+                        target: `95%`,
                         status: completionPct >= 95 ? 'success' : completionPct >= 80 ? 'warning' : 'danger',
                         icon: '✅',
                     },
