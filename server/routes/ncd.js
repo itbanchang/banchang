@@ -68,6 +68,8 @@ router.get('/today', cached('ncdToday', 30000, async () => {
         yesterday_total: yesterdayTotal,
         today_vs_yesterday_pct: yesterdayTotal > 0 ? Math.round(((todayTotal - yesterdayTotal) / yesterdayTotal) * 100) : 0,
         by_disease: (byDisease || []).map(d => ({ disease: d.disease, visits: Number(d.visits || 0), patients: Number(d.patients || 0) })),
+        // Object format for frontend compatibility: { dm: X, ht: Y, ... }
+        diseases: Object.fromEntries((byDisease || []).map(d => [d.disease?.toLowerCase(), Number(d.patients || d.visits || 0)])),
         hourly: Array.from({ length: 24 }, (_, h) => {
             const d = (hourly || []).find(x => Number(x.hr) === h);
             return { hour: h, label: `${String(h).padStart(2, '0')}:00`, count: Number(d?.cnt || 0) };
