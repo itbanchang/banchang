@@ -2,7 +2,7 @@
 // BCH 360° Intelligence V.10 — Medical Record Audit Tab
 // ออกแบบใหม่: แบ่งส่วน OPD / IPD / Coder Performance ชัดเจน
 // ============================================================
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
     LineChart, Line, Legend, CartesianGrid, ReferenceLine,
@@ -1441,7 +1441,174 @@ function MedRecTab() {
             })()}
             </SubErrorBoundary>
 
+            {/* ══════════════════════════════════════════════
+                📋 SECTION 11 — DRG Optimization Kanban Board
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            <KanbanBoard drgOpt={drgOpt} />
+            </SubErrorBoundary>
+
         </div>
+    );
+}
+
+// ── Kanban Board Component ──────────────────────────────────
+const COLUMNS = [
+    { key: 'pending', label: '⏳ Pending Review', color: '#7c3aed', bg: 'rgba(124,58,237,0.04)' },
+    { key: 'review', label: '🔍 Under Review', color: '#0284c7', bg: 'rgba(2,132,199,0.04)' },
+    { key: 'completed', label: '✅ Completed', color: '#059669', bg: 'rgba(5,150,105,0.04)' },
+    { key: 'recovered', label: '💰 Revenue Recovered', color: '#f59e0b', bg: 'rgba(245,158,11,0.04)' },
+];
+
+function KanbanBoard({ drgOpt }) {
+    const [cards, setCards] = useState([]);
+    const [summary, setSummary] = useState({});
+    const [draggedAn, setDraggedAn] = useState(null);
+    const [syncing, setSyncing] = useState(false);
+
+    // Fetch kanban state
+    const fetchKanban = useCallback(async () => {
+        try {
+            const r = await fetch('/api/medrec/kanban', { credentials: 'include' });
+            if (r.ok) { const d = await r.json(); setCards(d.cards || []); setSummary(d.summary || {}); }
+        } catch (e) { /* silent */ }
+    }, []);
+
+    useEffect(() => { fetchKanban(); }, [fetchKanban]);
+
+    // Sync from DRG optimization
+    const syncFromAI = useCallback(async () => {
+        if (!drgOpt) return;
+        setSyncing(true);
+        const cases = [
+            ...(drgOpt.pdxOptimization || []).map(c => ({ ...c, category: 'pdx' })),
+            ...(drgOpt.mccMissing || []).map(c => ({ ...c, category: 'mcc' })),
+            ...(drgOpt.labAlerts || []).map(c => ({ ...c, category: 'lab' })),
+        ];
+        try {
+            await fetch('/api/medrec/kanban/sync', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cases }),
+            });
+            await fetchKanban();
+        } catch (e) { /* silent */ }
+        setSyncing(false);
+    }, [drgOpt, fetchKanban]);
+
+    // Move card to new status
+    const moveCard = useCallback(async (an, newStatus) => {
+        try {
+            await fetch(`/api/medrec/kanban/${an}`, {
+                method: 'PATCH', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus }),
+            });
+            setCards(prev => prev.map(c => c.an === an ? { ...c, status: newStatus } : c));
+            setSummary(prev => {
+                const next = { ...prev };
+                const card = cards.find(c => c.an === an);
+                if (card) { next[card.status] = Math.max(0, (next[card.status] || 0) - 1); next[newStatus] = (next[newStatus] || 0) + 1; }
+                return next;
+            });
+        } catch (e) { /* silent */ }
+    }, [cards]);
+
+    // Drag handlers
+    const onDragStart = useCallback((e, an) => { setDraggedAn(an); e.dataTransfer.effectAllowed = 'move'; }, []);
+    const onDragOver = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
+    const onDrop = useCallback((e, colKey) => { e.preventDefault(); if (draggedAn) { moveCard(draggedAn, colKey); setDraggedAn(null); } }, [draggedAn, moveCard]);
+
+    const totalCards = cards.length;
+    const totalRev = cards.filter(c => c.status === 'recovered').reduce((s, c) => s + (c.est_revenue || 0), 0);
+
+    return (
+        <Section color="#ec4899" icon="📋" title="DRG Optimization — Kanban Board" sub="ติดตาม AI Recommendations → Coder Action → Revenue Recovery" badge="Drag & Drop">
+            {/* Sync Button + Stats */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: C.muted }}>
+                    <span>📋 {totalCards} เคส</span>
+                    <span>⏳ {summary.pending || 0}</span>
+                    <span>🔍 {summary.review || 0}</span>
+                    <span>✅ {summary.completed || 0}</span>
+                    <span>💰 {summary.recovered || 0} (฿{totalRev.toLocaleString()})</span>
+                </div>
+                <button onClick={syncFromAI} disabled={syncing}
+                    style={{ padding: '6px 14px', borderRadius: '99px', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#fff', background: 'linear-gradient(135deg, #ec4899, #8b5cf6)', opacity: syncing ? 0.6 : 1 }}>
+                    {syncing ? '⏳ กำลัง Sync...' : '🔄 Sync จาก AI'}
+                </button>
+            </div>
+
+            {/* Kanban Columns */}
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${COLUMNS.length}, 1fr)`, gap: '10px', minHeight: '300px' }}>
+                {COLUMNS.map(col => {
+                    const colCards = cards.filter(c => c.status === col.key);
+                    return (
+                        <div key={col.key}
+                            onDragOver={onDragOver}
+                            onDrop={(e) => onDrop(e, col.key)}
+                            style={{
+                                background: col.bg, borderRadius: '14px', padding: '10px',
+                                border: `2px dashed ${col.color}25`, minHeight: '280px',
+                                transition: 'border-color 0.2s',
+                            }}
+                        >
+                            {/* Column Header */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', padding: '0 4px' }}>
+                                <span style={{ fontSize: '12px', fontWeight: 900, color: col.color }}>{col.label}</span>
+                                <span style={{ fontSize: '11px', fontWeight: 800, color: col.color, background: `${col.color}15`, padding: '2px 8px', borderRadius: '99px' }}>
+                                    {colCards.length}
+                                </span>
+                            </div>
+
+                            {/* Cards */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {colCards.slice(0, 15).map(card => (
+                                    <div key={card.an}
+                                        draggable
+                                        onDragStart={(e) => onDragStart(e, card.an)}
+                                        style={{
+                                            padding: '8px 10px', borderRadius: '10px',
+                                            background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(4px)',
+                                            border: `1px solid ${col.color}20`,
+                                            cursor: 'grab', fontSize: '10px',
+                                            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                                            transition: 'transform 0.15s, box-shadow 0.15s',
+                                        }}
+                                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = `0 4px 12px ${col.color}20`; }}
+                                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)'; }}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                                            <span style={{ fontWeight: 800, color: C.text, fontFamily: 'JetBrains Mono, monospace' }}>AN:{card.an}</span>
+                                            <span style={{ fontSize: '9px', fontWeight: 700, color: card.category === 'pdx' ? '#7c3aed' : card.category === 'mcc' ? '#f59e0b' : '#0ea5e9', background: `${card.category === 'pdx' ? '#7c3aed' : card.category === 'mcc' ? '#f59e0b' : '#0ea5e9'}12`, padding: '1px 5px', borderRadius: '99px' }}>
+                                                {card.category === 'pdx' ? 'PDx' : card.category === 'mcc' ? 'CC/MCC' : 'Lab'}
+                                            </span>
+                                        </div>
+                                        <p style={{ margin: 0, fontWeight: 600, color: C.sub, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {card.patient_name || '—'}
+                                        </p>
+                                        <p style={{ margin: '2px 0 0', color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '9px' }}>
+                                            {card.ward || '—'}
+                                        </p>
+                                        {card.est_revenue > 0 && (
+                                            <span style={{ fontSize: '9px', fontWeight: 800, color: '#059669' }}>+฿{card.est_revenue.toLocaleString()}</span>
+                                        )}
+                                    </div>
+                                ))}
+                                {colCards.length === 0 && (
+                                    <div style={{ padding: '20px', textAlign: 'center', color: `${col.color}60`, fontSize: '11px', fontWeight: 600, borderRadius: '8px', border: `1px dashed ${col.color}20` }}>
+                                        ลาก card มาวางที่นี่
+                                    </div>
+                                )}
+                                {colCards.length > 15 && (
+                                    <div style={{ textAlign: 'center', fontSize: '10px', color: C.muted, fontWeight: 600 }}>+{colCards.length - 15} เคส</div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </Section>
     );
 }
 

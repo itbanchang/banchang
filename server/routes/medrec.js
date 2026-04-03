@@ -2,7 +2,31 @@ import { Router } from 'express';
 import { cached } from '../cache/staleCache.js';
 import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
 import { getRevenueFiscal } from '../helpers/fiscal.js';
+import getDb from '../db/connection.js';
 import logger from '../logger.js';
+
+// ── DRG Kanban SQLite schema (auto-create) ──
+try {
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drg_kanban (
+      an TEXT PRIMARY KEY,
+      hn TEXT,
+      patient_name TEXT,
+      ward TEXT,
+      category TEXT DEFAULT 'pdx',
+      issue TEXT,
+      ai_suggest TEXT,
+      est_revenue INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      assigned_to TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_status ON drg_kanban(status);
+  `);
+} catch (e) { /* table may already exist */ }
 
 const router = Router();
 const fiscalYearStart = "CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')";
@@ -1082,6 +1106,94 @@ router.get('/turnaround-trend', cached('mrTurnaroundTrend', 1800000, async () =>
     return { weeks: [], coders: [], target_days: 3 };
   }
 }));
+
+// ━━━━━━ DRG Kanban Board — CRUD ━━━━━━
+// GET: list all cards (with optional status filter)
+router.get('/kanban', (req, res) => {
+  try {
+    const db = getDb();
+    const status = req.query.status;
+    const rows = status
+      ? db.prepare('SELECT * FROM drg_kanban WHERE status = ? ORDER BY updated_at DESC').all(status)
+      : db.prepare('SELECT * FROM drg_kanban ORDER BY CASE status WHEN "pending" THEN 1 WHEN "review" THEN 2 WHEN "completed" THEN 3 WHEN "recovered" THEN 4 END, updated_at DESC').all();
+
+    // Count by status
+    const counts = db.prepare('SELECT status, COUNT(*) as cnt, SUM(est_revenue) as total_rev FROM drg_kanban GROUP BY status').all();
+    const summary = { pending: 0, review: 0, completed: 0, recovered: 0, total_revenue: 0 };
+    for (const r of counts) {
+      summary[r.status] = r.cnt;
+      summary.total_revenue += Number(r.total_rev || 0);
+    }
+
+    res.json({ cards: rows, summary, timestamp: new Date().toISOString() });
+  } catch (err) {
+    logger.error('Kanban GET error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST: sync from DRG optimization → create cards that don't exist yet
+router.post('/kanban/sync', async (req, res) => {
+  try {
+    const db = getDb();
+    const drgOpt = req.body?.cases || [];
+
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO drg_kanban (an, hn, patient_name, ward, category, issue, ai_suggest, est_revenue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let added = 0;
+    const tx = db.transaction((cases) => {
+      for (const c of cases) {
+        const result = insert.run(c.an, c.hn, c.name, c.ward, c.category || 'pdx', c.issue, c.aiSuggest, c.estRevenue || 0);
+        if (result.changes > 0) added++;
+      }
+    });
+    tx(drgOpt);
+
+    res.json({ added, total: db.prepare('SELECT COUNT(*) as cnt FROM drg_kanban').get().cnt });
+  } catch (err) {
+    logger.error('Kanban sync error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH: update card status (drag & drop)
+router.patch('/kanban/:an', (req, res) => {
+  try {
+    const db = getDb();
+    const { status, assigned_to, notes } = req.body;
+    const an = req.params.an;
+
+    const sets = [];
+    const vals = [];
+    if (status) { sets.push('status = ?'); vals.push(status); }
+    if (assigned_to !== undefined) { sets.push('assigned_to = ?'); vals.push(assigned_to); }
+    if (notes !== undefined) { sets.push('notes = ?'); vals.push(notes); }
+    sets.push("updated_at = datetime('now','localtime')");
+    vals.push(an);
+
+    db.prepare(`UPDATE drg_kanban SET ${sets.join(', ')} WHERE an = ?`).run(...vals);
+
+    const updated = db.prepare('SELECT * FROM drg_kanban WHERE an = ?').get(an);
+    res.json({ success: true, card: updated });
+  } catch (err) {
+    logger.error('Kanban PATCH error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE: remove card
+router.delete('/kanban/:an', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM drg_kanban WHERE an = ?').run(req.params.an);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---- Revenue Fiscal — hospital-wide (MedRec covers all coding) ----
 router.get('/revenue-fiscal', cached('medrecRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (MedRec)', req?.query?.start, req?.query?.end)));
