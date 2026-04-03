@@ -337,6 +337,71 @@ router.get('/goal-attainment', cached('ncdGoalAttainment', 1800000, async () => 
   };
 }));
 
+// ━━━━━━ NCD Monthly Fiscal — Cycle Time & Wait Steps (ปีงบปัจจุบัน) ━━━━━━
+router.get('/monthly-fiscal', cached('ncdMonthlyFiscal', 3600000, async () => {
+  const now = new Date();
+  const mo = now.getMonth() + 1;
+  const yr = now.getFullYear();
+  const fiscalStartYear = mo >= 10 ? yr : yr - 1;
+  const fiscalStart = `${fiscalStartYear}-10-01`;
+  const fiscalEnd = `${fiscalStartYear + 1}-09-30`;
+  const fiscalBE = fiscalStartYear + 543 + 1;
+
+  const [visitRows, waitRows] = await Promise.all([
+    dbQuery(`
+      SELECT YEAR(o.vstdate) AS year_num, MONTH(o.vstdate) AS month_num, COUNT(DISTINCT o.vn) AS total_visits
+      FROM ovst o WHERE o.vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE()) AND o.main_dep = '024'
+      GROUP BY YEAR(o.vstdate), MONTH(o.vstdate)
+    `),
+    dbQuery(`
+      SELECT YEAR(st.vstdate) AS year_num, MONTH(st.vstdate) AS month_num,
+        AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(st.vsttime)
+          THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(st.vsttime)) / 60 END) AS avg_reg_to_screen,
+        AVG(CASE WHEN st.service5 IS NOT NULL AND st.service1 IS NOT NULL AND TIME_TO_SEC(st.service5) > TIME_TO_SEC(st.service1)
+          THEN (TIME_TO_SEC(st.service5) - TIME_TO_SEC(st.service1)) / 60 END) AS avg_screen_to_doc,
+        AVG(CASE WHEN st.service7 IS NOT NULL AND st.service5 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service5)
+          THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service5)) / 60 END) AS avg_doc_to_rx,
+        ROUND(AVG(CASE WHEN (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(st.vstdate,' ',st.vsttime), CONCAT(st.vstdate,' ',COALESCE(r.bill_time, st.service7)))
+          ELSE NULL END), 0) AS true_cycle_time
+      FROM ovst o
+      INNER JOIN service_time st ON st.vn = o.vn
+      LEFT JOIN rcpt_print r ON st.vn = r.vn
+      WHERE o.vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE())
+        AND o.main_dep = '024' AND st.service1 IS NOT NULL
+      GROUP BY YEAR(st.vstdate), MONTH(st.vstdate)
+    `),
+  ]);
+
+  const MTH = ['','ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const mNum = ((9 + i) % 12) + 1;
+    const yNum = mNum >= 10 ? fiscalStartYear : fiscalStartYear + 1;
+    const vRow = (visitRows || []).find(r => Number(r.month_num) === mNum && Number(r.year_num) === yNum);
+    const wRow = (waitRows || []).find(r => Number(r.month_num) === mNum && Number(r.year_num) === yNum);
+    const reg = Math.round(Number(wRow?.avg_reg_to_screen || 0));
+    const screen = Math.round(Number(wRow?.avg_screen_to_doc || 0));
+    const doc = Math.round(Number(wRow?.avg_doc_to_rx || 0));
+    const trueCycle = Number(wRow?.true_cycle_time || 0);
+    const total = trueCycle > 0 ? trueCycle : (reg + screen + doc);
+    months.push({
+      month: MTH[mNum], month_num: mNum, year_num: yNum,
+      total_visits: Number(vRow?.total_visits || 0),
+      avg_total: total, avg_reg: reg, avg_screen: screen, avg_doc: doc, avg_rx: 0,
+      has_data: Number(vRow?.total_visits || 0) > 0,
+    });
+  }
+  const withData = months.filter(m => m.has_data && m.avg_total > 0);
+  const benchmark = withData.length ? Math.round(withData.reduce((s, m) => s + m.avg_total, 0) / withData.length) : 0;
+
+  return {
+    data_source: 'HOSxP XE (NCD dept 024)',
+    fiscal_year_be: fiscalBE, fiscal_start: fiscalStart, fiscal_end: fiscalEnd,
+    benchmark_avg: benchmark, months,
+  };
+}));
+
 // ━━━━━━ NCD Estimated Revenue — Fiscal Year (3 ปีย้อนหลัง) ━━━━━━
 router.get('/revenue-fiscal', cached('ncdRevenueFiscal', 3600000, (req) => getRevenueFiscal('024', 'HOSxP XE · vn_stat (NCD)', req?.query?.start, req?.query?.end)));
 
