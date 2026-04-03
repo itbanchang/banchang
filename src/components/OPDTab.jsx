@@ -1250,12 +1250,25 @@ function OPDTab() {
 
                 {/* Steps */}
                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, overflowX: 'auto' }}>
-                    {[
+                    {(() => {
+                        const ws = opd?.wait_steps || {};
+                        const steps = [
+                            { key: 'reg', raw: ws.registration_to_screening || 0 },
+                            { key: 'screen', raw: ws.screening_to_doctor || 0 },
+                            { key: 'doc', raw: ws.doctor_to_pharmacy || 0 },
+                            { key: 'rx', raw: ws.pharmacy_to_finance || 0 },
+                        ];
+                        const rawTotal = steps.reduce((s, st) => s + st.raw, 0);
+                        const trueTotal = opd?.avg_total_minutes || rawTotal;
+                        // Scale each step proportionally to match True Cycle Time
+                        const scale = rawTotal > 0 ? trueTotal / rawTotal : 1;
+                        const scaled = steps.map(st => Math.round(st.raw * scale));
+                        return [
                         {
                             icon: '📋',
                             label: 'ลงทะเบียน',
                             sublabel: 'เช็คอิน → คัดกรอง',
-                            value: opd?.wait_steps?.registration_to_screening,
+                            value: scaled[0],
                             color: '#7c3aed',
                             bg: 'rgba(124,58,237,.07)',
                             border: 'rgba(124,58,237,.2)',
@@ -1265,7 +1278,7 @@ function OPDTab() {
                             icon: '🔬',
                             label: 'คัดกรอง',
                             sublabel: 'คัดกรอง → พบแพทย์',
-                            value: opd?.wait_steps?.screening_to_doctor,
+                            value: scaled[1],
                             color: '#0ea5e9',
                             bg: 'rgba(14,165,233,.07)',
                             border: 'rgba(14,165,233,.2)',
@@ -1275,7 +1288,7 @@ function OPDTab() {
                             icon: '🩺',
                             label: 'ตรวจรักษา',
                             sublabel: 'พบแพทย์ → รับยา',
-                            value: opd?.wait_steps?.screening_to_doctor,
+                            value: scaled[2],
                             color: '#8b5cf6',
                             bg: 'rgba(139,92,246,.07)',
                             border: 'rgba(139,92,246,.2)',
@@ -1285,7 +1298,7 @@ function OPDTab() {
                             icon: '💊',
                             label: 'รับยา',
                             sublabel: 'รับยา → ชำระเงิน',
-                            value: opd?.wait_steps?.doctor_to_pharmacy,
+                            value: scaled[3],
                             color: '#10b981',
                             bg: 'rgba(16,185,129,.07)',
                             border: 'rgba(16,185,129,.2)',
@@ -1295,13 +1308,13 @@ function OPDTab() {
                             icon: '💳',
                             label: 'ชำระเงิน',
                             sublabel: 'ชำระเงิน → กลับบ้าน',
-                            value: opd?.wait_steps?.pharmacy_to_finance,
+                            value: ws.pharmacy_to_finance || 0,
                             color: '#f59e0b',
                             bg: 'rgba(245,158,11,.07)',
                             border: 'rgba(245,158,11,.2)',
                             warn: 10, critical: 20,
                         },
-                    ].map((step, i, arr) => {
+                    ]; })().map((step, i, arr) => {
                         const val = step.value || 0;
                         const isCritical = val >= step.critical;
                         const isWarn = val >= step.warn && !isCritical;
