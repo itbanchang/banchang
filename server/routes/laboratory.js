@@ -288,13 +288,12 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
       WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
 
-    // 4. Completion Rate (30D) — order level, exclude today for overdue (still in progress)
+    // 4. Completion Rate (30D) — order level
     dbQueryOne(`
       SELECT
         COUNT(DISTINCT lab_order_number) as total,
         COUNT(DISTINCT CASE WHEN report_date IS NOT NULL THEN lab_order_number END) as completed,
-        COUNT(DISTINCT CASE WHEN report_date IS NULL AND order_date < CURDATE()
-          AND confirm_flag IS NULL THEN lab_order_number END) as overdue
+        COUNT(DISTINCT CASE WHEN report_date IS NULL AND order_date < CURDATE() THEN lab_order_number END) as overdue
       FROM lab_head
       WHERE order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
