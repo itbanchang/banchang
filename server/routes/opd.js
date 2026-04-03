@@ -242,17 +242,13 @@ router.get('/today', cached('opdToday', 60000, async () => {
           total_opd_revenue: todayRow ? Number(todayRow.total_revenue || 0) : 0,
         };
       }
-      // Fallback to live query with heavy cache
-      return dbQueryOneHeavy('opdRevPerVisit', 15, `
+      // Fallback: use vn_stat (faster + more reliable than opitemrece)
+      return dbQueryOneHeavy('opdRevPerVisit_v2', 5, `
         SELECT
-          ROUND(AVG(t.total_charge), 0) as avg_revenue_per_visit,
-          ROUND(SUM(t.total_charge), 0) as total_opd_revenue
-        FROM (
-          SELECT oi.vn, SUM(oi.qty * oi.unitprice) as total_charge
-          FROM opitemrece oi FORCE INDEX (ix_vstdate)
-          WHERE oi.vstdate = CURDATE()
-          GROUP BY oi.vn
-        ) t
+          ROUND(AVG(v.income), 0) as avg_revenue_per_visit,
+          ROUND(SUM(v.income), 0) as total_opd_revenue
+        FROM vn_stat v
+        WHERE v.vstdate = CURDATE() AND v.income > 0
       `);
     })().catch(() => ({ avg_revenue_per_visit: 0, total_opd_revenue: 0 })),
 

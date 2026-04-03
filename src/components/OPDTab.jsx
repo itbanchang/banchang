@@ -166,17 +166,28 @@ function OPDTab() {
         const nextHourPeak = (opd.hourly_prediction || []).find(f => f.hour === (currentHour + 1))?.count || 0;
         const avgHourly = throughputVal || 20;
 
+        // Staffing: based on actual on-duty staff vs queue
+        const onDutyDoctors = opd.active_doctors_list?.length || 0;
+        const onDutyNurses = opd.active_nurses_list?.length || 0;
+        const totalOnDuty = onDutyDoctors + onDutyNurses;
+        const waitingQueue = opd.still_here_breakdown?.likely_waiting ?? opd.still_here ?? 0;
+        // Each doctor can see ~8 patients/hr, each nurse handles ~15/hr
+        const currentCapacityPerHr = (onDutyDoctors * 8) + (onDutyNurses * 15);
+        const queueHours = currentCapacityPerHr > 0 ? (waitingQueue / currentCapacityPerHr) : 99;
+        // Need additional staff only if queue backlog > 2 hours at current rate
+        const additionalNeeded = queueHours > 2 ? Math.ceil((waitingQueue - currentCapacityPerHr * 2) / 8) : 0;
+
         let staffingStatus = 'Optimal';
-        let staffingRec = 'กำลังพลเพียงพอต่อโหลดปัจจุบัน';
+        let staffingRec = `กำลังพลเพียงพอ (${onDutyDoctors} แพทย์ + ${onDutyNurses} พยาบาล)`;
         let staffingColor = '#10b981';
 
-        if (capacity > 90 || (nextHourPeak > avgHourly * 1.5)) {
+        if (additionalNeeded > 5 || capacity > 90) {
             staffingStatus = 'Overstrained';
-            staffingRec = `🚨 ต้องการแพทย์/พยาบาลเพิ่ม ${Math.ceil((nextHourPeak - avgHourly) / 5)} ท่าน เพื่อรองรับ Peak ในชั่วโมงถัดไป`;
+            staffingRec = `🚨 คิวค้าง ${waitingQueue} ราย — แนะนำเพิ่มแพทย์อีก ${Math.min(additionalNeeded, 10)} ท่าน หรือเปิด Fast-track`;
             staffingColor = '#f43f5e';
-        } else if (capacity > 75) {
+        } else if (additionalNeeded > 0 || capacity > 75) {
             staffingStatus = 'Tight';
-            staffingRec = '⚠️ ควรเฝ้าระวังและงดการพักในช่วง 60 นาทีถัดไป';
+            staffingRec = `⚠️ คิวค้าง ${waitingQueue} ราย — ควรเฝ้าระวังและงดการพักในช่วง 60 นาทีถัดไป`;
             staffingColor = '#f59e0b';
         }
 
