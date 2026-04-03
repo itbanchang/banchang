@@ -636,24 +636,28 @@ function NCDTab() {
                 const fiscalData = state.ncdMonthlyFiscal;
                 const a = ncdAnalytics || {};
                 const wSteps = a.wait_steps || {};
-                const rawSteps = [
-                    { raw: wSteps.registration_to_screening || 0 },
-                    { raw: wSteps.screening_to_doctor || 0 },
-                    { raw: wSteps.doctor_to_pharmacy || 0 },
-                    { raw: wSteps.pharmacy_to_finance || 0 },
-                ];
-                const rawTotal = rawSteps.reduce((s, st) => s + st.raw, 0);
-                const trueTotal = a.avg_total_time || rawTotal || 0;
-                const scale = rawTotal > 0 ? trueTotal / rawTotal : 1;
+                const reg = wSteps.registration_to_screening || 0;
+                const screen = wSteps.screening_to_doctor || 0;
+                const doc = wSteps.doctor_to_pharmacy || 0;
+                const rx = wSteps.pharmacy_to_finance || 0;
+                const trueTotal = a.avg_total_time || 0;
+                const measuredTotal = reg + screen + doc + rx;
+                // Gap = time not captured by service_time steps (e.g. waiting for lab results)
+                const gap = Math.max(0, trueTotal - measuredTotal);
                 const medianCycle = a.estimated_median_cycle || Math.round(trueTotal * 0.85);
-                // Find bottleneck
+
+                // Show actual step times (no inflating) + gap if exists
                 const stepDefs = [
-                    { icon: '📋', label: 'ลงทะเบียน', sub: 'เช็คอิน → คัดกรอง', color: '#7c3aed', warn: 15, critical: 30 },
-                    { icon: '🔬', label: 'คัดกรอง', sub: 'คัดกรอง → พบแพทย์', color: '#0ea5e9', warn: 30, critical: 60 },
-                    { icon: '🩺', label: 'ตรวจรักษา', sub: 'พบแพทย์ → รับยา', color: '#8b5cf6', warn: 20, critical: 45 },
-                    { icon: '💊', label: 'รับยา', sub: 'รับยา → ชำระเงิน', color: '#10b981', warn: 15, critical: 30 },
+                    { icon: '📋', label: 'ลงทะเบียน', sub: 'เช็คอิน → คัดกรอง', value: Math.round(reg), color: '#7c3aed', warn: 15, critical: 30 },
+                    { icon: '🔬', label: 'รอพบแพทย์', sub: 'คัดกรอง → พบแพทย์', value: Math.round(screen), color: '#0ea5e9', warn: 30, critical: 60 },
+                    { icon: '🩺', label: 'ตรวจ+รอยา', sub: 'พบแพทย์ → รับยา', value: Math.round(doc), color: '#8b5cf6', warn: 20, critical: 45 },
+                    { icon: '💊', label: 'ชำระเงิน', sub: 'รับยา → จ่ายเงิน', value: Math.round(rx), color: '#10b981', warn: 15, critical: 30 },
                 ];
-                const steps = stepDefs.map((d, i) => ({ ...d, value: Math.round(rawSteps[i].raw * scale) }));
+                // Add gap as separate step if significant (>10 min)
+                if (gap > 10) {
+                    stepDefs.push({ icon: '🔄', label: 'รอ Lab/อื่นๆ', sub: 'ช่วงเวลาที่ไม่ได้วัด', value: Math.round(gap), color: '#94a3b8', warn: 30, critical: 60 });
+                }
+                const steps = stepDefs;
                 const bottleneck = steps.reduce((max, s) => s.value > (max?.value || 0) ? s : max, steps[0]);
 
                 return (
