@@ -535,11 +535,24 @@ function OPDTab() {
                                         </div>
                                     );
                                 })()}
-                                {kpi.title === 'เวลารอเฉลี่ย' && (
-                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
-                                        ระยะเวลาบริการรวม (Cycle Time)
-                                    </div>
-                                )}
+                                {kpi.title === 'เวลารอเฉลี่ย' && (() => {
+                                    const steps = opd?.wait_steps;
+                                    const medianCycle = opd?.estimated_median_cycle;
+                                    // Find bottleneck (longest step)
+                                    const stepNames = { registration_to_screening: 'ลงทะเบียน→คัดกรอง', screening_to_doctor: 'คัดกรอง→แพทย์', doctor_to_pharmacy: 'แพทย์→รับยา', pharmacy_to_finance: 'รับยา→ชำระเงิน' };
+                                    const bottleneck = steps ? Object.entries(steps).reduce((max, [k, v]) => v > (max?.val || 0) ? { key: k, val: v } : max, { key: '', val: 0 }) : null;
+                                    return (
+                                        <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                            <span>Cycle Time (ลงทะเบียน → กลับบ้าน)</span>
+                                            {medianCycle > 0 && <span> · Median ≈ {medianCycle} น.</span>}
+                                            {bottleneck?.val > 30 && (
+                                                <div style={{ marginTop: '3px', color: '#f43f5e', fontWeight: 700 }}>
+                                                    🔴 คอขวด: {stepNames[bottleneck.key] || bottleneck.key} ({bottleneck.val} น.)
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', marginBottom: '8px' }}>
                                     <span style={{ fontSize: '28px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
                                         {(kpi.value ?? 0).toLocaleString()}
@@ -561,7 +574,7 @@ function OPDTab() {
                                 )}
                                 {kpi.title === 'เวลารอเฉลี่ย' && (
                                     <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
-                                        วิธีคำนวณ: ค่าเฉลี่ยของ (เวลาเสร็จสิ้น - เวลาลงทะเบียน) ของผู้ป่วยที่จบกระบวนการแล้ว (ไม่นับคิวที่กลับก่อนหรือไม่รับบริการ)
+                                        วิธีคำนวณ: True Cycle Time = AVG(เวลาชำระเงิน − เวลาลงทะเบียน) ต่อราย (เฉพาะผู้ป่วยที่จบกระบวนการ ไม่นับคิวที่ยกเลิก/ไม่รับบริการ)
                                     </div>
                                 )}
                             </>

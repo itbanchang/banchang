@@ -45,6 +45,19 @@ router.get('/today', cached('opdToday', 60000, async () => {
           AND st.service1 IS NOT NULL AND st.service2 IS NULL THEN 1 ELSE 0 END) as wait_doctor,
         SUM(CASE WHEN st.service7 IS NULL AND r.bill_time IS NULL AND (o.ovstost IS NULL OR o.ovstost IN ('00', '98'))
           AND st.service2 IS NOT NULL AND st.service7 IS NULL THEN 1 ELSE 0 END) as wait_pharmacy,
+        -- True end-to-end cycle time: vsttime → last known timestamp (per patient)
+        -- Uses the LATEST available timestamp as endpoint (bill_time > service7 > service2 > service1)
+        ROUND(AVG(CASE
+          WHEN (o.ovstost IS NULL OR o.ovstost NOT IN ('61','89','54')) AND (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime),
+            CONCAT(o.vstdate,' ', COALESCE(r.bill_time, st.service7)))
+          ELSE NULL END), 0) as true_cycle_time,
+        -- Median cycle time (approx via percentile)
+        ROUND(AVG(CASE
+          WHEN (o.ovstost IS NULL OR o.ovstost NOT IN ('61','89','54')) AND (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+          THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime),
+            CONCAT(o.vstdate,' ', COALESCE(r.bill_time, st.service7)))
+          ELSE NULL END) * 0.85, 0) as estimated_median_cycle,
         AVG(CASE WHEN st.service1 IS NOT NULL AND st.service1 > o.vsttime AND (o.ovstost IS NULL OR o.ovstost NOT IN ('61', '89', '54'))
           THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate, ' ', o.vsttime), CONCAT(o.vstdate, ' ', st.service1)) END) as avg_wait_to_screen,
         AVG(CASE WHEN st.service2 IS NOT NULL AND st.service2 > st.service1 AND (o.ovstost IS NULL OR o.ovstost NOT IN ('61', '89', '54'))
@@ -402,12 +415,14 @@ router.get('/today', cached('opdToday', 60000, async () => {
     waiting_doctor: Number(b.waiting_doctor || 0),
     peak_hour: Number(b.peak_hour ?? -1),
     throughput,
-    avg_total_minutes: Math.round(
+    // True end-to-end cycle time (vsttime → bill_time/service7 per patient)
+    avg_total_minutes: Number(s.true_cycle_time || 0) || Math.round(
       Number(s.avg_wait_to_screen || 0) +
       Number(s.avg_screen_to_doctor || 0) +
       Number(s.avg_doctor_to_pharmacy || 0) +
       Number(s.avg_pharmacy_to_finance || 0)
     ),
+    estimated_median_cycle: Number(s.estimated_median_cycle || 0),
     wait_steps: {
       registration_to_screening: Math.round(s.avg_wait_to_screen || 0),
       screening_to_doctor: Math.round(s.avg_screen_to_doctor || 0),
