@@ -115,13 +115,28 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
       FROM ovst o INNER JOIN ovstdiag od ON o.vn = od.vn INNER JOIN patient p ON o.hn = p.hn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.main_dep = '024' AND ${NCD_ICD_WHERE}`).catch(() => null),
         // service_time restricted to 7-day window to avoid full-table scan
+        // Wait time + True Cycle Time (per patient, not sum of step averages)
         dbQueryOne(`SELECT
       ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
         THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 0) as avg_wait,
       ROUND(STDDEV(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
         THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 0) as sd_wait,
-      ROUND(AVG(CASE WHEN r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(o.vsttime)
-        THEN (TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(o.vsttime)) / 60 ELSE NULL END), 0) as avg_total_time,
+      ROUND(AVG(CASE
+        WHEN (o.ovstost IS NULL OR o.ovstost NOT IN ('61','89','54')) AND (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime),
+          CONCAT(o.vstdate,' ', COALESCE(r.bill_time, st.service7)))
+        ELSE NULL END), 0) as avg_total_time,
+      ROUND(AVG(CASE
+        WHEN (o.ovstost IS NULL OR o.ovstost NOT IN ('61','89','54')) AND (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+        THEN TIMESTAMPDIFF(MINUTE, CONCAT(o.vstdate,' ',o.vsttime),
+          CONCAT(o.vstdate,' ', COALESCE(r.bill_time, st.service7)))
+        ELSE NULL END) * 0.85, 0) as estimated_median_cycle,
+      ROUND(AVG(CASE WHEN st.service1 IS NOT NULL AND st.service5 IS NOT NULL AND TIME_TO_SEC(st.service5) > TIME_TO_SEC(st.service1)
+        THEN (TIME_TO_SEC(st.service5) - TIME_TO_SEC(st.service1)) / 60 ELSE NULL END), 0) as avg_screen_to_doc,
+      ROUND(AVG(CASE WHEN st.service5 IS NOT NULL AND st.service7 IS NOT NULL AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service5)
+        THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service5)) / 60 ELSE NULL END), 0) as avg_doc_to_rx,
+      ROUND(AVG(CASE WHEN st.service7 IS NOT NULL AND r.bill_time IS NOT NULL AND TIME_TO_SEC(r.bill_time) > TIME_TO_SEC(st.service7)
+        THEN (TIME_TO_SEC(r.bill_time) - TIME_TO_SEC(st.service7)) / 60 ELSE NULL END), 0) as avg_rx_to_pay,
       SUM(CASE WHEN st.service1 IS NOT NULL AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(o.vsttime)
         AND (TIME_TO_SEC(st.service1) - TIME_TO_SEC(o.vsttime)) / 60 > 30 THEN 1 ELSE 0 END) as wait_over_30m
       FROM ovst o INNER JOIN ovstdiag od ON o.vn = od.vn
@@ -228,6 +243,13 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
         elderly_total: Number(visitSummary?.elderly_total || 0),
         male_total: Number(visitSummary?.male_total || 0), female_total: Number(visitSummary?.female_total || 0),
         avg_wait_time: aw, sd_wait_time: sw, avg_total_time: at, sd_total_time: 0,
+        estimated_median_cycle: Number(waitTime?.estimated_median_cycle || 0),
+        wait_steps: {
+            registration_to_screening: aw,
+            screening_to_doctor: Number(waitTime?.avg_screen_to_doc || 0),
+            doctor_to_pharmacy: Number(waitTime?.avg_doc_to_rx || 0),
+            pharmacy_to_finance: Number(waitTime?.avg_rx_to_pay || 0),
+        },
         wait_over_30m: w30, wait_sla_pct: wsp,
         completion_rate: cr, dropout_count: dc, revisit_rate: rr, revisit_count: revisitCount, wait_window_days: 7,
         avg_revenue_per_visit: ar, total_revenue: tr, daily_revenue: dr2, max_revenue: Number(revenue?.max_revenue || 0),

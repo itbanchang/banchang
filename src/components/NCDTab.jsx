@@ -635,16 +635,26 @@ function NCDTab() {
             {(() => {
                 const fiscalData = state.ncdMonthlyFiscal;
                 const a = ncdAnalytics || {};
-                const ws = { reg: a.avg_wait_time || 0, screen: Math.round((a.avg_wait_time || 0) * 0.4), doc: Math.round((a.avg_total_time || 0) * 0.3), rx: Math.round((a.avg_total_time || 0) * 0.1) };
-                const rawTotal = ws.reg + ws.screen + ws.doc + ws.rx;
+                const wSteps = a.wait_steps || {};
+                const rawSteps = [
+                    { raw: wSteps.registration_to_screening || 0 },
+                    { raw: wSteps.screening_to_doctor || 0 },
+                    { raw: wSteps.doctor_to_pharmacy || 0 },
+                    { raw: wSteps.pharmacy_to_finance || 0 },
+                ];
+                const rawTotal = rawSteps.reduce((s, st) => s + st.raw, 0);
                 const trueTotal = a.avg_total_time || rawTotal || 0;
                 const scale = rawTotal > 0 ? trueTotal / rawTotal : 1;
-                const steps = [
-                    { icon: '📋', label: 'ลงทะเบียน', sub: 'เช็คอิน → คัดกรอง', value: Math.round(ws.reg * scale), color: '#7c3aed', warn: 15, critical: 30 },
-                    { icon: '🔬', label: 'คัดกรอง', sub: 'คัดกรอง → พบแพทย์', value: Math.round(ws.screen * scale), color: '#0ea5e9', warn: 30, critical: 60 },
-                    { icon: '🩺', label: 'ตรวจรักษา', sub: 'พบแพทย์ → รับยา', value: Math.round(ws.doc * scale), color: '#8b5cf6', warn: 20, critical: 45 },
-                    { icon: '💊', label: 'รับยา', sub: 'รับยา → ชำระเงิน', value: Math.round(ws.rx * scale), color: '#10b981', warn: 15, critical: 30 },
+                const medianCycle = a.estimated_median_cycle || Math.round(trueTotal * 0.85);
+                // Find bottleneck
+                const stepDefs = [
+                    { icon: '📋', label: 'ลงทะเบียน', sub: 'เช็คอิน → คัดกรอง', color: '#7c3aed', warn: 15, critical: 30 },
+                    { icon: '🔬', label: 'คัดกรอง', sub: 'คัดกรอง → พบแพทย์', color: '#0ea5e9', warn: 30, critical: 60 },
+                    { icon: '🩺', label: 'ตรวจรักษา', sub: 'พบแพทย์ → รับยา', color: '#8b5cf6', warn: 20, critical: 45 },
+                    { icon: '💊', label: 'รับยา', sub: 'รับยา → ชำระเงิน', color: '#10b981', warn: 15, critical: 30 },
                 ];
+                const steps = stepDefs.map((d, i) => ({ ...d, value: Math.round(rawSteps[i].raw * scale) }));
+                const bottleneck = steps.reduce((max, s) => s.value > (max?.value || 0) ? s : max, steps[0]);
 
                 return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -703,10 +713,16 @@ function NCDTab() {
                                         </h3>
                                         <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>เวลาเฉลี่ยในแต่ละขั้นตอน (30 วัน)</p>
                                     </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(124,58,237,.08)', borderRadius: '999px', padding: '6px 14px' }}>
-                                        <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>Cycle Time</span>
-                                        <span style={{ fontSize: '20px', fontWeight: 900, color: '#7c3aed' }}>{trueTotal}</span>
-                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>นาที</span>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(124,58,237,.08)', borderRadius: '999px', padding: '6px 14px' }}>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>Cycle Time</span>
+                                            <span style={{ fontSize: '20px', fontWeight: 900, color: '#7c3aed' }}>{trueTotal}</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>นาที</span>
+                                        </div>
+                                        <div style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', marginTop: '3px' }}>
+                                            {medianCycle > 0 && <span>Median ≈ {medianCycle} น. · </span>}
+                                            {bottleneck?.value > 30 && <span style={{ color: '#f43f5e', fontWeight: 700 }}>คอขวด: {bottleneck.label} ({bottleneck.value} น.)</span>}
+                                        </div>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, overflowX: 'auto' }}>
