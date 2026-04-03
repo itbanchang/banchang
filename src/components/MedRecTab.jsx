@@ -1301,6 +1301,146 @@ function MedRecTab() {
             })()}
             </SubErrorBoundary>
 
+            {/* ══════════════════════════════════════════════
+                ⚖️ SECTION 10 — Workload Balance Gauge
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const codersFiscal = today.ipd_coders_fiscal || [];
+                if (codersFiscal.length < 2) return null;
+
+                const cases = codersFiscal.map(c => ({ name: c.name, current: c.current_month_total || 0, prev: c.prev_month_total || 0, fiscal: c.fiscal_total || 0, cc: c.cc_rate || 0 }));
+                const maxCurrent = Math.max(...cases.map(c => c.current), 1);
+                const minCurrent = Math.min(...cases.map(c => c.current));
+                const avgCurrent = Math.round(cases.reduce((s, c) => s + c.current, 0) / cases.length);
+                const totalCurrent = cases.reduce((s, c) => s + c.current, 0);
+
+                // Gini coefficient (0=perfect equality, 1=perfect inequality)
+                const sorted = [...cases].sort((a, b) => a.current - b.current);
+                const n = sorted.length;
+                let giniNum = 0;
+                sorted.forEach((c, i) => { giniNum += (2 * (i + 1) - n - 1) * c.current; });
+                const gini = totalCurrent > 0 ? Math.round(Math.abs(giniNum) / (n * totalCurrent) * 100) / 100 : 0;
+
+                const isBalanced = gini < 0.2;
+                const isModerate = gini >= 0.2 && gini < 0.4;
+                const isImbalanced = gini >= 0.4;
+
+                const statusColor = isBalanced ? '#059669' : isModerate ? '#f59e0b' : '#ef4444';
+                const statusLabel = isBalanced ? 'สมดุลดี' : isModerate ? 'ค่อนข้างเบี่ยง' : 'ไม่สมดุล';
+                const statusIcon = isBalanced ? '✅' : isModerate ? '⚠️' : '🚨';
+
+                // AI recommendations
+                const recs = [];
+                const overloaded = cases.filter(c => c.current > avgCurrent * 1.5 && avgCurrent > 0);
+                const underloaded = cases.filter(c => c.current < avgCurrent * 0.3 && avgCurrent > 0);
+                if (overloaded.length > 0) recs.push(`${overloaded.map(c => c.name.split(' ')[0]).join(', ')} รับงานมากเกินไป (>${Math.round(avgCurrent * 1.5)} เคส) — ควรกระจายงาน`);
+                if (underloaded.length > 0) recs.push(`${underloaded.map(c => c.name.split(' ')[0]).join(', ')} รับงานน้อยมาก (<${Math.round(avgCurrent * 0.3)} เคส) — เพิ่ม Assignment`);
+                if (maxCurrent > 0 && minCurrent === 0) recs.push('มี Coder ที่ยังไม่ได้รับ Assignment เดือนนี้เลย — ตรวจสอบ');
+                if (isBalanced && recs.length === 0) recs.push('การกระจายงานสมดุลดี — รักษามาตรฐาน');
+
+                return (
+                    <Section color="#6366f1" icon="⚖️" title="Workload Balance" sub="สมดุลงาน IPD Coder เดือนนี้ — Gini Coefficient" badge="AI Balancer">
+                        {/* Balance Gauge */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                            {/* Gini Gauge */}
+                            <div style={{ textAlign: 'center' }}>
+                                <svg width="140" height="80" viewBox="0 0 140 80">
+                                    {/* Background arc */}
+                                    <path d="M 15 70 A 55 55 0 0 1 125 70" fill="none" stroke="#e2e8f0" strokeWidth="12" strokeLinecap="round" />
+                                    {/* Green zone (0-0.2) */}
+                                    <path d="M 15 70 A 55 55 0 0 1 37 25" fill="none" stroke="#059669" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Yellow zone (0.2-0.4) */}
+                                    <path d="M 37 25 A 55 55 0 0 1 70 15" fill="none" stroke="#f59e0b" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Red zone (0.4-1.0) */}
+                                    <path d="M 70 15 A 55 55 0 0 1 125 70" fill="none" stroke="#ef4444" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Needle */}
+                                    {(() => {
+                                        const angle = -180 + (gini * 180); // 0=left, 1=right
+                                        const rad = (angle * Math.PI) / 180;
+                                        const nx = 70 + 45 * Math.cos(rad);
+                                        const ny = 70 + 45 * Math.sin(rad);
+                                        return <line x1="70" y1="70" x2={nx} y2={ny} stroke={statusColor} strokeWidth="3" strokeLinecap="round" />;
+                                    })()}
+                                    <circle cx="70" cy="70" r="6" fill={statusColor} />
+                                    <circle cx="70" cy="70" r="3" fill="white" />
+                                </svg>
+                                <p style={{ margin: '4px 0 0', fontSize: '20px', fontWeight: 900, color: statusColor }}>{gini.toFixed(2)}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: C.muted, fontWeight: 600 }}>Gini Index</p>
+                                <span style={{ fontSize: '11px', fontWeight: 800, color: statusColor, background: `${statusColor}12`, padding: '2px 10px', borderRadius: '99px' }}>
+                                    {statusIcon} {statusLabel}
+                                </span>
+                            </div>
+
+                            {/* Stats */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {[
+                                    { label: 'Coder ทั้งหมด', value: `${cases.length} คน`, color: '#6366f1' },
+                                    { label: 'เคสรวมเดือนนี้', value: `${totalCurrent} เคส`, color: '#6366f1' },
+                                    { label: 'เฉลี่ยต่อคน', value: `${avgCurrent} เคส`, color: '#0284c7' },
+                                    { label: 'สูงสุด', value: `${maxCurrent} เคส`, color: maxCurrent > avgCurrent * 2 ? '#ef4444' : '#059669' },
+                                    { label: 'ต่ำสุด', value: `${minCurrent} เคส`, color: minCurrent === 0 ? '#ef4444' : '#059669' },
+                                ].map((s, i) => (
+                                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '20px', fontSize: '11px' }}>
+                                        <span style={{ color: C.muted, fontWeight: 600 }}>{s.label}</span>
+                                        <span style={{ fontWeight: 800, color: s.color }}>{s.value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Per-Coder Bar Chart */}
+                        <div style={{ marginBottom: '16px' }}>
+                            {cases.map((c, i) => {
+                                const pct = maxCurrent > 0 ? (c.current / maxCurrent) * 100 : 0;
+                                const isOver = c.current > avgCurrent * 1.5 && avgCurrent > 0;
+                                const isUnder = c.current < avgCurrent * 0.3 && avgCurrent > 0;
+                                const barColor = isOver ? '#ef4444' : isUnder ? '#f59e0b' : '#6366f1';
+                                return (
+                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                        <span style={{ fontSize: '10px', fontWeight: 700, color: C.text, width: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                            {c.name}
+                                        </span>
+                                        <div style={{ flex: 1, height: '20px', background: '#f1f5f9', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
+                                            <div style={{ height: '100%', width: `${pct}%`, background: `linear-gradient(90deg, ${barColor}, ${barColor}cc)`, borderRadius: '6px', transition: 'width 0.6s ease', display: 'flex', alignItems: 'center', paddingLeft: '6px' }}>
+                                                {pct > 20 && <span style={{ fontSize: '10px', fontWeight: 800, color: '#fff' }}>{c.current}</span>}
+                                            </div>
+                                            {/* Average line */}
+                                            <div style={{ position: 'absolute', left: `${(avgCurrent / maxCurrent) * 100}%`, top: 0, bottom: 0, width: '2px', background: '#1e1b4b', opacity: 0.4 }} />
+                                        </div>
+                                        <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, minWidth: '30px', textAlign: 'right' }}>
+                                            {pct <= 20 ? c.current : ''}
+                                        </span>
+                                        {isOver && <span style={{ fontSize: '8px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '1px 4px', borderRadius: '99px', flexShrink: 0 }}>สูง</span>}
+                                        {isUnder && <span style={{ fontSize: '8px', fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', padding: '1px 4px', borderRadius: '99px', flexShrink: 0 }}>ต่ำ</span>}
+                                    </div>
+                                );
+                            })}
+                            <div style={{ fontSize: '9px', color: C.muted, textAlign: 'right', marginTop: '4px' }}>
+                                เส้นดำ = ค่าเฉลี่ย ({avgCurrent} เคส/คน)
+                            </div>
+                        </div>
+
+                        {/* AI Recommendations */}
+                        {recs.length > 0 && (
+                            <div style={{ padding: '12px 14px', borderRadius: '12px', background: `${statusColor}06`, border: `1px solid ${statusColor}15` }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                    <span style={{ fontSize: '14px' }}>🤖</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: statusColor }}>AI Workload Balancer</span>
+                                </div>
+                                {recs.map((r, i) => (
+                                    <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '4px', fontSize: '11px', color: C.text, fontWeight: 600 }}>
+                                        <span style={{ color: statusColor, fontWeight: 900, flexShrink: 0 }}>{i + 1}.</span>
+                                        <span>{r}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
         </div>
     );
 }
