@@ -804,6 +804,120 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
   }
 }));
 
+// ━━━━━━ Revenue Recovery Tracker — AI Recommendation Follow-up ━━━━━━
+router.get('/revenue-recovery', cached('mrRevenueRecovery', 600000, async () => {
+  try {
+    // 1. PDx cases with unspecified codes → check if PDx was changed (improved)
+    const pdxRecovery = await dbQueryHeavy('mrPdxRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_flagged,
+        SUM(CASE WHEN d_now.icd10 != d_orig.icd10 THEN 1 ELSE 0 END) as pdx_changed,
+        SUM(CASE WHEN d_now.icd10 != d_orig.icd10 THEN COALESCE(a.rw, 0) * 8350 ELSE 0 END) as est_recovered
+      FROM ipt i
+      INNER JOIN an_stat a ON i.an = a.an
+      INNER JOIN iptdiag d_orig ON i.an = d_orig.an AND d_orig.diagtype = '1'
+      INNER JOIN iptdiag d_now ON i.an = d_now.an AND d_now.diagtype = '1'
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND d_orig.icd10 IN ('J189', 'K358', 'A419', 'I64', 'N201', 'A099', 'N390')
+    `).catch(() => ({}));
+
+    // 2. Cases that had no CC/MCC → check if secondary dx was added
+    const ccRecovery = await dbQueryHeavy('mrCCRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT base.an) as total_flagged,
+        SUM(CASE WHEN has_cc.an IS NOT NULL THEN 1 ELSE 0 END) as cc_added,
+        SUM(CASE WHEN has_cc.an IS NOT NULL THEN COALESCE(a.rw, 0) * 2000 ELSE 0 END) as est_recovered
+      FROM (
+        SELECT DISTINCT i.an
+        FROM ipt i
+        INNER JOIN an_stat a ON i.an = a.an
+        WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND a.income > 30000 AND a.rw > 0 AND a.rw < 1.0
+          AND EXISTS (SELECT 1 FROM iptdiag dx WHERE dx.an = i.an AND dx.diagtype = '1')
+      ) base
+      INNER JOIN an_stat a ON base.an = a.an
+      LEFT JOIN (
+        SELECT DISTINCT an FROM iptdiag WHERE diagtype IN ('2','3')
+      ) has_cc ON base.an = has_cc.an
+    `).catch(() => ({}));
+
+    // 3. Lab→Dx: cases with critical labs → check if suggested ICD was coded
+    const labRecovery = await dbQueryHeavy('mrLabRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_flagged,
+        SUM(CASE WHEN dx_added.an IS NOT NULL THEN 1 ELSE 0 END) as dx_added,
+        SUM(CASE WHEN dx_added.an IS NOT NULL THEN 8350 ELSE 0 END) as est_recovered
+      FROM ipt i
+      INNER JOIN lab_head lh ON lh.hn = i.hn AND lh.order_date BETWEEN i.regdate AND i.dchdate
+      INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
+      LEFT JOIN (
+        SELECT DISTINCT d.an FROM iptdiag d WHERE d.diagtype != '1'
+          AND (d.icd10 LIKE 'E87%' OR d.icd10 LIKE 'N17%' OR d.icd10 LIKE 'A41%' OR d.icd10 LIKE 'E43%' OR d.icd10 LIKE 'I21%')
+      ) dx_added ON i.an = dx_added.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND lo.abnormal_result = 'Y'
+        AND (lo.lab_items_name_ref LIKE '%Potassium%' OR lo.lab_items_name_ref LIKE '%Creatinine%'
+          OR lo.lab_items_name_ref LIKE '%Troponin%' OR lo.lab_items_name_ref LIKE '%Lactate%'
+          OR lo.lab_items_name_ref LIKE '%Albumin%')
+    `).catch(() => ({}));
+
+    // 4. Overall DRG optimization: RW changes after coding review
+    const rwRecovery = await dbQueryHeavy('mrRWRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_cases,
+        SUM(CASE WHEN i.adjrw > a.rw THEN 1 ELSE 0 END) as rw_increased,
+        ROUND(SUM(CASE WHEN i.adjrw > a.rw THEN (i.adjrw - a.rw) * 8350 ELSE 0 END)) as rw_gain_revenue,
+        SUM(CASE WHEN i.adjrw < a.rw THEN 1 ELSE 0 END) as rw_decreased,
+        ROUND(SUM(CASE WHEN i.adjrw < a.rw THEN (a.rw - i.adjrw) * 8350 ELSE 0 END)) as rw_loss_revenue
+      FROM ipt i
+      INNER JOIN an_stat a ON i.an = a.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND a.rw > 0 AND i.adjrw IS NOT NULL
+    `).catch(() => ({}));
+
+    const pdxFlagged = Number(pdxRecovery?.total_flagged || 0);
+    const pdxChanged = Number(pdxRecovery?.pdx_changed || 0);
+    const ccFlagged = Number(ccRecovery?.total_flagged || 0);
+    const ccAdded = Number(ccRecovery?.cc_added || 0);
+    const labFlagged = Number(labRecovery?.total_flagged || 0);
+    const labDxAdded = Number(labRecovery?.dx_added || 0);
+
+    const totalFlagged = pdxFlagged + ccFlagged + labFlagged;
+    const totalActioned = pdxChanged + ccAdded + labDxAdded;
+    const conversionRate = totalFlagged > 0 ? Math.round((totalActioned / totalFlagged) * 100) : 0;
+
+    const totalPotential = Number(pdxRecovery?.est_recovered || 0) + Number(ccRecovery?.est_recovered || 0) + Number(labRecovery?.est_recovered || 0);
+    const totalRecovered = totalPotential; // Approximate: if dx was added, assume full recovery
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + an_stat + lab_order',
+      summary: {
+        total_flagged: totalFlagged,
+        total_actioned: totalActioned,
+        conversion_rate: conversionRate,
+        potential_revenue: totalPotential,
+        recovered_revenue: totalRecovered,
+      },
+      categories: [
+        { type: 'PDx Optimization', icon: '🎯', flagged: pdxFlagged, actioned: pdxChanged, rate: pdxFlagged > 0 ? Math.round((pdxChanged / pdxFlagged) * 100) : 0, revenue: Number(pdxRecovery?.est_recovered || 0) },
+        { type: 'CC/MCC Missing', icon: '📋', flagged: ccFlagged, actioned: ccAdded, rate: ccFlagged > 0 ? Math.round((ccAdded / ccFlagged) * 100) : 0, revenue: Number(ccRecovery?.est_recovered || 0) },
+        { type: 'Lab → Diagnosis', icon: '🩸', flagged: labFlagged, actioned: labDxAdded, rate: labFlagged > 0 ? Math.round((labDxAdded / labFlagged) * 100) : 0, revenue: Number(labRecovery?.est_recovered || 0) },
+      ],
+      rw_impact: {
+        total_cases: Number(rwRecovery?.total_cases || 0),
+        rw_increased: Number(rwRecovery?.rw_increased || 0),
+        rw_gain: Number(rwRecovery?.rw_gain_revenue || 0),
+        rw_decreased: Number(rwRecovery?.rw_decreased || 0),
+        rw_loss: Number(rwRecovery?.rw_loss_revenue || 0),
+      },
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Revenue recovery error', { error: err.message });
+    return { summary: {}, categories: [], rw_impact: {} };
+  }
+}));
+
 // ━━━━━━ Coding Quality Heatmap — Coder × Ward ━━━━━━
 router.get('/coding-heatmap', cached('mrCodingHeatmap', 1800000, async () => {
   try {

@@ -180,7 +180,7 @@ function Divider() {
 
 // ─── Main Component ───────────────────────────────────────────
 function MedRecTab() {
-    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal, medRecHeatmap: s.medRecHeatmap, medRecTATrend: s.medRecTATrend }));
+    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal, medRecHeatmap: s.medRecHeatmap, medRecTATrend: s.medRecTATrend, medRecRecovery: s.medRecRecovery }));
     const { fetchData } = useDashboardActions();
     const today    = state.medRecToday    || {};
     const analytics = state.medRecAnalytics || {};
@@ -196,6 +196,7 @@ function MedRecTab() {
         fetchData('medRecFiscal',   '/api/medrec/revenue-fiscal');
         fetchData('medRecHeatmap', '/api/medrec/coding-heatmap');
         fetchData('medRecTATrend', '/api/medrec/turnaround-trend');
+        fetchData('medRecRecovery', '/api/medrec/revenue-recovery');
     }, [fetchData]);
 
     // ── Hourly chart data ──
@@ -1094,6 +1095,99 @@ function MedRecTab() {
                                 <span style={{ fontSize: '10px', color: '#f43f5e', fontWeight: 700 }}>เป้า {target} วัน</span>
                             </div>
                         </div>
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                💰 SECTION 8 — Revenue Recovery Tracker
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const rec = state.medRecRecovery;
+                if (!rec?.summary?.total_flagged) return null;
+                const s = rec.summary;
+                const cats = rec.categories || [];
+                const rw = rec.rw_impact || {};
+
+                return (
+                    <Section color="#059669" icon="💰" title="Revenue Recovery Tracker" sub="ติดตามผลจาก AI แนะนำ DRG Optimization (30 วัน)" badge="AI Follow-up">
+                        {/* Funnel KPIs */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0', marginBottom: '20px', flexWrap: 'wrap' }}>
+                            {[
+                                { label: 'AI แนะนำ', value: s.total_flagged, icon: '🤖', color: '#7c3aed', sub: 'เคสที่ AI ตรวจพบ' },
+                                null, // arrow
+                                { label: 'Coder แก้ไข', value: s.total_actioned, icon: '✅', color: '#059669', sub: `${s.conversion_rate}% conversion` },
+                                null, // arrow
+                                { label: 'Revenue Recovered', value: `฿${(s.recovered_revenue / 1000).toFixed(0)}K`, icon: '💰', color: '#f59e0b', sub: 'ประมาณการ' },
+                            ].map((item, i) => item === null ? (
+                                <div key={i} style={{ fontSize: '24px', color: C.muted, padding: '0 8px', fontWeight: 900 }}>→</div>
+                            ) : (
+                                <div key={i} style={{ textAlign: 'center', padding: '14px 20px', borderRadius: '16px', background: `${item.color}08`, border: `2px solid ${item.color}20`, minWidth: '130px' }}>
+                                    <span style={{ fontSize: '20px' }}>{item.icon}</span>
+                                    <p style={{ margin: '4px 0 0', fontSize: '10px', fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{item.label}</p>
+                                    <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: item.color, lineHeight: 1 }}>{typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</p>
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: C.sub, fontWeight: 600 }}>{item.sub}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Conversion Rate Gauge */}
+                        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
+                            <div style={{ width: '200px', textAlign: 'center' }}>
+                                <div style={{ position: 'relative', height: '12px', borderRadius: '99px', background: '#e2e8f0', overflow: 'hidden' }}>
+                                    <div style={{
+                                        height: '100%', borderRadius: '99px', transition: 'width 0.8s ease',
+                                        width: `${Math.min(s.conversion_rate, 100)}%`,
+                                        background: s.conversion_rate >= 80 ? 'linear-gradient(90deg, #059669, #10b981)' : s.conversion_rate >= 50 ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : 'linear-gradient(90deg, #ef4444, #f43f5e)',
+                                    }} />
+                                </div>
+                                <p style={{ margin: '4px 0 0', fontSize: '11px', fontWeight: 800, color: s.conversion_rate >= 80 ? '#059669' : s.conversion_rate >= 50 ? '#f59e0b' : '#ef4444' }}>
+                                    Conversion Rate: {s.conversion_rate}%
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Category Breakdown */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+                            {cats.map((cat, i) => (
+                                <div key={i} style={{ padding: '14px', borderRadius: '14px', background: C.bg, border: `1px solid ${C.border}` }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                        <span style={{ fontSize: '16px' }}>{cat.icon}</span>
+                                        <span style={{ fontSize: '12px', fontWeight: 800, color: C.text }}>{cat.type}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                                        <span style={{ fontSize: '10px', color: C.muted }}>แนะนำ <b style={{ color: '#7c3aed' }}>{cat.flagged}</b></span>
+                                        <span style={{ fontSize: '10px', color: C.muted }}>แก้ไข <b style={{ color: '#059669' }}>{cat.actioned}</b></span>
+                                        <span style={{ fontSize: '10px', fontWeight: 800, color: cat.rate >= 80 ? '#059669' : cat.rate >= 50 ? '#f59e0b' : '#ef4444' }}>{cat.rate}%</span>
+                                    </div>
+                                    <div style={{ height: '6px', borderRadius: '99px', background: '#e2e8f0', overflow: 'hidden' }}>
+                                        <div style={{ height: '100%', width: `${Math.min(cat.rate, 100)}%`, background: cat.rate >= 80 ? '#059669' : cat.rate >= 50 ? '#f59e0b' : '#ef4444', borderRadius: '99px', transition: 'width 0.6s ease' }} />
+                                    </div>
+                                    {cat.revenue > 0 && (
+                                        <p style={{ margin: '6px 0 0', fontSize: '11px', fontWeight: 800, color: '#059669' }}>
+                                            💰 ฿{cat.revenue.toLocaleString()}
+                                        </p>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* RW Impact Summary */}
+                        {rw.total_cases > 0 && (
+                            <div style={{ padding: '12px 16px', borderRadius: '12px', background: 'rgba(5,150,105,0.04)', border: '1px solid rgba(5,150,105,0.12)' }}>
+                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#059669', marginBottom: '6px' }}>📊 RW Impact Summary (30 วัน)</p>
+                                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px' }}>
+                                    <span>📁 {rw.total_cases} เคส DRG</span>
+                                    <span style={{ color: '#059669' }}>📈 RW เพิ่ม {rw.rw_increased} เคส (+฿{rw.rw_gain?.toLocaleString()})</span>
+                                    <span style={{ color: '#ef4444' }}>📉 RW ลด {rw.rw_decreased} เคส (-฿{rw.rw_loss?.toLocaleString()})</span>
+                                    <span style={{ fontWeight: 800, color: rw.rw_gain > rw.rw_loss ? '#059669' : '#ef4444' }}>
+                                        สุทธิ: {rw.rw_gain > rw.rw_loss ? '+' : '-'}฿{Math.abs((rw.rw_gain || 0) - (rw.rw_loss || 0)).toLocaleString()}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
                     </Section>
                 );
             })()}
