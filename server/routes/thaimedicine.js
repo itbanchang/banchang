@@ -19,9 +19,9 @@ router.get('/today', cached('ttmToday', 30000, async () => {
         ROUND(AVG(TIMESTAMPDIFF(YEAR, p.birthday, CURDATE())), 1) as avg_age
       FROM ovst o STRAIGHT_JOIN patient p ON o.hn = p.hn
       WHERE o.vstdate = CURDATE() AND o.main_dep = '003'`).catch(() => null),
-    dbQueryOne(`SELECT COUNT(r.vn) as completed
-      FROM ovst o STRAIGHT_JOIN rcpt_print r ON r.vn = o.vn
-      WHERE o.vstdate = CURDATE() AND o.main_dep = '003' AND r.bill_time IS NOT NULL`).catch(() => null),
+    dbQueryOne(`SELECT COUNT(CASE WHEN v.income > 0 THEN 1 END) as completed
+      FROM ovst o LEFT JOIN vn_stat v ON v.vn = o.vn
+      WHERE o.vstdate = CURDATE() AND o.main_dep = '003'`).catch(() => null),
     dbQuery(`SELECT HOUR(o.vsttime) as hr, COUNT(*) as cnt FROM ovst o
       WHERE o.vstdate = CURDATE() AND o.vsttime IS NOT NULL AND o.main_dep = '003'
       GROUP BY HOUR(o.vsttime) ORDER BY hr`).catch(() => []),
