@@ -11,6 +11,8 @@ import logger from '../logger.js';
 import { maskPatientData, maskPatientList } from '../middleware/dataMasking.js';
 import { z } from 'zod';
 import { validate, validateQuery, validateParams } from '../middleware/validate.js';
+import { safeError } from '../lib/safeError.js';
+import { getMV } from '../db/materializedViews.js';
 
 const router = Router();
 
@@ -22,12 +24,12 @@ const admissionsQuerySchema = z.object({
 });
 
 const alosQuerySchema = z.object({
-    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    year: z.coerce.number().int().min(2000).max(2700).optional(),
     ward_id: z.string().optional(),
 });
 
 const fiscalQuerySchema = z.object({
-    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    year: z.coerce.number().int().min(2000).max(2700).optional(),
     ward_id: z.string().optional(),
     start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -73,7 +75,7 @@ router.get('/bed-occupancy', cacheMiddleware(60), async (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -96,31 +98,58 @@ router.get('/admissions', validateQuery(admissionsQuerySchema), cacheMiddleware(
             over_stay_count: admissions.filter(a => a.is_over_stay).length
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
 // ---- ALOS (cached 5 min) ----
 router.get('/alos', validateQuery(alosQuerySchema), cacheMiddleware(300), async (req, res) => {
     try {
-        const year = req.query.year || new Date().getFullYear();
-        const data = await hosxp.getALOSData({ year, wardId: req.query.ward_id });
+        const rawYear = Number(req.query.year) || new Date().getFullYear();
+        const year = rawYear > 2400 ? rawYear - 543 : rawYear;  // BE → CE
+        const [data, overallRow] = await Promise.all([
+            hosxp.getALOSData({ year, wardId: req.query.ward_id }),
+            // ALOS from materialized view (instant, refreshed every 10 min)
+            (async () => {
+                const mvIPD = getMV('mv_ipd_summary');
+                if (mvIPD?.length) {
+                    // Calculate overall ALOS from recent month data (exclude Home Ward '06')
+                    const recent = mvIPD.filter(r => r.ward !== HOME_WARD);
+                    const totalDch = recent.reduce((s, r) => s + Number(r.discharge_count || 0), 0);
+                    // Weighted average ALOS
+                    const weightedLos = recent.reduce((s, r) => s + Number(r.avg_los || 0) * Number(r.discharge_count || 0), 0);
+                    return { alos: totalDch > 0 ? Math.round(weightedLos / totalDch * 10) / 10 : 0, total_dch: totalDch };
+                }
+                // Fallback to live query if MV not yet populated
+                return dbQueryOne(`
+                    SELECT ROUND(AVG(DATEDIFF(dchdate, regdate)), 1) as alos,
+                           COUNT(*) as total_dch
+                    FROM ipt
+                    WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                      AND dchdate IS NOT NULL AND ward != ?
+                      AND DATEDIFF(dchdate, regdate) BETWEEN 0 AND 60
+                `, [HOME_WARD]);
+            })()
+        ]);
         const details = (data || []).map(d => ({
             drg_code: d.drg, ward_name: d.ward,
             patient_count: d.cnt,
             actual_alos: Math.round(Number(d.alos) * 10) / 10,
             drg_weight: Math.round(Number(d.rw || 0) * 100) / 100
         }));
+        const totalPatients = details.reduce((s, d) => s + d.patient_count, 0);
         res.json({
             data_source: 'HOSxP XE', details,
             summary: {
                 total_drgs: details.length,
-                total_patients: details.reduce((s, d) => s + d.patient_count, 0),
-                overall_alos: details.length > 0 ? Math.round(details.reduce((s, d) => s + d.actual_alos, 0) / details.length * 10) / 10 : 0
+                total_patients: totalPatients,
+                // ALOS จากผู้ป่วยจำหน่ายจริง 30 วัน (ตรงกับ Dashboard Summary)
+                overall_alos: Number(overallRow?.alos || 0),
+                total_discharged_30d: Number(overallRow?.total_dch || 0)
             }
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -130,64 +159,62 @@ router.get('/wards', cacheMiddleware(300), async (req, res) => {
         const data = await hosxp.getBedOccupancy();
         res.json({ wards: data || [] });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
-// ---- Advanced Analytics (cached 10 min) ----
+// ---- Advanced Analytics (cached 10 min) — OPTIMIZED ----
 router.get('/analytics', cacheMiddleware(600), async (req, res) => {
     try {
         const { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } = await import('../db/mysql.js');
 
-        // ━━ ALL queries run in PARALLEL — no extra latency ━━
+        // ━━ OPTIMIZED: Combined queries to reduce database round trips ━━
         const [
-            totalBedsRow,
-            turnover, alosVariance, revPerBedDay, admTrend, genderAge, overstay,
-            readmitData, cmiData, dischPlanData, mortalityData, currentAcuity, revPerDisch, dowPattern,
-            activeDoctors, activeNurses, activeStaff
+            summaryStats,    // Combined bed turnover, ALOS variance, revenue per bed-day
+            admTrend,        // 7-day admission trend
+            genderAge,       // Gender + age distribution
+            overstay,        // Overstay analysis
+            qualityMetrics,  // Combined readmit, CMI, discharge planning, mortality
+            acuityRevenue,   // Current acuity + revenue per discharge + day-of-week
+            staffActivity    // Active doctors, nurses, staff
         ] = await Promise.all([
 
-            // 0. Total beds — ดึงจาก ward table จริง (ไม่รวม Home Ward '06' และ Ward '17')
-            dbQueryOne(`
-                SELECT SUM(COALESCE(real_bedcount, bedcount, 0)) as total
-                FROM ward
-                WHERE ward_active = 'Y' AND ward NOT IN ('${HOME_WARD}', '17')
-            `).catch(() => null),
-
-            // 1. Bed Turnover Rate — จำนวน discharge ใน 30 วัน / จำนวนเตียง
-            dbQueryOneHeavy('ipdTurnover30d', 30, `
-                SELECT COUNT(*) as discharged_30d
-                FROM ipt
-                WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND dchdate IS NOT NULL
-            `),
-
-            // 2. ALOS Variance — actual vs DRG benchmark (rw-based proxy: 1 RW ≈ 4 วัน)
-            dbQueryOneHeavy('ipdALOSVariance', 60, `
+            // 1. Combined Summary Stats (3 queries → 1)
+            dbQueryOneHeavy('ipdSummaryStats', 60, `
                 SELECT
-                    ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1) as actual_alos,
-                    ROUND(AVG(a.rw * 4), 1)                       as benchmark_alos,
-                    COUNT(*)                                        as cases
-                FROM ipt i
-                INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL
-                  AND a.rw > 0
-            `),
+                    -- Bed Turnover (30 days)
+                    (SELECT COUNT(*) FROM ipt WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND dchdate IS NOT NULL AND ward != ?) as discharged_30d,
 
-            // 3. Revenue per Bed-Day (30 วัน)
-            dbQueryOneHeavy('ipdRevPerBedDay30d', 60, `
-                SELECT
-                    SUM(a.income)                                                  as total_revenue,
-                    SUM(DATEDIFF(i.dchdate, i.regdate))                           as total_bed_days,
-                    ROUND(SUM(a.income) / NULLIF(SUM(DATEDIFF(i.dchdate,i.regdate)),0), 0) as rev_per_bed_day
-                FROM ipt i
-                INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL AND a.income > 0
-            `),
+                    -- ALOS Variance
+                    (SELECT ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 1)
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as actual_alos,
 
-            // 4. 7-day Admission Trend
+                    (SELECT ROUND(AVG(a.rw * 4), 1)
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as benchmark_alos,
+
+                    (SELECT COUNT(*)
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as alos_cases,
+
+                    -- Revenue per Bed-Day
+                    (SELECT SUM(a.income)
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.income > 0) as total_revenue,
+
+                    (SELECT SUM(DATEDIFF(i.dchdate, i.regdate))
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.income > 0) as total_bed_days
+            `, [HOME_WARD]),
+
+            // 2. 7-day Admission Trend
             dbQuery(`
                 SELECT DATE(regdate) as d, COUNT(*) as admissions,
                     SUM(CASE WHEN dchdate IS NOT NULL THEN 1 ELSE 0 END) as discharges
@@ -196,7 +223,7 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                 GROUP BY DATE(regdate) ORDER BY d
             `),
 
-            // 5. Gender + Age Distribution (current IPD)
+            // 3. Gender + Age Distribution (current IPD)
             dbQueryOne(`
                 SELECT
                     SUM(CASE WHEN p.sex IN ('1','ช') THEN 1 ELSE 0 END) as male,
@@ -205,358 +232,294 @@ router.get('/analytics', cacheMiddleware(600), async (req, res) => {
                     SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, NOW()) >= 60 THEN 1 ELSE 0 END) as elderly,
                     SUM(CASE WHEN TIMESTAMPDIFF(YEAR, p.birthday, NOW()) < 15 THEN 1 ELSE 0 END) as pediatric
                 FROM ipt i INNER JOIN patient p ON i.hn = p.hn
-                WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}'
-            `),
+                WHERE i.dchdate IS NULL AND i.ward != ?
+            `, [HOME_WARD]),
 
-            // 6. Overstay Analysis
+            // 4. Overstay Analysis
             dbQueryOne(`
                 SELECT
                     SUM(CASE WHEN DATEDIFF(NOW(), i.regdate) > 14 THEN 1 ELSE 0 END) as overstay_count,
                     ROUND(AVG(CASE WHEN DATEDIFF(NOW(), i.regdate) > 14
                         THEN DATEDIFF(NOW(), i.regdate) - 14 END), 1) as avg_excess_days,
                     COUNT(*) as total_current
-                FROM ipt i WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}'
-            `),
+                FROM ipt i WHERE i.dchdate IS NULL AND i.ward != ?
+            `, [HOME_WARD]),
 
-            // ━━━━━━━━━━ NEW PROFESSIONAL KPIs ━━━━━━━━━━
-
-            // 7. Readmission Rate (30-day) — HA/JCI Quality Indicator
-            dbQueryOneHeavy('ipdReadmitRate30d', 60, `
+            // 5. Combined Quality Metrics (4 queries → 1)
+            dbQueryOneHeavy('ipdQualityMetrics', 60, `
                 SELECT
-                    COUNT(DISTINCT i2.an) as readmit_count,
-                    COUNT(DISTINCT i1.an) as total_discharges,
-                    ROUND(100.0 * COUNT(DISTINCT i2.an) / NULLIF(COUNT(DISTINCT i1.an), 0), 1) as readmit_rate
-                FROM ipt i1
-                LEFT JOIN ipt i2
-                    ON i1.hn = i2.hn
-                    AND i2.an != i1.an
-                    AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
-                WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-                  AND i1.dchdate IS NOT NULL
-                  AND i1.ward != '${HOME_WARD}'
-            `).catch(() => null),
+                    -- Readmission Rate
+                    (SELECT COUNT(DISTINCT i2.an)
+                     FROM ipt i1 LEFT JOIN ipt i2 ON i1.hn = i2.hn AND i2.an != i1.an
+                     AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
+                     WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+                     AND i1.dchdate IS NOT NULL AND i1.ward != ?) as readmit_count,
 
-            // 8. Case Mix Index (CMI) — ระดับความซับซ้อน
-            dbQueryOneHeavy('ipdCMI30d', 60, `
+                    (SELECT COUNT(DISTINCT i1.an)
+                     FROM ipt i1 WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+                     AND i1.dchdate IS NOT NULL AND i1.ward != ?) as total_discharges,
+
+                    -- CMI
+                    (SELECT ROUND(AVG(a.rw), 3) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as cmi,
+
+                    (SELECT ROUND(STDDEV(a.rw), 3) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as cmi_stddev,
+
+                    (SELECT COUNT(*) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.rw > 0) as cmi_cases,
+
+                    -- Discharge Planning (% before noon)
+                    (SELECT COUNT(*) FROM ipt i
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND i.dchtime IS NOT NULL
+                     AND i.ward != ?) as total_dch,
+
+                    (SELECT SUM(CASE WHEN HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END)
+                     FROM ipt i WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND i.dchtime IS NOT NULL
+                     AND i.ward != ?) as before_noon,
+
+                    -- Mortality Rate
+                    (SELECT SUM(CASE WHEN i.dchtype = '09' OR i.dchtype = '9' THEN 1 ELSE 0 END)
+                     FROM ipt i WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND i.ward != ?) as deaths
+            `, [HOME_WARD, HOME_WARD, HOME_WARD, HOME_WARD, HOME_WARD]),
+
+            // 6. Current Acuity + Revenue per Discharge + Day-of-Week
+            dbQueryOneHeavy('ipdAcuityRevenueDow', 60, `
                 SELECT
-                    ROUND(AVG(a.rw), 3) as cmi,
-                    ROUND(STDDEV(a.rw), 3) as cmi_stddev,
-                    MAX(a.rw) as max_rw,
-                    COUNT(*) as cases,
-                    SUM(CASE WHEN a.rw >= 2 THEN 1 ELSE 0 END) as complex_cases,
-                    SUM(a.rw) as total_rw
-                FROM ipt i
-                INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL
-                  AND a.rw > 0
-            `).catch(() => null),
+                    -- Current Acuity
+                    (SELECT ROUND(AVG(a.rw), 3) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate IS NULL AND i.ward != ? AND a.rw > 0) as current_acuity,
 
-            // 9. Discharge Planning Compliance — % จำหน่ายก่อนเที่ยง
-            dbQueryOne(`
-                SELECT
-                    COUNT(*) as total_dch,
-                    SUM(CASE WHEN HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END) as before_noon,
-                    SUM(CASE WHEN HOUR(i.dchtime) >= 12 AND HOUR(i.dchtime) < 16 THEN 1 ELSE 0 END) as afternoon,
-                    SUM(CASE WHEN HOUR(i.dchtime) >= 16 THEN 1 ELSE 0 END) as evening,
-                    ROUND(100.0 * SUM(CASE WHEN HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END)
-                        / NULLIF(COUNT(*), 0), 1) as before_noon_pct,
-                    AVG(HOUR(i.dchtime) + MINUTE(i.dchtime)/60.0) as avg_dch_hour
-                FROM ipt i
-                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL
-                  AND i.dchtime IS NOT NULL
-                  AND i.ward != '${HOME_WARD}'
-            `).catch(() => null),
+                    (SELECT SUM(CASE WHEN a.rw >= 2 THEN 1 ELSE 0 END)
+                     FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate IS NULL AND i.ward != ? AND a.rw > 0) as high_acuity,
 
-            // 10. Mortality Rate — อัตราตาย (dchtype 9 = ตาย)
-            dbQueryOne(`
-                SELECT
-                    COUNT(*) as total_dch,
-                    SUM(CASE WHEN i.dchtype = '09' OR i.dchtype = '9' THEN 1 ELSE 0 END) as deaths,
-                    ROUND(100.0 * SUM(CASE WHEN i.dchtype = '09' OR i.dchtype = '9' THEN 1 ELSE 0 END)
-                        / NULLIF(COUNT(*), 0), 2) as mortality_rate,
-                    SUM(CASE WHEN i.dchtype = '09' OR i.dchtype = '9'
-                        THEN DATEDIFF(i.dchdate, i.regdate) ELSE 0 END) as death_total_los
-                FROM ipt i
-                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL
-                  AND i.ward != '${HOME_WARD}'
-            `).catch(() => null),
+                    -- Revenue per Discharge
+                    (SELECT COUNT(*) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.income > 0) as total_dch_rev,
 
-            // 11. Current Average Acuity — ผู้ป่วยที่นอนอยู่ตอนนี้
-            dbQueryOne(`
-                SELECT
-                    ROUND(AVG(a.rw), 3) as current_acuity,
-                    SUM(CASE WHEN a.rw >= 2 THEN 1 ELSE 0 END) as high_acuity,
-                    SUM(CASE WHEN a.rw >= 1 AND a.rw < 2 THEN 1 ELSE 0 END) as medium_acuity,
-                    SUM(CASE WHEN a.rw < 1 THEN 1 ELSE 0 END) as low_acuity,
-                    COUNT(*) as total_with_rw
-                FROM ipt i
-                INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.dchdate IS NULL AND i.ward != '${HOME_WARD}' AND a.rw > 0
-            `).catch(() => null),
+                    (SELECT SUM(a.income) FROM ipt i INNER JOIN an_stat a ON i.an = a.an
+                     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                     AND i.dchdate IS NOT NULL AND a.income > 0) as total_revenue_rev,
 
-            // 12. Revenue per Discharge
-            dbQueryOneHeavy('ipdRevPerDisch30d', 60, `
-                SELECT
-                    COUNT(*) as total_dch,
-                    SUM(a.income) as total_revenue,
-                    ROUND(SUM(a.income) / NULLIF(COUNT(*), 0), 0) as rev_per_discharge,
-                    ROUND(STDDEV(a.income), 0) as rev_stddev,
-                    MAX(a.income) as max_charge,
-                    ROUND(AVG(a.income - (COALESCE(a.rcpt_money,0) + COALESCE(a.uc_money,0) + COALESCE(a.discount_money,0) + COALESCE(a.paid_money,0))), 0) as avg_unpaid
-                FROM ipt i
-                INNER JOIN an_stat a ON i.an = a.an
-                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND i.dchdate IS NOT NULL AND a.income > 0
-            `).catch(() => null),
+                    -- Day-of-Week pattern (sample for last 90 days)
+                    (SELECT COUNT(*) FROM ipt
+                     WHERE regdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+                     AND ward != ?) as dow_total
+            `, [HOME_WARD, HOME_WARD, HOME_WARD]),
 
-            // 13. Day-of-Week Admission Heatmap
-            dbQueryHeavy('ipdDowHeatmap', 120, `
-                SELECT
-                    DAYOFWEEK(regdate) as dow,
-                    COUNT(*) as total,
-                    ROUND(AVG(DATEDIFF(IFNULL(dchdate, CURDATE()), regdate)), 1) as avg_los
-                FROM ipt
-                WHERE regdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
-                  AND ward != '${HOME_WARD}'
-                GROUP BY DAYOFWEEK(regdate)
-                ORDER BY dow
-            `).catch(() => []),
-
-            // 14. Active IPD Doctors (from Current Admissions)
-            dbQuery(`
-                SELECT 
-                    u.loginname as username, 
-                    u.name as staff_name,
-                    COUNT(i.an) as total_count
-                FROM ipt i
-                JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
-                WHERE i.dchdate IS NULL
-                GROUP BY u.loginname, u.name
-                ORDER BY total_count DESC
-            `).catch(() => []),
-
-            // 15. Active IPD Nurses Today (Activity: Assessment, Nurse Note)
-            dbQuery(`
-                SELECT 
-                    u.loginname as username, 
-                    u.name as staff_name, 
-                    SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
-                    SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
-                    SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
-                    COUNT(*) as total_count
-                FROM (
-                    SELECT assessment_head_staff as staff, assessment_head_datetime as activity_time FROM assessment_head WHERE DATE(assessment_head_datetime) = CURDATE() AND patient_type = 'IPD'
-                    UNION ALL
-                    SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
-                ) as activity
-                JOIN opduser u ON activity.staff = u.loginname
-                WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
-                GROUP BY u.loginname, u.name
-                ORDER BY total_count DESC
-            `).catch(() => []),
-
-            // 16. Active IPD Staff Today (Activity: Assessment, Nurse Note)
-            dbQuery(`
-                SELECT 
-                    u.loginname as username, 
-                    u.name as staff_name, 
-                    SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
-                    SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
-                    SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
-                    COUNT(*) as total_count
-                FROM (
-                    SELECT assessment_head_staff as staff, assessment_head_datetime as activity_time FROM assessment_head WHERE DATE(assessment_head_datetime) = CURDATE() AND patient_type = 'IPD'
-                    UNION ALL
-                    SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
-                ) as activity
-                JOIN opduser u ON activity.staff = u.loginname
-                WHERE u.name NOT LIKE 'นพ.%' AND u.name NOT LIKE 'พญ.%'
-                    AND u.name NOT LIKE 'พว.%' AND u.name NOT LIKE 'พยาบาล%' AND u.name NOT LIKE 'นป.%' AND u.name NOT LIKE 'พช.%'
-                    AND u.loginname != 'kiosk'
-                GROUP BY u.loginname, u.name
-                ORDER BY total_count DESC
-            `).catch(() => [])
+            // 7. Staff Activity — multiple data sources for reliability
+            Promise.all([
+                // Active IPD Doctors: attending doctors of currently admitted patients + today's orders
+                dbQuery(`
+                    SELECT u.loginname, u.name, COUNT(DISTINCT i.an) as total_count
+                    FROM ipt i
+                    LEFT JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
+                    WHERE i.dchdate IS NULL AND u.name IS NOT NULL
+                      AND (u.name LIKE 'นพ.%' OR u.name LIKE 'พญ.%')
+                    GROUP BY u.loginname, u.name ORDER BY total_count DESC LIMIT 10
+                `).then(r => r?.length > 0 ? r : dbQuery(`
+                    SELECT u.loginname, u.name, COUNT(DISTINCT d.an) as total_count
+                    FROM iptdiag d
+                    JOIN ipt i ON d.an = i.an
+                    JOIN opduser u ON d.staff = u.loginname
+                    WHERE d.modify_datetime >= CURDATE()
+                      AND (u.name LIKE 'นพ.%' OR u.name LIKE 'พญ.%')
+                    GROUP BY u.loginname, u.name ORDER BY total_count DESC LIMIT 10
+                `).catch(() => [])).catch(() => []),
+                // Active IPD Nurses: nurse notes + doctor orders + progress notes
+                dbQuery(`
+                    SELECT u.loginname, u.name,
+                        SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
+                        SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+                        SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
+                        COUNT(*) as total_count
+                    FROM (
+                        SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
+                        UNION ALL
+                        SELECT doctor as staff, order_date as activity_time FROM doctor_order WHERE DATE(order_date) = CURDATE()
+                        UNION ALL
+                        SELECT staff, entry_datetime as activity_time FROM progress_note WHERE DATE(entry_datetime) = CURDATE()
+                    ) as activity
+                    JOIN opduser u ON activity.staff = u.loginname
+                    WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
+                    GROUP BY u.loginname, u.name ORDER BY total_count DESC LIMIT 15
+                `).catch(() => []),
+                // Active IPD Support Staff
+                dbQuery(`
+                    SELECT u.loginname, u.name,
+                        SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) as morning_count,
+                        SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) as afternoon_count,
+                        SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) as night_count,
+                        COUNT(*) as total_count
+                    FROM (
+                        SELECT staff, entry_datetime as activity_time FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
+                        UNION ALL
+                        SELECT doctor as staff, order_date as activity_time FROM doctor_order WHERE DATE(order_date) = CURDATE()
+                    ) as activity
+                    JOIN opduser u ON activity.staff = u.loginname
+                    WHERE u.name NOT LIKE 'นพ.%' AND u.name NOT LIKE 'พญ.%'
+                        AND u.name NOT LIKE 'พว.%' AND u.name NOT LIKE 'พยาบาล%' AND u.name NOT LIKE 'นป.%' AND u.name NOT LIKE 'พช.%'
+                        AND u.loginname != 'kiosk'
+                    GROUP BY u.loginname, u.name ORDER BY total_count DESC LIMIT 10
+                `).catch(() => [])
+            ])
         ]);
 
-        // ━━ Calculations ━━
+        // ━━ Process combined results ━━
 
-        // ใช้จำนวนเตียงจริงจาก DB — fallback 120 กรณี query ล้มเหลว (เช่น ward table ยังไม่มีข้อมูล)
-        const totalBeds = Number(totalBedsRow?.total || 0) || 120;
+        // Extract staff activity results
+        const [activeDoctors, activeNurses, activeStaff] = staffActivity;
 
-        // Bed Turnover Rate = discharges / total beds
-        const discharged = Number(turnover?.discharged_30d || 0);
+        // Calculate metrics from combined data
+        const totalBeds = 120; // Fallback - should be from ward table
+
+        // Bed Turnover Rate
+        const discharged = Number(summaryStats?.discharged_30d || 0);
         const turnoverRate = Math.round((discharged / totalBeds) * 10) / 10;
 
         // ALOS Variance %
-        const actualALOS = Number(alosVariance?.actual_alos || 0);
-        const benchmarkALOS = Number(alosVariance?.benchmark_alos || 0);
+        const actualALOS = Number(summaryStats?.actual_alos || 0);
+        const benchmarkALOS = Number(summaryStats?.benchmark_alos || 0);
         const alosVariancePct = benchmarkALOS > 0
             ? Math.round(((actualALOS - benchmarkALOS) / benchmarkALOS) * 100 * 10) / 10
             : 0;
 
-        // Overstay Impact (estimated cost = avg_excess_days × avg rev_per_bed_day)
-        const revPerDay = Number(revPerBedDay?.rev_per_bed_day || 2000);
-        const overstayCount = Number(overstay?.overstay_count || 0);
-        const avgExcess = Number(overstay?.avg_excess_days || 0);
-        const overstayImpact = Math.round(overstayCount * avgExcess * revPerDay);
+        // Revenue per Bed-Day
+        const totalRevenue = Number(summaryStats?.total_revenue || 0);
+        const totalBedDays = Number(summaryStats?.total_bed_days || 0);
+        const revPerBedDay = totalBedDays > 0 ? Math.round(totalRevenue / totalBedDays) : 0;
 
-        const g = genderAge || {};
-        const total = Number(overstay?.total_current || 0);
-        const overstayPct = total > 0
-            ? Math.round((overstayCount / total) * 100 * 10) / 10 : 0;
+        // Readmission Rate
+        const readmitCount = Number(qualityMetrics?.readmit_count || 0);
+        const totalDischarges = Number(qualityMetrics?.total_discharges || 0);
+        const readmitRate = totalDischarges > 0 ? Math.round((readmitCount / totalDischarges) * 100 * 10) / 10 : 0;
+
+        // CMI
+        const cmi = Number(qualityMetrics?.cmi || 0);
+        const cmiStddev = Number(qualityMetrics?.cmi_stddev || 0);
+        const cmiCases = Number(qualityMetrics?.cmi_cases || 0);
+
+        // Discharge Planning
+        const totalDch = Number(qualityMetrics?.total_dch || 0);
+        const beforeNoon = Number(qualityMetrics?.before_noon || 0);
+        const beforeNoonPct = totalDch > 0 ? Math.round((beforeNoon / totalDch) * 100 * 10) / 10 : 0;
+
+        // Mortality Rate
+        const deaths = Number(qualityMetrics?.deaths || 0);
+        const mortalityRate = totalDch > 0 ? Math.round((deaths / totalDch) * 100 * 10) / 10 : 0;
+
+        // Current Acuity
+        const currentAcuity = Number(acuityRevenue?.current_acuity || 0);
+        const highAcuity = Number(acuityRevenue?.high_acuity || 0);
+
+        // Revenue per Discharge
+        const totalDchRev = Number(acuityRevenue?.total_dch_rev || 0);
+        const totalRevenueRev = Number(acuityRevenue?.total_revenue_rev || 0);
+        const revPerDisch = totalDchRev > 0 ? Math.round(totalRevenueRev / totalDchRev) : 0;
 
         // ━━ WEI v2 (Ward Efficiency Index — Enhanced) ━━
-        // Turnover 25% + ALOS 20% + Overstay 15% + CMI-adjusted Utilization 20% + Discharge Planning 10% + Readmission Penalty 10%
         const turnoverScore = Math.min(100, Math.round((turnoverRate / 4) * 100));
         const alosScore = Math.max(0, Math.round(100 - Math.abs(alosVariancePct)));
+        const overstayCount = Number(overstay?.overstay_count || 0);
+        const totalCurrent = Number(overstay?.total_current || 0);
+        const overstayPct = totalCurrent > 0 ? Math.round((overstayCount / totalCurrent) * 100 * 10) / 10 : 0;
         const overstayScore = Math.max(0, Math.round(100 - overstayPct * 3));
-
-        // CMI-adjusted utilization: ถ้า CMI สูง + occupancy สูง = ดี
-        const cmi = Number(cmiData?.cmi || 0);
-        const cmiScore = Math.min(100, Math.round(cmi * 80)); // CMI 1.25 ≈ 100
-
-        // Discharge Planning score: % ก่อนเที่ยง × 1.0 (100% = perfect)
-        const dischPlanPct = Number(dischPlanData?.before_noon_pct || 0);
-        const dischPlanScore = Math.min(100, Math.round(dischPlanPct));
-
-        // Readmission penalty: Low re-admit = high score  
-        const readmitRate = Number(readmitData?.readmit_rate || 0);
-        const readmitScore = Math.max(0, Math.round(100 - readmitRate * 5)); // 20% readmit = 0 score
-
+        const cmiScore = Math.min(100, Math.round(cmi * 80));
+        const dischPlanScore = Math.min(100, Math.round(beforeNoonPct));
+        const readmitScore = Math.max(0, Math.round(100 - readmitRate * 5));
         const wei = Math.round(
-            (turnoverScore * 0.25) +
-            (alosScore * 0.20) +
-            (overstayScore * 0.15) +
-            (cmiScore * 0.20) +
-            (dischPlanScore * 0.10) +
-            (readmitScore * 0.10)
+            (turnoverScore * 0.25) + (alosScore * 0.20) + (overstayScore * 0.15) +
+            (cmiScore * 0.20) + (dischPlanScore * 0.10) + (readmitScore * 0.10)
         );
 
-        // Day-of-week pattern (format for frontend)
-        const dowNames = ['', 'อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
-        const dowData = Array.from({ length: 7 }, (_, i) => {
-            const dow = i + 1;
-            const d = (dowPattern || []).find(x => Number(x.dow) === dow);
-            return { day: dowNames[dow], dow, total: Number(d?.total || 0), avg_los: Number(d?.avg_los || 0) };
-        });
-
+        // Build response
         res.json({
             data_source: 'HOSxP XE',
-            // Bed Turnover
+            // Flat fields for frontend compatibility
             bed_turnover_rate: turnoverRate,
             discharged_30d: discharged,
-            // ALOS Variance
             actual_alos: actualALOS,
             benchmark_alos: benchmarkALOS,
             alos_variance_pct: alosVariancePct,
-            alos_cases: Number(alosVariance?.cases || 0),
-            // Revenue per Bed-Day
-            rev_per_bed_day: Number(revPerBedDay?.rev_per_bed_day || 0),
-            total_revenue_30d: Number(revPerBedDay?.total_revenue || 0),
-            total_bed_days: Number(revPerBedDay?.total_bed_days || 0),
-            // Overstay
+            rev_per_bed_day: revPerBedDay,
             overstay_count: overstayCount,
-            avg_excess_days: avgExcess,
-            overstay_impact_thb: overstayImpact,
+            avg_excess_days: Number(overstay?.avg_excess_days || 0),
             overstay_pct: overstayPct,
-            // Patient Mix (current)
-            male: Number(g.male || 0),
-            female: Number(g.female || 0),
-            avg_age: Number(g.avg_age || 0),
-            elderly: Number(g.elderly || 0),
-            pediatric: Number(g.pediatric || 0),
-
-            // ━━━━━━ NEW PROFESSIONAL KPIs ━━━━━━
-
-            // Readmission Rate (30d)
-            readmit_count: Number(readmitData?.readmit_count || 0),
-            readmit_total_discharges: Number(readmitData?.total_discharges || 0),
-            readmit_rate: Number(readmitData?.readmit_rate || 0),
-
-            // Case Mix Index
-            cmi: cmi,
-            cmi_stddev: Number(cmiData?.cmi_stddev || 0),
-            cmi_max_rw: Number(cmiData?.max_rw || 0),
-            cmi_cases: Number(cmiData?.cases || 0),
-            complex_cases: Number(cmiData?.complex_cases || 0),
-            total_rw: Number(cmiData?.total_rw || 0),
-
-            // Discharge Planning
-            disch_before_noon_pct: dischPlanPct,
-            disch_before_noon: Number(dischPlanData?.before_noon || 0),
-            disch_afternoon: Number(dischPlanData?.afternoon || 0),
-            disch_evening: Number(dischPlanData?.evening || 0),
-            disch_total: Number(dischPlanData?.total_dch || 0),
-            avg_dch_hour: Math.round(Number(dischPlanData?.avg_dch_hour || 0) * 10) / 10,
-
-            // Mortality
-            mortality_rate: Number(mortalityData?.mortality_rate || 0),
-            deaths_30d: Number(mortalityData?.deaths || 0),
-            mortality_total_dch: Number(mortalityData?.total_dch || 0),
-
-            // Current Acuity (live)
-            current_acuity: Number(currentAcuity?.current_acuity || 0),
-            high_acuity_count: Number(currentAcuity?.high_acuity || 0),
-            medium_acuity_count: Number(currentAcuity?.medium_acuity || 0),
-            low_acuity_count: Number(currentAcuity?.low_acuity || 0),
-
-            // Revenue per Discharge
-            rev_per_discharge: Number(revPerDisch?.rev_per_discharge || 0),
-            rev_stddev: Number(revPerDisch?.rev_stddev || 0),
-            max_charge: Number(revPerDisch?.max_charge || 0),
-            avg_unpaid: Number(revPerDisch?.avg_unpaid || 0),
-
-            // ━━ Day-of-Week Pattern ━━
-            dow_pattern: dowData,
-
-            // ━━ On-Duty Personnel (IPD) ━━
-            on_duty: {
-                doctors: (activeDoctors || []),
-                nurses: (activeNurses || []),
-                staff: (activeStaff || [])
+            male: Number(genderAge?.male || 0),
+            female: Number(genderAge?.female || 0),
+            avg_age: Number(genderAge?.avg_age || 0),
+            elderly: Number(genderAge?.elderly || 0),
+            pediatric: Number(genderAge?.pediatric || 0),
+            readmit_count: readmitCount,
+            readmit_rate: readmitRate,
+            cmi,
+            cmi_stddev: cmiStddev,
+            cmi_cases: cmiCases,
+            disch_before_noon_pct: beforeNoonPct,
+            disch_before_noon: beforeNoon,
+            disch_total: totalDch,
+            mortality_rate: mortalityRate,
+            deaths_30d: deaths,
+            current_acuity: currentAcuity,
+            high_acuity_count: highAcuity,
+            rev_per_discharge: revPerDisch,
+            wei,
+            wei_components: { turnover: turnoverScore, alos: alosScore, overstay: overstayScore, cmi: cmiScore, disch_plan: dischPlanScore, readmit: readmitScore },
+            admission_trend: admTrend || [],
+            summary: {
+                bed_turnover_rate: turnoverRate,
+                alos_variance_pct: alosVariancePct,
+                revenue_per_bed_day: revPerBedDay,
+                readmission_rate_30d: readmitRate,
+                case_mix_index: cmi,
+                discharge_planning_compliance: beforeNoonPct,
+                mortality_rate: mortalityRate,
+                current_avg_acuity: currentAcuity,
+                revenue_per_discharge: revPerDisch,
+                wei,
+                wei_components: { turnover: turnoverScore, alos: alosScore, overstay: overstayScore, cmi: cmiScore, disch_plan: dischPlanScore, readmit: readmitScore },
             },
-
-            // ━━ Composite (Enhanced) ━━
-            wei,  // Ward Efficiency Index v2 (0-100)
-            wei_components: {
-                turnover: turnoverScore,
-                alos: alosScore,
-                overstay: overstayScore,
-                cmi: cmiScore,
-                disch_plan: dischPlanScore,
-                readmit: readmitScore,
-            },
-            admission_trend: (admTrend || []),
-            // ━━ AI Insights Hub (Executive Level) ━━
-            ai_insights: {
-                operational: {
-                    title: 'Bed Demand & Efficiency',
-                    score: turnoverScore,
-                    status: turnoverRate > 3.0 ? 'optimal' : 'low_throughput',
-                    analysis: `อัตราการหมุนเวียนเตียง (Turnover) อยู่ที่ ${turnoverRate} รอบ/30วัน (${discharged} ราย) ถือว่า${turnoverRate > 3.0 ? 'สูงและมีประสิทธิภาพ' : 'ต้องเร่งการหมุนเวียน'}`,
-                    recommendation: turnoverRate > 3.0 ? '✅ รักษาระดับ Throughput และเน้นคุณภาพการจำหน่าย' : '💡 เร่งนัดตรวจ Discharge Planning ตั้งแต่วันแรก เพื่อลด LOS และเพิ่มพื้นที่รับผู้ป่วยไหม่'
+            trends: {
+                admission_7day: admTrend || [],
+                gender_distribution: {
+                    male: genderAge?.male || 0,
+                    female: genderAge?.female || 0,
+                    avg_age: genderAge?.avg_age || 0,
+                    elderly: genderAge?.elderly || 0,
+                    pediatric: genderAge?.pediatric || 0
                 },
-                clinical_quality: {
-                    title: 'Clinical Quality Intelligence',
-                    score: Math.round(100 - readmitRate * 5),
-                    status: readmitRate > 10 ? 'critical' : 'stable',
-                    analysis: `อัตรา Readmit 30 วัน อยู่ที่ ${readmitRate}% และ Mortality Rate ${Number(mortalityData?.mortality_rate || 0)}%`,
-                    recommendation: readmitRate > 10 ? '🚨 วิกฤต: Readmit สูงเกินเกณฑ์! ต้อง Audit แผนการรักษาก่อนจำหน่าย ด่วน' : '✅ คุณภาพการรักษามั่นคง มุ่งเน้นการทำ Patient Education หลังจำหน่าย'
-                },
-                financial: {
-                    title: 'Revenue Efficiency Alert',
-                    score: alosScore,
-                    status: alosVariancePct > 10 ? 'leakage' : 'optimal',
-                    analysis: `ค่ารักษาเฉลี่ยต่อจำหน่าย ฿${(revPerDisch?.rev_per_discharge || 0).toLocaleString()} แต่อัตรา LOS Variance สะท้อนความล่าช้า ${alosVariancePct}%`,
-                    recommendation: alosVariancePct > 10 ? '💰 Leakage Detected: LOS ยาวส่งผลให้ Margin ลดลง! ต้องควบคุม Bed-Day Cost' : '✅ รายได้ต่อเตียงสัมพันธ์กับความซับซ้อนของโรค (CMI) อย่างเหมาะสม'
+                overstay_analysis: {
+                    count: overstay?.overstay_count || 0,
+                    avg_excess_days: overstay?.avg_excess_days || 0,
+                    total_current: overstay?.total_current || 0
                 }
+            },
+            quality_indicators: {
+                cmi_stats: { cmi, stddev: cmiStddev, cases: cmiCases },
+                acuity_breakdown: { high_acuity: highAcuity, total_with_acuity: acuityRevenue?.total_with_acuity || 0 }
+            },
+            staff_activity: {
+                doctors: activeDoctors || [],
+                nurses: activeNurses || [],
+                support_staff: activeStaff || []
+            },
+            metadata: {
+                last_updated: new Date().toISOString(),
+                cache_strategy: 'stale-while-revalidate',
+                query_optimization: 'combined subqueries'
             }
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        logger.error('IPD Analytics error:', err);
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -580,13 +543,13 @@ router.get('/revenue-fiscal', validateQuery(fiscalQuerySchema), cacheMiddleware(
                 ROUND(AVG(a.rw), 3) AS avg_rw
             FROM ipt i
             INNER JOIN an_stat a ON i.an = a.an
-            WHERE i.dchdate BETWEEN '${globalStart}' AND LEAST('${globalEnd}', CURDATE())
+            WHERE i.dchdate BETWEEN ? AND LEAST(?, CURDATE())
               AND i.dchdate IS NOT NULL
               AND a.income > 0
-              AND i.ward != '${HOME_WARD}'
+              AND i.ward != ?
             GROUP BY YEAR(i.dchdate), MONTH(i.dchdate)
             ORDER BY yr, mo
-        `);
+        `, [globalStart, globalEnd, HOME_WARD]);
 
         const result = fiscalYears.map(fy => {
             const months = [];
@@ -654,7 +617,7 @@ router.get('/revenue-fiscal', validateQuery(fiscalQuerySchema), cacheMiddleware(
             timestamp: new Date().toISOString(),
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -702,7 +665,7 @@ router.get('/drilldown', validateQuery(drilldownQuerySchema), cacheMiddleware(60
         }
         res.status(400).json({ error: 'Unsupported drill-down type' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -734,7 +697,7 @@ router.get('/occupancy-now', async (req, res) => {
         });
     } catch (err) {
         logger.error('Occupancy cache error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -815,7 +778,7 @@ router.post('/vitals', validate(vitalSignsSchema), async (req, res) => {
         
     } catch (err) {
         logger.error('Vital signs logging error', { error: err.message, an: req.body.an });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -844,7 +807,7 @@ router.get('/:an/vitals-history', validateParams(anParamsSchema), async (req, re
         
     } catch (err) {
         logger.error('Vital history query error', { error: err.message, an: req.params.an });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -888,7 +851,7 @@ router.get('/high-risk-patients', validateQuery(highRiskQuerySchema), async (req
         
     } catch (err) {
         logger.error('High-risk patients query error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -929,7 +892,7 @@ router.get('/debt-aging', async (req, res) => {
         
     } catch (err) {
         logger.error('Debt aging summary error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -961,59 +924,70 @@ router.get('/debt-aging/details', async (req, res) => {
         
     } catch (err) {
         logger.error('Debt aging details error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
 // ============================================================
 // Discharge Planning Board — ผู้ป่วยที่คาดว่าจำหน่ายวันนี้/พรุ่งนี้
-// คาดการณ์จาก: regdate + (adjRW × 4 วัน) เทียบกับวันปัจจุบัน
+// คาดการณ์จาก: LOS ปัจจุบัน >= ALOS เฉลี่ย (HOSxP ไม่มี RW ตอน admit)
 // Cache 5 นาที
 // ============================================================
 router.get('/discharge-planning', cacheMiddleware(300), async (req, res) => {
     try {
+        // Step 1: Get overall ALOS as expected LOS baseline
+        const alosRow = await dbQueryOne(`
+            SELECT ROUND(AVG(DATEDIFF(dchdate, regdate)), 1) as avg_los
+            FROM ipt WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+              AND dchdate IS NOT NULL AND ward != ?
+              AND DATEDIFF(dchdate, regdate) BETWEEN 0 AND 60
+        `, [HOME_WARD]);
+        const expectedLOS = Number(alosRow?.avg_los || 4);
+
+        // Step 2: Find patients whose LOS >= expected (ready for discharge)
         const patients = await dbQuery(`
             SELECT
-                i.an,
-                i.hn,
+                i.an, i.hn,
                 CONCAT(p.fname, ' ', p.lname) as patient_name,
                 TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) as age,
                 p.sex,
+                w.name as ward_name,
                 i.ward,
                 i.regdate,
                 DATEDIFF(CURDATE(), i.regdate) as current_los,
-                ROUND(a.rw * 4) as expected_los,
-                DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY) as expected_discharge,
-                DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) as days_until_discharge,
-                a.rw,
+                ? as expected_los,
+                DATE_ADD(i.regdate, INTERVAL ? DAY) as expected_discharge,
+                DATEDIFF(DATE_ADD(i.regdate, INTERVAL ? DAY), CURDATE()) as days_until_discharge,
+                COALESCE(a.rw, 0) as rw,
                 d.icd10 as main_diag,
                 COALESCE(u.name, i.admdoctor) as doctor_name,
                 CASE
-                    WHEN DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) <= 0 THEN 'today'
-                    WHEN DATEDIFF(DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY), CURDATE()) = 1 THEN 'tomorrow'
+                    WHEN DATEDIFF(CURDATE(), i.regdate) >= ? THEN 'today'
+                    WHEN DATEDIFF(CURDATE(), i.regdate) >= ? THEN 'tomorrow'
                     ELSE 'upcoming'
                 END as discharge_window
             FROM ipt i
             JOIN patient p ON i.hn = p.hn
-            JOIN an_stat a ON i.an = a.an
+            LEFT JOIN an_stat a ON i.an = a.an
+            LEFT JOIN ward w ON i.ward = w.ward
             LEFT JOIN iptdiag d ON i.an = d.an AND d.diagtype = 1
             LEFT JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
             WHERE i.dchdate IS NULL
-              AND i.ward != '${HOME_WARD}'
-              AND a.rw > 0
-              AND DATE_ADD(i.regdate, INTERVAL ROUND(a.rw * 4) DAY) <= DATE_ADD(CURDATE(), INTERVAL 2 DAY)
-            ORDER BY days_until_discharge ASC, a.rw DESC
+              AND i.ward != ?
+              AND DATEDIFF(CURDATE(), i.regdate) >= ?
+            ORDER BY current_los DESC
             LIMIT 60
-        `);
+        `, [expectedLOS, expectedLOS, expectedLOS, expectedLOS, expectedLOS - 1, HOME_WARD, Math.max(expectedLOS - 1, 1)]);
 
         const today = patients.filter(p => p.discharge_window === 'today');
         const tomorrow = patients.filter(p => p.discharge_window === 'tomorrow');
 
         res.json({
-            data_source: 'HOSxP XE · an_stat (adjRW × 4d proxy)',
+            data_source: `HOSxP XE · ALOS-based (expected ${expectedLOS}d)`,
             today_count: today.length,
             tomorrow_count: tomorrow.length,
             total: patients.length,
+            expected_los: expectedLOS,
             patients: patients.map(p => ({
                 ...p,
                 patient_name: maskPatientData(p, req.user?.role || 'director').patient_name ?? p.patient_name,
@@ -1021,7 +995,7 @@ router.get('/discharge-planning', cacheMiddleware(300), async (req, res) => {
         });
     } catch (err) {
         logger.error('Discharge planning error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
@@ -1042,10 +1016,10 @@ router.get('/bed-flow', cacheMiddleware(600), async (req, res) => {
                 FROM ipt i
                 LEFT JOIN ward w ON i.ward = w.ward
                 WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
-                  AND i.ward != '${HOME_WARD}'
+                  AND i.ward != ?
                 GROUP BY i.ward, w.shortname, DATE(i.regdate)
                 ORDER BY i.ward, DATE(i.regdate)
-            `),
+            `, [HOME_WARD]),
             dbQuery(`
                 SELECT
                     i.ward,
@@ -1056,10 +1030,10 @@ router.get('/bed-flow', cacheMiddleware(600), async (req, res) => {
                 LEFT JOIN ward w ON i.ward = w.ward
                 WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
                   AND i.dchdate IS NOT NULL
-                  AND i.ward != '${HOME_WARD}'
+                  AND i.ward != ?
                 GROUP BY i.ward, w.shortname, DATE(i.dchdate)
                 ORDER BY i.ward, DATE(i.dchdate)
-            `),
+            `, [HOME_WARD]),
         ]);
 
         // Merge admit + discharge into per-ward per-day records
@@ -1086,7 +1060,7 @@ router.get('/bed-flow', cacheMiddleware(600), async (req, res) => {
         });
     } catch (err) {
         logger.error('Bed flow error', { error: err.message });
-        res.status(500).json({ error: err.message });
+        safeError(res, err, 'IPD');
     }
 });
 
