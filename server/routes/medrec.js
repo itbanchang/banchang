@@ -894,6 +894,81 @@ router.get('/coding-heatmap', cached('mrCodingHeatmap', 1800000, async () => {
   }
 }));
 
+// ━━━━━━ Coding Turnaround Trend — Weekly × Coder (12 weeks) ━━━━━━
+router.get('/turnaround-trend', cached('mrTurnaroundTrend', 1800000, async () => {
+  try {
+    const rows = await dbQueryHeavy('mrTATrend_v1', 60, `
+      SELECT
+        YEARWEEK(i.dchdate, 1) as yw,
+        MIN(i.dchdate) as week_start,
+        COALESCE(u.name, d.staff) as coder_name,
+        COUNT(DISTINCT d.an) as cases,
+        ROUND(AVG(DATEDIFF(MIN_DT.first_code, i.dchdate)), 1) as avg_days
+      FROM ipt i
+      INNER JOIN (
+        SELECT an, MIN(modify_datetime) as first_code, staff
+        FROM iptdiag
+        WHERE modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 84 DAY)
+          AND staff IS NOT NULL AND staff != ''
+        GROUP BY an, staff
+      ) MIN_DT ON i.an = MIN_DT.an
+      INNER JOIN iptdiag d ON d.an = i.an AND d.staff = MIN_DT.staff
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 84 DAY)
+        AND i.dchdate IS NOT NULL
+        AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%'
+      GROUP BY YEARWEEK(i.dchdate, 1), MIN(i.dchdate), d.staff, u.name
+      HAVING COUNT(DISTINCT d.an) >= 1
+      ORDER BY yw ASC, coder_name
+    `).catch(() => []);
+
+    // Build week × coder matrix
+    const weekMap = new Map();
+    const coderSet = new Set();
+    for (const r of (rows || [])) {
+      const wk = r.week_start?.toISOString?.()?.slice(0, 10) || r.week_start?.slice?.(0, 10) || String(r.yw);
+      if (!weekMap.has(wk)) weekMap.set(wk, { week: wk, coders: {}, total_cases: 0, avg_all: 0 });
+      const w = weekMap.get(wk);
+      coderSet.add(r.coder_name);
+      w.coders[r.coder_name] = { cases: Number(r.cases), avg_days: Number(r.avg_days) };
+      w.total_cases += Number(r.cases);
+    }
+
+    // Calculate overall avg per week
+    for (const w of weekMap.values()) {
+      const entries = Object.values(w.coders);
+      const totalCases = entries.reduce((s, e) => s + e.cases, 0);
+      w.avg_all = totalCases > 0
+        ? Math.round(entries.reduce((s, e) => s + e.avg_days * e.cases, 0) / totalCases * 10) / 10
+        : 0;
+    }
+
+    const weeks = Array.from(weekMap.values()).sort((a, b) => a.week.localeCompare(b.week));
+    const coders = Array.from(coderSet).sort();
+
+    // Format week labels
+    const formatted = weeks.map(w => {
+      const d = new Date(w.week);
+      const label = `${d.getDate()}/${d.getMonth() + 1}`;
+      const entry = { week: w.week, label, avg_all: w.avg_all, total_cases: w.total_cases };
+      for (const c of coders) entry[c] = w.coders[c]?.avg_days ?? null;
+      return entry;
+    });
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + ipt',
+      weeks: formatted,
+      coders,
+      target_days: 3,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Turnaround trend error', { error: err.message });
+    return { weeks: [], coders: [], target_days: 3 };
+  }
+}));
+
 // ---- Revenue Fiscal — hospital-wide (MedRec covers all coding) ----
 router.get('/revenue-fiscal', cached('medrecRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (MedRec)', req?.query?.start, req?.query?.end)));
 

@@ -5,7 +5,7 @@
 import React, { useEffect, useMemo } from 'react';
 import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
-    LineChart, Line, Legend, CartesianGrid
+    LineChart, Line, Legend, CartesianGrid, ReferenceLine
 } from 'recharts';
 import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
@@ -180,7 +180,7 @@ function Divider() {
 
 // ─── Main Component ───────────────────────────────────────────
 function MedRecTab() {
-    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal }));
+    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal, medRecHeatmap: s.medRecHeatmap, medRecTATrend: s.medRecTATrend }));
     const { fetchData } = useDashboardActions();
     const today    = state.medRecToday    || {};
     const analytics = state.medRecAnalytics || {};
@@ -195,6 +195,7 @@ function MedRecTab() {
         fetchData('medRecDrgOpt',   '/api/medrec/drg-optimization');
         fetchData('medRecFiscal',   '/api/medrec/revenue-fiscal');
         fetchData('medRecHeatmap', '/api/medrec/coding-heatmap');
+        fetchData('medRecTATrend', '/api/medrec/turnaround-trend');
     }, [fetchData]);
 
     // ── Hourly chart data ──
@@ -1008,6 +1009,91 @@ function MedRecTab() {
                                 </div>
                             </div>
                         )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                ⏱️ SECTION 7 — Coding Turnaround Trend (12 weeks × Coder)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const trend = state.medRecTATrend;
+                if (!trend?.weeks?.length) return null;
+                const weeks = trend.weeks;
+                const coders = trend.coders || [];
+                const target = trend.target_days || 3;
+                const COLORS = ['#e11d48', '#0284c7', '#059669', '#f59e0b', '#7c3aed', '#0ea5e9', '#ec4899'];
+
+                // Overall stats
+                const allAvgs = weeks.map(w => w.avg_all).filter(v => v > 0);
+                const overallAvg = allAvgs.length > 0 ? Math.round(allAvgs.reduce((s, v) => s + v, 0) / allAvgs.length * 10) / 10 : 0;
+                const latestAvg = weeks[weeks.length - 1]?.avg_all || 0;
+                const firstAvg = weeks[0]?.avg_all || 0;
+                const trendDir = latestAvg < firstAvg ? 'improving' : latestAvg > firstAvg ? 'worsening' : 'stable';
+
+                return (
+                    <Section color="#0284c7" icon="⏱️" title="Coding Turnaround Trend" sub={`เวลาสรุปรหัส IPD รายสัปดาห์ (${weeks.length} สัปดาห์) · แยก Coder`} badge="12 Weeks">
+                        {/* KPI Strip */}
+                        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>เฉลี่ยรวม</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: overallAvg <= target ? '#059669' : '#e11d48' }}>{overallAvg} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>สัปดาห์ล่าสุด</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: latestAvg <= target ? '#059669' : '#e11d48' }}>{latestAvg} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>เป้าหมาย</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: '#f43f5e' }}>≤{target} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: trendDir === 'improving' ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)', border: `1px solid ${trendDir === 'improving' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}`, textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>แนวโน้ม</span>
+                                <p style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: trendDir === 'improving' ? '#059669' : trendDir === 'worsening' ? '#e11d48' : '#64748b' }}>
+                                    {trendDir === 'improving' ? '📈 ดีขึ้น' : trendDir === 'worsening' ? '📉 แย่ลง' : '➡️ คงที่'}
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Line Chart */}
+                        <ResponsiveContainer width="100%" height={280}>
+                            <LineChart data={weeks} margin={{ top: 8, right: 12, bottom: 0, left: 4 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
+                                <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                                <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={30} unit=" d" domain={[0, 'auto']} />
+                                <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
+                                    formatter={(v, name) => v != null ? [`${v} วัน`, name === 'avg_all' ? 'เฉลี่ยรวม' : name] : [null, null]} />
+                                <ReferenceLine y={target} stroke="#f43f5e" strokeWidth={2} strokeDasharray="8 4" label={{ value: `เป้า ${target} วัน`, fill: '#f43f5e', fontSize: 10, fontWeight: 700, position: 'right' }} />
+                                {/* Per-coder lines */}
+                                {coders.slice(0, 5).map((c, i) => (
+                                    <Line key={c} type="monotone" dataKey={c} stroke={COLORS[i % COLORS.length]} strokeWidth={2}
+                                        dot={{ r: 3, fill: COLORS[i % COLORS.length] }} connectNulls name={c} />
+                                ))}
+                                {/* Overall avg line (thick) */}
+                                <Line type="monotone" dataKey="avg_all" stroke="#1e1b4b" strokeWidth={3}
+                                    dot={{ r: 4, fill: '#1e1b4b', stroke: '#fff', strokeWidth: 2 }} name="เฉลี่ยรวม" />
+                            </LineChart>
+                        </ResponsiveContainer>
+
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '10px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ width: '16px', height: '3px', background: '#1e1b4b', borderRadius: '2px' }} />
+                                <span style={{ fontSize: '10px', color: C.sub, fontWeight: 700 }}>เฉลี่ยรวม</span>
+                            </div>
+                            {coders.slice(0, 5).map((c, i) => (
+                                <div key={c} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
+                                    <span style={{ fontSize: '9px', color: C.sub, fontWeight: 600, maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</span>
+                                </div>
+                            ))}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ width: '16px', height: '2px', background: '#f43f5e', borderRadius: '2px', borderTop: '2px dashed #f43f5e' }} />
+                                <span style={{ fontSize: '10px', color: '#f43f5e', fontWeight: 700 }}>เป้า {target} วัน</span>
+                            </div>
+                        </div>
                     </Section>
                 );
             })()}
