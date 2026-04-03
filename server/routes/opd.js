@@ -618,27 +618,35 @@ router.get('/monthly-fiscal', cached('opdMonthlyFiscal', 3600000, async () => {
 
     dbQuery(`
       SELECT
-        YEAR(vstdate)  AS year_num,
-        MONTH(vstdate) AS month_num,
+        YEAR(st.vstdate)  AS year_num,
+        MONTH(st.vstdate) AS month_num,
         AVG(CASE
-          WHEN service1 IS NOT NULL
-            AND TIME_TO_SEC(service1) > TIME_TO_SEC(vsttime)
-          THEN (TIME_TO_SEC(service1) - TIME_TO_SEC(vsttime)) / 60
+          WHEN st.service1 IS NOT NULL
+            AND TIME_TO_SEC(st.service1) > TIME_TO_SEC(st.vsttime)
+          THEN (TIME_TO_SEC(st.service1) - TIME_TO_SEC(st.vsttime)) / 60
         END) AS avg_reg_to_screen,
         AVG(CASE
-          WHEN service5 IS NOT NULL AND service1 IS NOT NULL
-            AND TIME_TO_SEC(service5) > TIME_TO_SEC(service1)
-          THEN (TIME_TO_SEC(service5) - TIME_TO_SEC(service1)) / 60
+          WHEN st.service5 IS NOT NULL AND st.service1 IS NOT NULL
+            AND TIME_TO_SEC(st.service5) > TIME_TO_SEC(st.service1)
+          THEN (TIME_TO_SEC(st.service5) - TIME_TO_SEC(st.service1)) / 60
         END) AS avg_screen_to_doc,
         AVG(CASE
-          WHEN service7 IS NOT NULL AND service5 IS NOT NULL
-            AND TIME_TO_SEC(service7) > TIME_TO_SEC(service5)
-          THEN (TIME_TO_SEC(service7) - TIME_TO_SEC(service5)) / 60
-        END) AS avg_doc_to_rx
-      FROM service_time
-      WHERE vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE())
-        AND service1 IS NOT NULL
-      GROUP BY YEAR(vstdate), MONTH(vstdate)
+          WHEN st.service7 IS NOT NULL AND st.service5 IS NOT NULL
+            AND TIME_TO_SEC(st.service7) > TIME_TO_SEC(st.service5)
+          THEN (TIME_TO_SEC(st.service7) - TIME_TO_SEC(st.service5)) / 60
+        END) AS avg_doc_to_rx,
+        -- True Cycle Time: vsttime → COALESCE(bill_time, service7) per patient
+        ROUND(AVG(CASE
+          WHEN (r.bill_time IS NOT NULL OR st.service7 IS NOT NULL)
+          THEN TIMESTAMPDIFF(MINUTE,
+            CONCAT(st.vstdate, ' ', st.vsttime),
+            CONCAT(st.vstdate, ' ', COALESCE(r.bill_time, st.service7)))
+          ELSE NULL END), 0) AS true_cycle_time
+      FROM service_time st
+      LEFT JOIN rcpt_print r ON st.vn = r.vn
+      WHERE st.vstdate BETWEEN '${fiscalStart}' AND LEAST('${fiscalEnd}', CURDATE())
+        AND st.service1 IS NOT NULL
+      GROUP BY YEAR(st.vstdate), MONTH(st.vstdate)
     `)
 
   ]);
@@ -656,7 +664,9 @@ router.get('/monthly-fiscal', cached('opdMonthlyFiscal', 3600000, async () => {
     const reg = Math.round(Number(wRow?.avg_reg_to_screen || 0));
     const screen = Math.round(Number(wRow?.avg_screen_to_doc || 0));
     const doc = Math.round(Number(wRow?.avg_doc_to_rx || 0));
-    const total = reg + screen + doc;
+    const trueCycle = Number(wRow?.true_cycle_time || 0);
+    // Use true cycle time if available, fallback to sum of steps
+    const total = trueCycle > 0 ? trueCycle : (reg + screen + doc);
 
     fiscalMonths.push({
       month: MONTH_TH[mNum],
