@@ -9,7 +9,7 @@ import {
     ResponsiveContainer, Cell, PieChart, Pie,
     ComposedChart, Area, Line, ReferenceLine, Legend
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
 import StatusBadge from './shared/StatusBadge.jsx';
@@ -19,6 +19,18 @@ import HealthGauge from './shared/HealthGauge.jsx';
 import AlertBanner from './shared/AlertBanner.jsx';
 import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
 import EmptyState from './shared/EmptyState.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
+// Sub-component imports (Sprint 3 decomposition)
+import {
+    OPDLiveFeed,
+    OPDKPICards,
+    OPDStaffOnDuty,
+    OPDRootCause,
+    OPDStrategicDashboard,
+    OPDCycleTime,
+    OPDHourlyChart,
+    OPDRevenue,
+} from './opd';
 
 const STATUS_COLORS = {
     'รอคัดกรอง': '#f5365c', // Danger
@@ -48,10 +60,10 @@ function computeDPI(opd) {
 }
 
 function OPDTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ opdToday: s.opdToday, loading: s.loading, opdMonthlyFiscal: s.opdMonthlyFiscal, opdRevenueFiscal: s.opdRevenueFiscal }));
+    const { fetchData } = useDashboardActions();
     const opd = state.opdToday;
     const loading = state.loading;
-
     const fiscalData = state.opdMonthlyFiscal;
 
     useEffect(() => {
@@ -460,7 +472,7 @@ function OPDTab() {
                 {/* ── กลับบ้านแล้ว ── */}
                 {[
                     { title: 'กลับบ้านแล้ว', value: opd?.completed, icon: '✅', unit: 'ราย', grad: ['#10b981', '#059669'], glow: 'rgba(16,185,129,.2)' },
-                    { title: 'ยังรอรับบริการ', value: opd?.still_here, icon: '⌛', unit: 'ราย', grad: ['#f59e0b', '#d97706'], glow: 'rgba(245,158,11,.2)' },
+                    { title: 'ยังรอรับบริการ', value: opd?.still_here_breakdown?.likely_waiting ?? opd?.still_here, icon: '⌛', unit: 'ราย', grad: ['#f59e0b', '#d97706'], glow: 'rgba(245,158,11,.2)', raw_still_here: opd?.still_here },
                     { title: 'เวลารอเฉลี่ย', value: opd?.avg_total_minutes, icon: '⏱️', unit: 'นาที', grad: opd?.avg_total_minutes > 90 ? ['#f43f5e', '#dc2626'] : opd?.avg_total_minutes > 60 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'], glow: opd?.avg_total_minutes > 90 ? 'rgba(244,63,94,.2)' : 'rgba(16,185,129,.2)' },
                 ].map((kpi, i) => (
                     <div key={i} style={{
@@ -492,11 +504,26 @@ function OPDTab() {
                                         ประสิทธิภาพการบริการ (Throughput)
                                     </div>
                                 )}
-                                {kpi.title === 'ยังรอรับบริการ' && (
-                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
-                                        ภาระงานที่คงค้าง (Work-in-Progress) หรือคิวไม่รักษา
-                                    </div>
-                                )}
+                                {kpi.title === 'ยังรอรับบริการ' && (() => {
+                                    const bd = opd?.still_here_breakdown;
+                                    return (
+                                        <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                            {bd ? (
+                                                <>
+                                                    <span>น่าจะรออยู่จริง <b style={{ color: '#f59e0b' }}>{bd.likely_waiting}</b></span>
+                                                    {bd.likely_gone > 0 && <span> · น่าจะกลับแล้ว <b style={{ color: '#94a3b8' }}>{bd.likely_gone}</b></span>}
+                                                    {bd.by_stage && (
+                                                        <div style={{ marginTop: '3px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                            {bd.by_stage.wait_registration > 0 && <span>📋 รอคัดกรอง {bd.by_stage.wait_registration}</span>}
+                                                            {bd.by_stage.wait_doctor > 0 && <span>🩺 รอแพทย์ {bd.by_stage.wait_doctor}</span>}
+                                                            {bd.by_stage.wait_pharmacy > 0 && <span>💊 รอยา {bd.by_stage.wait_pharmacy}</span>}
+                                                        </div>
+                                                    )}
+                                                </>
+                                            ) : 'ภาระงานที่คงค้าง (Work-in-Progress)'}
+                                        </div>
+                                    );
+                                })()}
                                 {kpi.title === 'เวลารอเฉลี่ย' && (
                                     <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
                                         ระยะเวลาบริการรวม (Cycle Time)
@@ -515,7 +542,10 @@ function OPDTab() {
                                 )}
                                 {kpi.title === 'ยังรอรับบริการ' && (
                                     <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
-                                        วิธีคำนวณ: นับผู้ป่วยที่ยังรอตรวจ/รับยา โดยคัดแยกเคสเปลี่ยนสถานะออก (ยอดนี้อาจรวมถึงคิวที่คนไข้ไม่รอรักษา)
+                                        วิธีคำนวณ: นับผู้ป่วยที่ยังไม่จบกระบวนการ แยก "น่าจะรออยู่" (มี activity ใน 2 ชม.) vs "น่าจะกลับแล้ว" (ไม่มี activity &gt;2 ชม. + ไม่เคยคัดกรอง)
+                                        {kpi.raw_still_here > 0 && kpi.raw_still_here !== kpi.value && (
+                                            <span> · ดิบ: {kpi.raw_still_here} ราย</span>
+                                        )}
                                     </div>
                                 )}
                                 {kpi.title === 'เวลารอเฉลี่ย' && (
