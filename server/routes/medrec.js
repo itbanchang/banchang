@@ -48,12 +48,17 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
       FROM ovst WHERE vstdate = CURDATE() AND vsttime IS NOT NULL
       GROUP BY HOUR(vsttime) ORDER BY hour
     `).catch(() => []),
+    // OPD Coding audit: only count visits with doctor encounter (has spclty = clinical dept)
+    // Exclude lab-only, pharmacy refill, non-clinical visits
     dbQueryOne(`
-      SELECT 
+      SELECT
         COUNT(o.vn) as audit_total,
         SUM(CASE WHEN EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn) THEN 1 ELSE 0 END) as audit_coded
       FROM ovst o
+      INNER JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate = CURDATE()
+        AND v.income > 0
+        AND o.main_dep IS NOT NULL AND o.main_dep != ''
     `).catch(() => null),
     dbQuery(`
       SELECT 
@@ -89,11 +94,14 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
       GROUP BY c.clinic, c.name
       ORDER BY avg_wait DESC LIMIT 5
     `).catch(() => []),
+    // IPD coding rate: exclude last 3 days (grace period) for coding rate denominator
+    // but include all 30 days for RW/CMI metrics
     dbQueryOne(`
       SELECT
         COUNT(i.an) as ipd_dch_30d,
-        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
-        COUNT(CASE WHEN i.adjrw IS NOT NULL THEN i.an END) as ipd_drg_calculated_30d,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) THEN 1 ELSE 0 END) as ipd_dch_eligible,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) AND EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) AND i.adjrw IS NOT NULL THEN 1 ELSE 0 END) as ipd_drg_calculated_30d,
         ROUND(SUM(i.adjrw), 2) as total_rw_30d,
         ROUND(AVG(i.adjrw), 2) as avg_rw_30d,
         ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) as cmi,
@@ -137,7 +145,7 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
         COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH) ,'%Y-%m-01') 
                              AND d.modify_datetime < DATE_FORMAT(CURDATE() ,'%Y-%m-01') 
                              AND DAY(d.modify_datetime) <= DAY(CURDATE()) THEN d.an END) as prev_month_total,
-        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype IN ('2','3') THEN 1 ELSE 0 END) / 
+        ROUND(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype IN ('2','3') THEN d.an END) /
               NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as cc_rate,
         ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN 1 ELSE 0 END) / 
               NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as diag_per_case,
@@ -184,10 +192,12 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
   const qualityScore = auditTotal > 0 ? Math.round((auditCoded / auditTotal) * 100) : 100;
 
   const ipdAuditTotal = Number(ipdSummary?.ipd_dch_30d || 0);
+  const ipdEligible = Number(ipdSummary?.ipd_dch_eligible || 0);
   const ipdAuditCoded = Number(ipdSummary?.ipd_coded_30d || 0);
   const ipdDrgCalculated = Number(ipdSummary?.ipd_drg_calculated_30d || 0);
-  const ipdQualityScore = ipdAuditTotal > 0 ? Math.round((ipdAuditCoded / ipdAuditTotal) * 100) : 100;
-  const ipdDrgScore = ipdAuditTotal > 0 ? Math.round((ipdDrgCalculated / ipdAuditTotal) * 100) : 100;
+  // Use eligible (excluding 3-day grace period) for coding rate
+  const ipdQualityScore = ipdEligible > 0 ? Math.round((ipdAuditCoded / ipdEligible) * 100) : 100;
+  const ipdDrgScore = ipdEligible > 0 ? Math.round((ipdDrgCalculated / ipdEligible) * 100) : 100;
 
   return {
     ...(summary || {}),
@@ -206,9 +216,9 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
     coders: (coders || []).map(c => ({ name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
 
     // IPD Data
-    ipd_audit_total: ipdAuditTotal,
+    ipd_audit_total: ipdEligible,
     ipd_audit_coded: ipdAuditCoded,
-    ipd_pending_codes: Math.max(0, ipdAuditTotal - ipdAuditCoded),
+    ipd_pending_codes: Math.max(0, ipdEligible - ipdAuditCoded),
     ipd_drg_calculated: ipdDrgCalculated,
     ipd_quality_score: ipdQualityScore,
     ipd_drg_score: ipdDrgScore,
@@ -624,17 +634,20 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
             AND lo.abnormal_result = 'Y' 
             AND (lo.lab_items_name_ref LIKE '%Creatinine%' OR lo.lab_items_name_ref LIKE '%Lactate%' OR lo.lab_items_name_ref LIKE '%BUN%' OR lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%Hemo%')
           WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND a.income > 30000 
-            AND a.rw < 1.0
+            AND a.income > 30000
+            AND a.rw > 0 AND a.rw < 1.0
+            AND EXISTS (SELECT 1 FROM iptdiag dx WHERE dx.an = i.an AND dx.diagtype = '1')
           GROUP BY p.hn, i.an, name, ward, a.income, a.rw
           ORDER BY i.dchdate DESC
           LIMIT 30
       `).catch(err => { logger.error('MCC query error', { error: err.message }); return []; });
 
     // 4. Abnormal Labs Alerts (Detect potential CC/MCC from Lab)
-    const labCases = await dbQueryHeavy('mrAbnormalLabs', 120, `
+    //    Include existing diagnoses to avoid recommending codes already present
+    const labCases = await dbQueryHeavy('mrAbnormalLabs_v2', 120, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
-                 lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw
+                 lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw,
+                 (SELECT GROUP_CONCAT(dx.icd10 SEPARATOR ',') FROM iptdiag dx WHERE dx.an = i.an) as existing_dx
           FROM ipt i
           INNER JOIN patient p ON i.hn = p.hn
           INNER JOIN ward w ON i.ward = w.ward
@@ -657,7 +670,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
       else if (c.original_pdx === 'I64') { baseSuggest = 'เปลี่ยนเป็น I63.4 (+ RW 1.0)'; estRevenue = 10000; }
       else if (c.original_pdx === 'N201') { baseSuggest = 'เปลี่ยนเป็น N13.2 (+ RW 0.4)'; estRevenue = 4200; }
       else if (c.original_pdx === 'A099') { baseSuggest = 'เจาะจงเชื้อโรค A09.0 (+ RW 0.5)'; estRevenue = 3000; }
-      else if (c.original_pdx === 'N390') { baseSuggest = 'ระบุเชื้อ N39.0 (+ RW 0.3)'; estRevenue = 3500; }
+      else if (c.original_pdx === 'N390') { baseSuggest = 'ระบุเชื้อก่อโรค เช่น B96.2 (E.coli) หรือ B96.0 (Mycoplasma) เป็น secondary dx (+CC/MCC)'; estRevenue = 3500; }
 
       let issue = `PDx เดิม: ${c.original_pdx} (RW ${c.rw || 0}) Unspecified`;
       let aiSuggest = baseSuggest;
@@ -721,36 +734,53 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
 
     const labMapped = [];
     const seenLabAn = new Set();
+    // Map suggested ICD-10 to check if already coded
+    const suggestedIcdMap = {
+      hypokalemia: 'E876', hyperkalemia: 'E875',
+      hyponatremia: 'E871', hypernatremia: 'E870',
+      aki: 'N179', sepsis: 'A419', malnutrition: 'E43',
+      nstemi: 'I21', acidosis: 'E872',
+    };
     (labCases || []).forEach(c => {
       const key = c.an + '-' + c.lab_name;
       if (seenLabAn.has(key)) return;
       seenLabAn.add(key);
 
+      const existingDx = (c.existing_dx || '').replace(/\./g, '');
+
       let issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. (RW ${c.rw || 0}) ── 🩸 วิกฤต: ${c.lab_name} [${c.lab_result}] (ปกติ: ${c.lab_normal})`;
       let aiSuggest = 'AI เสนอ: ตรวจสอบการลงรหัส CC/MCC เพิ่มเติม';
       let estRevenue = 4500;
       let isCritical = false;
+      let suggestedKey = null;
 
       const ln = (c.lab_name || '').toLowerCase();
       const res = parseFloat(c.lab_result);
       if (!isNaN(res)) {
         if (ln.includes('potassium') || ln === 'k') {
-          if (res < 3.0) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypokalemia (E87.6) (+RW)'; estRevenue = 6000; isCritical = true; }
-          else if (res > 5.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyperkalemia (E87.5) (+RW)'; estRevenue = 7000; isCritical = true; }
+          if (res < 3.0) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypokalemia (E87.6) (+RW)'; estRevenue = 6000; isCritical = true; suggestedKey = 'hypokalemia'; }
+          else if (res > 5.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyperkalemia (E87.5) (+RW)'; estRevenue = 7000; isCritical = true; suggestedKey = 'hyperkalemia'; }
         } else if (ln.includes('sodium') || ln === 'na') {
-          if (res < 130) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyponatremia (E87.1) (+RW)'; estRevenue = 7500; isCritical = true; }
-          else if (res > 150) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypernatremia (E87.0) (+RW)'; estRevenue = 7500; isCritical = true; }
+          if (res < 130) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyponatremia (E87.1) (+RW)'; estRevenue = 7500; isCritical = true; suggestedKey = 'hyponatremia'; }
+          else if (res > 150) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypernatremia (E87.0) (+RW)'; estRevenue = 7500; isCritical = true; suggestedKey = 'hypernatremia'; }
         } else if (ln.includes('creatinine') || ln === 'cr') {
-          if (res > 1.5) { aiSuggest = 'AI เสนอ: ตรวจสอบ Acute Kidney Injury (N17.9) (+RW)'; estRevenue = 15000; isCritical = true; }
+          if (res > 1.5) { aiSuggest = 'AI เสนอ: ตรวจสอบ Acute Kidney Injury (N17.9) (+RW)'; estRevenue = 15000; isCritical = true; suggestedKey = 'aki'; }
         } else if (ln.includes('lactate')) {
-          if (res > 2.0) { aiSuggest = 'AI เสนอ: พิจารณาสัญญาณ Sepsis/Septic Shock (A41.9) (+RW)'; estRevenue = 20000; isCritical = true; }
+          if (res > 2.0) { aiSuggest = 'AI เสนอ: พิจารณาสัญญาณ Sepsis/Septic Shock (A41.9) (+RW)'; estRevenue = 20000; isCritical = true; suggestedKey = 'sepsis'; }
         } else if (ln.includes('albumin')) {
-          if (res < 2.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Severe Malnutrition (E43) (+RW)'; estRevenue = 12000; isCritical = true; }
+          if (res < 2.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Severe Malnutrition (E43) (+RW)'; estRevenue = 12000; isCritical = true; suggestedKey = 'malnutrition'; }
         } else if (ln.includes('trop') || ln.includes('troponin')) {
-          aiSuggest = 'AI เสนอ: ตรวจสอบประวัติเจ็บหน้าอก พิจารณา NSTEMI/STEMI (I21.-) (+RW)'; estRevenue = 25000; isCritical = true;
-        } else if (ln.includes('ph')) {
-          if (res < 7.35) { aiSuggest = 'AI เสนอ: ภาวะ Acidosis (E87.2) ส่งผลต่อความรุนแรง (+RW) ควรแจ้งแพทย์'; estRevenue = 8000; isCritical = true; }
+          aiSuggest = 'AI เสนอ: ตรวจสอบประวัติเจ็บหน้าอก พิจารณา NSTEMI/STEMI (I21.-) (+RW)'; estRevenue = 25000; isCritical = true; suggestedKey = 'nstemi';
+        } else if (ln === 'ph' || ln === 'blood ph' || ln === 'arterial ph' || ln.includes('ph (blood')) {
+          if (res < 7.35) { aiSuggest = 'AI เสนอ: ภาวะ Acidosis (E87.2) ส่งผลต่อความรุนแรง (+RW) ควรแจ้งแพทย์'; estRevenue = 8000; isCritical = true; suggestedKey = 'acidosis'; }
+        } else if (ln.includes('neutrophil') && res > 80) {
+          aiSuggest = 'AI เสนอ: พิจารณา Neutrophilia สัมพันธ์กับ Infection/Sepsis — ตรวจสอบ CC/MCC'; estRevenue = 6000; isCritical = true; suggestedKey = 'sepsis';
         }
+      }
+
+      // Skip if the suggested ICD-10 is already coded
+      if (isCritical && suggestedKey && suggestedIcdMap[suggestedKey]) {
+        if (existingDx.includes(suggestedIcdMap[suggestedKey])) return;
       }
 
       if (isCritical) {
@@ -773,5 +803,8 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
     return { error: error.message };
   }
 }));
+
+// ---- Revenue Fiscal — hospital-wide (MedRec covers all coding) ----
+router.get('/revenue-fiscal', cached('medrecRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (MedRec)', req?.query?.start, req?.query?.end)));
 
 export default router;

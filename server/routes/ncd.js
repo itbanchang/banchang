@@ -23,21 +23,61 @@ router.get('/today', cached('ncdToday', 30000, async () => {
         SUM(CASE WHEN p.sex IN ('2','ญ','หญิง') THEN 1 ELSE 0 END) as female
       FROM ovst o STRAIGHT_JOIN patient p ON o.hn = p.hn
       WHERE o.vstdate = CURDATE() AND o.main_dep = '024'`).catch(() => null),
-        dbQueryOne(`SELECT COUNT(r.vn) as completed
-      FROM ovst o STRAIGHT_JOIN rcpt_print r ON r.vn = o.vn
-      WHERE o.vstdate = CURDATE() AND o.main_dep = '024' AND r.bill_time IS NOT NULL`).catch(() => null),
+        dbQueryOne(`SELECT COUNT(CASE WHEN v.income > 0 THEN 1 END) as completed
+      FROM ovst o LEFT JOIN vn_stat v ON v.vn = o.vn
+      WHERE o.vstdate = CURDATE() AND o.main_dep = '024'`).catch(() => null),
+        // Disease breakdown: use today's dx if coded, else look up patient's historical NCD dx (last 365 days)
         dbQuery(`SELECT
-        CASE WHEN od.icd10 LIKE 'E1%' THEN 'DM'
-             WHEN od.icd10 LIKE 'I1%' THEN 'HT'
-             WHEN od.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
-             WHEN od.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
-             WHEN od.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
-             WHEN od.icd10 LIKE 'N18%' THEN 'CKD'
+        CASE WHEN dx.icd10 LIKE 'E1%' THEN 'DM'
+             WHEN dx.icd10 LIKE 'I1%' THEN 'HT'
+             WHEN dx.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
+             WHEN dx.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
+             WHEN dx.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
+             WHEN dx.icd10 LIKE 'N18%' THEN 'CKD'
              ELSE 'Other' END as disease,
         COUNT(DISTINCT o.vn) as visits, COUNT(DISTINCT o.hn) as patients
-      FROM ovst o LEFT JOIN ovstdiag od ON o.vn = od.vn
+      FROM ovst o
+      LEFT JOIN ovstdiag od_today ON o.vn = od_today.vn AND ${NCD_ICD_WHERE.replace(/od\./g, 'od_today.')}
+      LEFT JOIN (
+        SELECT DISTINCT prev_od.hn, prev_diag.icd10
+        FROM ovst prev_od
+        INNER JOIN ovstdiag prev_diag ON prev_od.vn = prev_diag.vn
+        WHERE prev_od.vstdate >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+          AND prev_od.main_dep = '024'
+          AND (prev_diag.icd10 LIKE 'E1%' OR prev_diag.icd10 LIKE 'I1%'
+            OR prev_diag.icd10 BETWEEN 'I20' AND 'I259' OR prev_diag.icd10 BETWEEN 'I60' AND 'I699'
+            OR prev_diag.icd10 BETWEEN 'J40' AND 'J479' OR prev_diag.icd10 LIKE 'N18%')
+      ) hist ON o.hn = hist.hn
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(od_today.icd10, hist.icd10) as icd10
+      ) dx
       WHERE o.vstdate = CURDATE() AND o.main_dep = '024'
-      GROUP BY disease ORDER BY visits DESC`).catch(() => []),
+        AND dx.icd10 IS NOT NULL
+      GROUP BY disease ORDER BY visits DESC`).catch(() =>
+        // Fallback: if LATERAL not supported, use simple historical lookup
+        dbQuery(`SELECT
+          CASE WHEN prev_diag.icd10 LIKE 'E1%' THEN 'DM'
+               WHEN prev_diag.icd10 LIKE 'I1%' THEN 'HT'
+               WHEN prev_diag.icd10 BETWEEN 'I20' AND 'I259' THEN 'IHD'
+               WHEN prev_diag.icd10 BETWEEN 'I60' AND 'I699' THEN 'Stroke'
+               WHEN prev_diag.icd10 BETWEEN 'J40' AND 'J479' THEN 'COPD'
+               WHEN prev_diag.icd10 LIKE 'N18%' THEN 'CKD'
+               ELSE 'Other' END as disease,
+          COUNT(DISTINCT o.vn) as visits, COUNT(DISTINCT o.hn) as patients
+        FROM ovst o
+        INNER JOIN (
+          SELECT DISTINCT prev_o.hn, pd.icd10
+          FROM ovst prev_o
+          INNER JOIN ovstdiag pd ON prev_o.vn = pd.vn
+          WHERE prev_o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+            AND prev_o.main_dep = '024'
+            AND (pd.icd10 LIKE 'E1%' OR pd.icd10 LIKE 'I1%'
+              OR pd.icd10 BETWEEN 'I20' AND 'I259' OR pd.icd10 BETWEEN 'I60' AND 'I699'
+              OR pd.icd10 BETWEEN 'J40' AND 'J479' OR pd.icd10 LIKE 'N18%')
+        ) prev_diag ON o.hn = prev_diag.hn
+        WHERE o.vstdate = CURDATE() AND o.main_dep = '024'
+        GROUP BY disease ORDER BY visits DESC`).catch(() => [])
+      ),
         dbQuery(`SELECT HOUR(o.vsttime) as hr, COUNT(DISTINCT o.vn) as cnt FROM ovst o
       WHERE o.vstdate = CURDATE() AND o.main_dep = '024' AND o.vsttime IS NOT NULL
       GROUP BY HOUR(o.vsttime) ORDER BY hr`).catch(() => []),
@@ -65,7 +105,7 @@ router.get('/today', cached('ncdToday', 30000, async () => {
 }));
 
 router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
-    const [visitSummary, waitTime, completion, revenue, monthly, diagTop, ageDist, dailyPat, sla, byDisease30] = await Promise.all([
+    const [visitSummary, waitTime, completion, revenue, monthly, diagTop, ageDist, dailyPat, sla, byDisease30, revisitData] = await Promise.all([
         dbQueryOne(`SELECT COUNT(DISTINCT o.vn) as total_visits, COUNT(DISTINCT DATE(o.vstdate)) as active_days,
       ROUND(COUNT(DISTINCT o.vn) / NULLIF(COUNT(DISTINCT DATE(o.vstdate)), 0), 1) as avg_daily,
       COUNT(DISTINCT o.hn) as unique_patients,
@@ -87,13 +127,13 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
       FROM ovst o INNER JOIN ovstdiag od ON o.vn = od.vn
       STRAIGHT_JOIN service_time st ON st.vn = o.vn LEFT JOIN rcpt_print r ON r.vn = o.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND o.main_dep = '024' AND ${NCD_ICD_WHERE} AND o.vsttime IS NOT NULL`).catch(() => null),
-        // Completion via rcpt_print only — no service_time scan
+        // Completion: vn_stat.income > 0 = service rendered; exclude today from dropout
         dbQueryOne(`SELECT
       COUNT(o.vn) as total,
-      SUM(CASE WHEN r.bill_time IS NOT NULL THEN 1 ELSE 0 END) as completed,
-      ROUND(100.0 * SUM(CASE WHEN r.bill_time IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(o.vn), 0), 1) as completion_rate,
-      SUM(CASE WHEN r.bill_time IS NULL AND o.vstdate < CURDATE() THEN 1 ELSE 0 END) as dropout
-      FROM ovst o LEFT JOIN rcpt_print r ON r.vn = o.vn
+      SUM(CASE WHEN v.income > 0 THEN 1 ELSE 0 END) as completed,
+      ROUND(100.0 * SUM(CASE WHEN v.income > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(o.vn), 0), 1) as completion_rate,
+      SUM(CASE WHEN (v.income IS NULL OR v.income = 0) AND o.vstdate < CURDATE() THEN 1 ELSE 0 END) as dropout
+      FROM ovst o LEFT JOIN vn_stat v ON v.vn = o.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.main_dep = '024'`).catch(() => null),
         dbQueryOne(`SELECT ROUND(AVG(v.income), 0) as avg_revenue, ROUND(SUM(v.income), 0) as total_revenue,
       MAX(v.income) as max_revenue, ROUND(SUM(v.income) / NULLIF(COUNT(DISTINCT DATE(o.vstdate)), 0), 0) as daily_revenue
@@ -104,11 +144,11 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
       FROM ovst o INNER JOIN ovstdiag od ON o.vn = od.vn LEFT JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND o.main_dep = '024' AND ${NCD_ICD_WHERE}
       GROUP BY DATE_FORMAT(o.vstdate, '%Y-%m') ORDER BY month`).catch(() => []),
-        dbQuery(`SELECT od.icd10, d.icd10_name as name, COUNT(*) as cnt, ROUND(AVG(v.income), 0) as avg_rev
-      FROM ovstdiag od INNER JOIN ovst o ON od.vn = o.vn LEFT JOIN icd101 d ON od.icd10 = d.icd10
+        dbQuery(`SELECT od.icd10, d.name as name, COUNT(*) as cnt, ROUND(AVG(v.income), 0) as avg_rev
+      FROM ovstdiag od INNER JOIN ovst o ON od.vn = o.vn LEFT JOIN icd101 d ON od.icd10 = d.code
       LEFT JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.main_dep = '024' AND ${NCD_ICD_WHERE}
-      GROUP BY od.icd10, d.icd10_name ORDER BY cnt DESC LIMIT 10`).catch(() => []),
+      GROUP BY od.icd10, d.name ORDER BY cnt DESC LIMIT 10`).catch(() => []),
         dbQuery(`SELECT CASE
         WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 40 THEN '<40'
         WHEN TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) < 50 THEN '40-49'
@@ -143,6 +183,17 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
       FROM ovst o INNER JOIN ovstdiag od ON o.vn = od.vn LEFT JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.main_dep = '024' AND ${NCD_ICD_WHERE}
       GROUP BY disease ORDER BY visits DESC`).catch(() => []),
+        // Actual 7-day revisit for NCD — use 90-day window for enough base (NCD = monthly visits)
+        dbQueryOne(`SELECT
+      COUNT(DISTINCT o2.vn) as revisit_count,
+      COUNT(DISTINCT o1.vn) as base_visits
+      FROM ovst o1
+      INNER JOIN ovst o2 ON o1.hn = o2.hn AND o2.vn != o1.vn
+        AND o2.vstdate > o1.vstdate AND o2.vstdate <= DATE_ADD(o1.vstdate, INTERVAL 7 DAY)
+        AND o2.main_dep = '024'
+      WHERE o1.vstdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        AND o1.vstdate <= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        AND o1.main_dep = '024'`).catch(() => null),
     ]);
 
     const tv = Number(visitSummary?.total_visits || 0), ad = Number(visitSummary?.avg_daily || 0), up = Number(visitSummary?.unique_patients || 0);
@@ -150,11 +201,19 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
     const at = Number(waitTime?.avg_total_time || 0), w30 = Number(waitTime?.wait_over_30m || 0);
     const cr = Number(completion?.completion_rate || 0), dc = Number(completion?.dropout || 0);
     const ar = Number(revenue?.avg_revenue || 0), tr = Number(revenue?.total_revenue || 0), dr2 = Number(revenue?.daily_revenue || 0);
-    // Revisit approximation: visits beyond first per patient
-    const rr = tv > 0 ? Math.round(Math.max(0, (tv - up) / tv * 100) * 10) / 10 : 0;
+    // Actual 7-day revisit rate
+    const revisitBase = Number(revisitData?.base_visits || 0);
+    const revisitCount = Number(revisitData?.revisit_count || 0);
+    const rr = revisitBase > 0 ? Math.round((revisitCount / revisitBase) * 1000) / 10 : 0;
     const wsp = Number(sla?.total) > 0 ? Math.round((Number(sla.wait_sla_pass || 0) / Number(sla.total)) * 1000) / 10 : 0;
-    const ws = Math.max(0, Math.round(100 - (aw - 10) * 3)), cs = Math.round(Math.min(100, cr));
-    const rs = Math.max(0, Math.round(100 - rr * 5)), rvs = Math.min(100, Math.round(ar / 15)), ss = Math.round(wsp);
+    // NCI component scores (calibrated for NCD)
+    const ws = Math.max(0, Math.min(100, Math.round(100 - Math.max(0, aw - 15) * (100 / 60))));
+    const cs = Math.round(Math.min(100, cr));
+    // NCD: low 7-day revisit is GOOD (monthly follow-up is normal); penalize >10%
+    const rs = Math.max(0, Math.round(100 - Math.max(0, rr - 5) * 5));
+    // Revenue: NCD avg ฿1500/visit → target ฿1500
+    const rvs = Math.min(100, Math.round((ar / 1500) * 100));
+    const ss = Math.round(wsp);
     const nci = Math.round((ws * 0.20) + (cs * 0.25) + (rs * 0.20) + (rvs * 0.15) + (ss * 0.20));
     const hourlyArr = Array.from({ length: 24 }, (_, h) => {
         const d = (dailyPat || []).find(x => Number(x.hour) === h);
@@ -170,7 +229,7 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
         male_total: Number(visitSummary?.male_total || 0), female_total: Number(visitSummary?.female_total || 0),
         avg_wait_time: aw, sd_wait_time: sw, avg_total_time: at, sd_total_time: 0,
         wait_over_30m: w30, wait_sla_pct: wsp,
-        completion_rate: cr, dropout_count: dc, revisit_rate: rr, revisit_count: Math.max(0, tv - up),
+        completion_rate: cr, dropout_count: dc, revisit_rate: rr, revisit_count: revisitCount, wait_window_days: 7,
         avg_revenue_per_visit: ar, total_revenue: tr, daily_revenue: dr2, max_revenue: Number(revenue?.max_revenue || 0),
         hourly_pattern: hourlyArr, peak_hour: { hour: peakHr?.hour, label: peakHr?.label, avg: peakHr?.avg },
         monthly_trend: (monthly || []).map(m => ({
@@ -190,46 +249,47 @@ router.get('/analytics', cached('ncdAnalytics', 1800000, async () => {
 router.get('/goal-attainment', cached('ncdGoalAttainment', 1800000, async () => {
   const [hba1cGoal, bpGoal] = await Promise.all([
     // HbA1c goal for DM patients — 90-day window (quarterly check)
+    // lab_head.lab_order_number → lab_order.lab_order_number; lab_items_name_ref for test name
     dbQueryOne(`
       SELECT
-        COUNT(DISTINCT lr.hn) as total_tested,
-        SUM(CASE WHEN CAST(lr.lab_order_result AS DECIMAL(5,2)) < 7 THEN 1 ELSE 0 END) as goal_met,
-        SUM(CASE WHEN CAST(lr.lab_order_result AS DECIMAL(5,2)) >= 7 AND CAST(lr.lab_order_result AS DECIMAL(5,2)) < 9 THEN 1 ELSE 0 END) as suboptimal,
-        SUM(CASE WHEN CAST(lr.lab_order_result AS DECIMAL(5,2)) >= 9 THEN 1 ELSE 0 END) as poor_control,
-        ROUND(AVG(CAST(lr.lab_order_result AS DECIMAL(5,2))), 1) as avg_value,
-        ROUND(MIN(CAST(lr.lab_order_result AS DECIMAL(5,2))), 1) as min_value,
-        ROUND(MAX(CAST(lr.lab_order_result AS DECIMAL(5,2))), 1) as max_value
+        COUNT(DISTINCT lh.hn) as total_tested,
+        SUM(CASE WHEN CAST(lo.lab_order_result AS DECIMAL(5,2)) < 7 THEN 1 ELSE 0 END) as goal_met,
+        SUM(CASE WHEN CAST(lo.lab_order_result AS DECIMAL(5,2)) >= 7 AND CAST(lo.lab_order_result AS DECIMAL(5,2)) < 9 THEN 1 ELSE 0 END) as suboptimal,
+        SUM(CASE WHEN CAST(lo.lab_order_result AS DECIMAL(5,2)) >= 9 THEN 1 ELSE 0 END) as poor_control,
+        ROUND(AVG(CAST(lo.lab_order_result AS DECIMAL(5,2))), 1) as avg_value,
+        ROUND(MIN(CAST(lo.lab_order_result AS DECIMAL(5,2))), 1) as min_value,
+        ROUND(MAX(CAST(lo.lab_order_result AS DECIMAL(5,2))), 1) as max_value
       FROM lab_head lh
-      INNER JOIN lab_order lr ON lh.lab_id = lr.lab_id
+      INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
       INNER JOIN ovst o ON lh.vn = o.vn
       INNER JOIN ovstdiag od ON o.vn = od.vn
       WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
         AND o.main_dep = '024'
         AND od.icd10 LIKE 'E1%'
-        AND (lr.lab_test_code LIKE '%A1C%' OR lr.lab_test_code LIKE '%HBA%'
-             OR lr.lab_test_name LIKE '%HbA1c%' OR lr.lab_test_name LIKE '%Glyco%')
-        AND lr.lab_order_result IS NOT NULL
-        AND lr.lab_order_result != ''
-        AND lr.lab_order_result REGEXP '^[0-9]+(\\.[0-9]+)?$'
+        AND lo.lab_items_name_ref LIKE '%HbA1c%'
+        AND lo.lab_order_result IS NOT NULL
+        AND lo.lab_order_result != ''
+        AND lo.lab_order_result REGEXP '^[0-9]+(\\\\.[0-9]+)?$'
     `).catch(() => null),
 
-    // BP goal for HT patients — 30-day window (monthly check)
+    // BP goal for HT patients — 30-day window
+    // opdscreen table has bps (systolic) and bpd (diastolic)
     dbQueryOne(`
       SELECT
         COUNT(DISTINCT o.hn) as total_measured,
-        SUM(CASE WHEN CAST(bp.bp1 AS UNSIGNED) < 140 AND CAST(bp.bp2 AS UNSIGNED) < 90 THEN 1 ELSE 0 END) as goal_met,
-        SUM(CASE WHEN CAST(bp.bp1 AS UNSIGNED) BETWEEN 140 AND 159 THEN 1 ELSE 0 END) as stage1_ht,
-        SUM(CASE WHEN CAST(bp.bp1 AS UNSIGNED) >= 160 THEN 1 ELSE 0 END) as stage2_ht,
-        ROUND(AVG(CAST(bp.bp1 AS UNSIGNED)), 0) as avg_systolic,
-        ROUND(AVG(CAST(bp.bp2 AS UNSIGNED)), 0) as avg_diastolic
+        SUM(CASE WHEN CAST(os.bps AS UNSIGNED) < 140 AND CAST(os.bpd AS UNSIGNED) < 90 THEN 1 ELSE 0 END) as goal_met,
+        SUM(CASE WHEN CAST(os.bps AS UNSIGNED) BETWEEN 140 AND 159 THEN 1 ELSE 0 END) as stage1_ht,
+        SUM(CASE WHEN CAST(os.bps AS UNSIGNED) >= 160 THEN 1 ELSE 0 END) as stage2_ht,
+        ROUND(AVG(CAST(os.bps AS UNSIGNED)), 0) as avg_systolic,
+        ROUND(AVG(CAST(os.bpd AS UNSIGNED)), 0) as avg_diastolic
       FROM ovst o
       INNER JOIN ovstdiag od ON o.vn = od.vn
-      INNER JOIN opdscreen_bp bp ON bp.vn = o.vn
+      INNER JOIN opdscreen os ON os.vn = o.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND o.main_dep = '024'
         AND od.icd10 LIKE 'I1%'
-        AND CAST(bp.bp1 AS UNSIGNED) > 0
-        AND CAST(bp.bp2 AS UNSIGNED) > 0
+        AND CAST(os.bps AS UNSIGNED) > 0
+        AND CAST(os.bpd AS UNSIGNED) > 0
     `).catch(() => null),
   ]);
 

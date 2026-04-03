@@ -7,9 +7,10 @@ import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
     LineChart, Line, Legend, CartesianGrid
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 // ─── Color tokens ────────────────────────────────────────────
 const C = {
@@ -179,7 +180,8 @@ function Divider() {
 
 // ─── Main Component ───────────────────────────────────────────
 function MedRecTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal }));
+    const { fetchData } = useDashboardActions();
     const today    = state.medRecToday    || {};
     const analytics = state.medRecAnalytics || {};
 
@@ -327,6 +329,7 @@ function MedRecTab() {
             {/* ══════════════════════════════════════════
                 AI Analytics Cards — 4 Intelligence Panels
             ══════════════════════════════════════════ */}
+            <SubErrorBoundary name="AI Medical Record Intelligence">
             <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                     <div style={{
@@ -344,6 +347,7 @@ function MedRecTab() {
                     ))}
                 </div>
             </div>
+            </SubErrorBoundary>
 
             {/* ══════════════════════════════════════════
                 TOP BAR — Live status
@@ -722,6 +726,7 @@ function MedRecTab() {
             {/* ══════════════════════════════════════════════
                 🤖 AI CODER ASSISTANT — DRG Optimization Intelligence
             ══════════════════════════════════════════════ */}
+            <SubErrorBoundary name="AI Coder Assistant & DRG Optimization">
             <Section color="#7c3aed" icon="🤖" title="AI Coder Assistant" sub="ระบบช่วยตรวจสอบการ Coding ด้วย AI" badge="DRG Optimization">
 
                 {/* Coder Performance Leaderboard */}
@@ -895,6 +900,7 @@ function MedRecTab() {
                     </div>
                 )}
             </Section>
+            </SubErrorBoundary>
 
         </div>
     );

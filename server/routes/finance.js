@@ -11,12 +11,14 @@ import { cacheMiddleware } from '../cache/redis.js';
 import { cached } from '../cache/staleCache.js';
 import logger from '../logger.js';
 import { forecastRevenue } from '../ai/forecastEngine.js';
-import { getRevenueFiscalByPayer } from '../helpers/fiscal.js';
+import { getRevenueFiscal, getRevenueFiscalByPayer } from '../helpers/fiscal.js';
 import {
   generateRevenueForecastNarrative,
   generateDRGLeakageNarrative,
 } from '../ai/claudeNarrative.js';
 import { getFinanceCal } from '../ai/calibration.js';
+import { safeError } from '../lib/safeError.js';
+import { getMV } from '../db/materializedViews.js';
 
 const router = Router();
 
@@ -27,7 +29,7 @@ const _narrativeCache = new Map();
 // Validation Schemas (Phase 2.4)
 // ============================================================
 const monthlyQuerySchema = z.object({
-  year: z.coerce.number().int().min(2000).max(2100).optional(),
+  year: z.coerce.number().int().min(2000).max(2700).optional(),
 });
 
 const claimsQuerySchema = z.object({
@@ -71,11 +73,20 @@ const MN = [
 router.get(
   '/monthly-summary',
   validateQuery(monthlyQuerySchema),
-  cacheMiddleware(180),
+  cacheMiddleware(300),
   async (req, res) => {
     try {
-      const year = req.query.year || new Date().getFullYear();
-      const rows = await hosxp.getMonthlyRevenue(year);
+      const rawYear = Number(req.query.year) || new Date().getFullYear();
+      const year = rawYear > 2400 ? rawYear - 543 : rawYear;  // BE → CE
+
+      // Try materialized view first (instant, refreshed every 15 min)
+      const mvData = getMV('mv_fiscal_revenue');
+      let rows;
+      if (mvData?.length && (!year || year == new Date().getFullYear())) {
+        rows = mvData.map(r => ({ m: Number(r.month), r: Number(r.revenue || 0), v: Number(r.visits || 0) }));
+      } else {
+        rows = await hosxp.getMonthlyRevenue(year);
+      }
 
       const monthly = Array.from({ length: 12 }, (_, i) => ({
         month: i + 1,
@@ -116,7 +127,7 @@ router.get(
         },
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      safeError(res, err, 'Finance');
     }
   }
 );
@@ -145,7 +156,7 @@ router.get('/claims', validateQuery(claimsQuerySchema), cacheMiddleware(120), as
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -158,35 +169,45 @@ router.get(
   async (req, res) => {
     try {
       const [summary, byPayer, ipdUnpaid] = await Promise.all([
-        // OPD: overall denial rate (remain_money > 0 = unpaid/denied)
+        // OPD: cash/self-pay pttypes that should have paid but didn't
         dbQueryOne(`
                 SELECT
                     COUNT(*) as total_visits,
-                    SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied_count,
-                    COALESCE(SUM(CASE WHEN remain_money > 0 THEN remain_money END), 0) as amount_at_risk
-                FROM vn_stat
-                WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND income > 0
+                    SUM(CASE WHEN v.paid_money = 0 AND v.income > 100
+                      AND v.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+                      THEN 1 ELSE 0 END) as denied_count,
+                    COALESCE(SUM(CASE WHEN v.paid_money = 0 AND v.income > 100
+                      AND v.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+                      THEN v.income ELSE 0 END), 0) as amount_at_risk
+                FROM vn_stat v
+                WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                  AND v.income > 0
             `),
-        // OPD by payer (pttype)
+        // OPD outstanding by payer — only cash/self-pay pttypes
         dbQuery(`
                 SELECT pt.name as payer, COUNT(*) as count,
-                       COALESCE(SUM(v.remain_money), 0) as amount
+                       COALESCE(SUM(v.income), 0) as amount
                 FROM vn_stat v
                 LEFT JOIN pttype pt ON v.pttype = pt.pttype
                 WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND v.remain_money > 0 AND v.income > 0
+                  AND v.income > 100 AND v.paid_money = 0
+                  AND v.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
                 GROUP BY pt.name
                 ORDER BY amount DESC
                 LIMIT 10
             `),
-        // IPD: unpaid from an_stat (uses dchdate, not vstdate)
+        // IPD: cash/self-pay unpaid
         dbQueryOne(`
-                SELECT COUNT(*) as ipd_denied,
-                       COALESCE(SUM(remain_money), 0) as ipd_amount
-                FROM an_stat
-                WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                  AND remain_money > 0 AND income > 0
+                SELECT COUNT(CASE WHEN a.paid_money = 0 AND a.income > 100
+                  AND i.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+                  THEN 1 END) as ipd_denied,
+                COALESCE(SUM(CASE WHEN a.paid_money = 0 AND a.income > 100
+                  AND i.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+                  THEN a.income ELSE 0 END), 0) as ipd_amount
+                FROM ipt i
+                INNER JOIN an_stat a ON i.an = a.an
+                WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+                  AND a.income > 0
             `),
       ]);
 
@@ -200,20 +221,38 @@ router.get(
       // If no denials, get revenue breakdown by payer as useful alternative analysis
       let revenueByPayer = [];
       if (totalDenied === 0) {
-        revenueByPayer = await dbQuery(`
-                SELECT pt.name as payer, v.pttype as payer_code,
-                       COUNT(DISTINCT v.vn) as visit_count,
-                       COALESCE(SUM(v.income), 0) as total_revenue,
-                       COALESCE(SUM(v.paid_money), 0) as cash_collected,
-                       COALESCE(SUM(v.income - v.remain_money), 0) as net_collected,
-                       ROUND(100.0 * SUM(v.income - v.remain_money) / NULLIF(SUM(v.income), 0), 1) as collection_pct
-                FROM vn_stat v
-                LEFT JOIN pttype pt ON v.pttype = pt.pttype
-                WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND v.income > 0
-                GROUP BY v.pttype, pt.name
-                ORDER BY total_revenue DESC
-                LIMIT 15
-            `).catch(() => []);
+        // Try MV first (instant, refreshed every 15 min)
+        const mvPayer = getMV('mv_payer_revenue');
+        if (mvPayer?.length) {
+          // Aggregate across all months in MV data
+          const payerMap = new Map();
+          for (const r of mvPayer) {
+            const key = r.pttype || 'unknown';
+            const existing = payerMap.get(key) || { payer: r.payer_name || 'ไม่ระบุสิทธิ์', payer_code: r.pttype, visit_count: 0, total_revenue: 0 };
+            existing.visit_count += Number(r.visit_count || 0);
+            existing.total_revenue += Number(r.revenue || 0);
+            payerMap.set(key, existing);
+          }
+          revenueByPayer = Array.from(payerMap.values())
+            .sort((a, b) => b.total_revenue - a.total_revenue)
+            .slice(0, 15)
+            .map(p => ({ ...p, cash_collected: 0, net_collected: p.total_revenue, collection_pct: 100 }));
+        } else {
+          revenueByPayer = await dbQuery(`
+                  SELECT pt.name as payer, v.pttype as payer_code,
+                         COUNT(DISTINCT v.vn) as visit_count,
+                         COALESCE(SUM(v.income), 0) as total_revenue,
+                         COALESCE(SUM(v.paid_money), 0) as cash_collected,
+                         COALESCE(SUM(v.paid_money), 0) as net_collected,
+                         ROUND(100.0 * SUM(v.paid_money) / NULLIF(SUM(v.income), 0), 1) as collection_pct
+                  FROM vn_stat v
+                  LEFT JOIN pttype pt ON v.pttype = pt.pttype
+                  WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND v.income > 0
+                  GROUP BY v.pttype, pt.name
+                  ORDER BY total_revenue DESC
+                  LIMIT 15
+              `).catch(() => []);
+        }
       }
 
       res.json({
@@ -269,7 +308,7 @@ router.get(
       });
     } catch (err) {
       logger.error('Denial analytics failed', { error: err.message });
-      res.status(500).json({ error: err.message });
+      safeError(res, err, 'Finance');
     }
   }
 );
@@ -299,7 +338,7 @@ router.get('/revenue-leakage', cacheMiddleware(300), async (req, res) => {
       total_leakage: Math.round(total_leakage),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -335,7 +374,7 @@ router.post('/predict-denial', async (req, res) => {
           : [],
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -346,7 +385,7 @@ router.get('/revenue-by-payer-fiscal', cacheMiddleware(300), async (req, res) =>
     res.json(data);
   } catch (err) {
     logger.error('Revenue by payer fiscal failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -392,7 +431,7 @@ router.get(
         activity_count: rows.length,
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      safeError(res, err, 'Finance');
     }
   }
 );
@@ -410,6 +449,13 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
     const prevStart = `${prevYr}-${String(prevMo).padStart(2, '0')}-01`;
     const prevEnd = `${yr}-${String(mo).padStart(2, '0')}-01`;
 
+    // Fiscal year calculation (Thai fiscal: Oct-Sep)
+    const fyBE = mo >= 10 ? yr + 544 : yr + 543;
+    const fyStartCE = fyBE - 544;
+    const fyStart = `${fyStartCE}-10-01`;
+    const prevFyStart = `${fyStartCE - 1}-10-01`;
+    const prevFyEnd = `${fyStartCE}-09-30`;
+
     const [
       collectionRate,
       prevMonth,
@@ -419,15 +465,14 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
       prevYtdRevenue,
       arBalanceResult,
     ] = await Promise.all([
-      // Collection rate: paid vs billed this month
+      // Collection rate: paid_money vs income this month
       dbQueryOne(
-        `
-                SELECT
-                    COALESCE(SUM(income), 0) as billed,
-                    COALESCE(SUM(income - remain_money), 0) as collected
-                FROM vn_stat
-                WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH) AND income > 0
-            `,
+        `SELECT
+            COALESCE(SUM(income), 0) as billed,
+            COALESCE(SUM(paid_money), 0) as collected,
+            COALESCE(SUM(income) - SUM(paid_money), 0) as outstanding
+          FROM vn_stat
+          WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH) AND income > 0`,
         [curStart, curStart]
       ),
       // Previous month revenue
@@ -440,48 +485,66 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
         `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH)`,
         [curStart, curStart]
       ),
-      // Denial/unpaid rate last 30 days
+      // Unpaid visits: only count cash/self-pay pttypes where paid_money should be > 0
+      // UC (A0,00,01,02,A1,A2,50,etc.), PP (79,PS), ฟอกไต (56,57,58,70), ฝากครรภ์ (98) = no copay expected
+      // Only flag pttypes that SHOULD have payment: 10(เงินสด), 40(พรบ), 41(ปกส), 22(รัฐวิสาหกิจ), 64(ต่างด้าว), AA(ต่างชาติ), 23(กรมบัญชีกลาง), 29(อปท)
       dbQueryOne(`
-                SELECT COUNT(*) as total, SUM(CASE WHEN remain_money > 0 THEN 1 ELSE 0 END) as denied
-                FROM vn_stat WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND income > 0
-            `),
-      // Year-to-date revenue (current year)
+        SELECT COUNT(*) as total,
+          SUM(CASE WHEN paid_money = 0 AND income > 100
+            AND v.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+            THEN 1 ELSE 0 END) as unpaid_visits,
+          ROUND(SUM(CASE WHEN paid_money = 0 AND income > 100
+            AND v.pttype IN ('10','40','41','22','64','AA','27','WT','39','49')
+            THEN income ELSE 0 END)) as unpaid_amount
+        FROM vn_stat v WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND v.income > 0`),
+      // YTD revenue — fiscal year (Oct to current)
       dbQueryOne(
-        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND vstdate <= CURDATE()`,
-        [yr]
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE vstdate >= ? AND vstdate <= CURDATE()`,
+        [fyStart]
       ),
-      // Year-to-date revenue (previous year, same period)
+      // Previous fiscal year — same period (Oct to same month/day previous year)
       dbQueryOne(
-        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat WHERE YEAR(vstdate) = ? AND MONTH(vstdate) <= ? AND DAY(vstdate) <= DAY(CURDATE())`,
-        [yr - 1, mo]
+        `SELECT COALESCE(SUM(income), 0) as r FROM vn_stat
+         WHERE vstdate >= ? AND vstdate <= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)`,
+        [prevFyStart]
       ),
-      // A/R Balance (outstanding amounts)
+      // A/R Balance: outstanding = income - paid_money for current fiscal year
       dbQueryOne(
-        `SELECT COALESCE(SUM(remain_money), 0) as ar_balance FROM vn_stat WHERE remain_money > 0`
+        `SELECT COALESCE(SUM(income - paid_money), 0) as ar_balance,
+                COUNT(CASE WHEN paid_money = 0 AND income > 100 THEN 1 END) as ar_cases
+         FROM vn_stat WHERE vstdate >= ? AND income > 0 AND paid_money < income`,
+        [fyStart]
       ),
     ]);
 
     const billed = Number(collectionRate?.billed || 0);
     const collected = Number(collectionRate?.collected || 0);
+    const outstanding = Number(collectionRate?.outstanding || 0);
+    // Collection rate: for Thai public hospitals, paid_money = co-pay only
+    // True collection needs AR reconciliation data; show paid/billed as "co-pay rate"
     const collRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
 
     const prevRev = Number(prevMonth?.r || 0);
     const curRev = Number(curMonth?.r || 0);
     const growthPct = prevRev > 0 ? Math.round(((curRev - prevRev) / prevRev) * 100) : 0;
 
-    const deniedCount = Number(denialStats?.denied || 0);
+    // Unpaid visits (income > ฿100 but paid_money = 0 — likely pending claim settlement)
+    const unpaidVisits = Number(denialStats?.unpaid_visits || 0);
     const totalCount = Number(denialStats?.total || 1);
-    const denialRate = Math.round((deniedCount / totalCount) * 100);
+    const unpaidAmount = Number(denialStats?.unpaid_amount || 0);
+    const denialRate = Math.round((unpaidVisits / totalCount) * 100);
 
-    // Year-over-year growth calculation
+    // Year-over-year growth — fiscal year (Oct-Sep), same period comparison
     const ytdRev = Number(ytdRevenue?.r || 0);
     const prevYtdRev = Number(prevYtdRevenue?.r || 0);
     const yoyGrowthPct =
       prevYtdRev > 0 ? Math.round(((ytdRev - prevYtdRev) / prevYtdRev) * 100) : 0;
 
-    // Days in A/R calculation
+    // Days in A/R calculation — fiscal year
     const arBalance = Number(arBalanceResult?.ar_balance || 0);
-    const daysInPeriod = Math.ceil((new Date() - new Date(yr, 0, 1)) / (1000 * 60 * 60 * 24)); // Days since start of year
+    const arCases = Number(arBalanceResult?.ar_cases || 0);
+    const fyStartDate = new Date(fyStartCE, 9, 1); // Oct 1
+    const daysInPeriod = Math.max(1, Math.ceil((new Date() - fyStartDate) / (1000 * 60 * 60 * 24)));
     const avgDailyRevenue = ytdRev / daysInPeriod;
     const daysInAr = avgDailyRevenue > 0 ? Math.round(arBalance / avgDailyRevenue) : 0;
 
@@ -521,7 +584,8 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
         growth_pct_prorata: momProRata,
         yoy_growth_pct: yoyGrowthPct,
         denial_rate: denialRate,
-        denied_count: deniedCount,
+        unpaid_visits: unpaidVisits,
+        unpaid_amount: Math.round(unpaidAmount),
         cur_month_revenue: Math.round(curRev),
         cur_month_prorata: proRataRevenue,
         prev_month_revenue: Math.round(prevRev),
@@ -560,7 +624,7 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           title: 'Operational Efficiency',
           score: efficiencyScore,
           status: efficiencyScore >= 80 ? 'efficient' : efficiencyScore >= 60 ? 'moderate' : 'low',
-          analysis: `Collection rate ${collRate}% · Denial rate ${denialRate}% (${deniedCount} เคส) · Profit margin ${profitMargin}% (est.)`,
+          analysis: `Collection rate ${collRate}% · Denial rate ${denialRate}% (${unpaidVisits} เคส) · Profit margin ${profitMargin}% (est.)`,
           recommendation:
             denialRate > 10
               ? 'ลดอัตราการปฏิเสธเบิก — ตรวจสอบ Coding accuracy และเอกสารประกอบ'
@@ -572,7 +636,7 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           title: 'Risk Index',
           score: riskScore,
           status: riskScore >= 80 ? 'safe' : riskScore >= 60 ? 'moderate' : 'high',
-          analysis: `ค้างชำระ ${denialRate}% (${deniedCount} เคส) · A/R Balance ${(arBalance / 1e6).toFixed(2)} ล้าน · Days A/R ${daysInAr} วัน`,
+          analysis: `ค้างชำระ ${denialRate}% (${unpaidVisits} เคส) · A/R Balance ${(arBalance / 1e6).toFixed(2)} ล้าน · Days A/R ${daysInAr} วัน`,
           recommendation:
             riskScore < 70
               ? 'ความเสี่ยงสูง — เร่งติดตามหนี้ค้างชำระ, วิเคราะห์ Aging Bucket'
@@ -582,7 +646,7 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
     });
   } catch (err) {
     logger.error('Finance analytics failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -607,7 +671,7 @@ router.get('/drilldown', cacheMiddleware(120), async (req, res) => {
     }
     res.status(400).json({ error: 'Unsupported drill-down type' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -663,7 +727,7 @@ router.get('/debt-aging', async (req, res) => {
     });
   } catch (err) {
     logger.error('Debt aging fetch failed', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch debt aging data', message: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -724,7 +788,7 @@ router.get('/debt-aging/details', validateQuery(debtAgingQuerySchema), async (re
       error: err.message,
       bucket: req.query.bucket,
     });
-    res.status(500).json({ error: 'Failed to fetch debt details', message: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -775,7 +839,7 @@ router.post('/debt-aging/record-payment', async (req, res) => {
     });
   } catch (err) {
     logger.error('Payment recording failed', { error: err.message });
-    res.status(500).json({ error: 'Failed to record payment', message: err.message });
+    safeError(res, err, 'Finance');
   }
 });
 
@@ -1001,5 +1065,8 @@ router.get(
     };
   })
 );
+
+// ---- Revenue Fiscal — 3-year hospital-wide comparison ----
+router.get('/revenue-fiscal', cached('financeRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (hospital-wide)', req?.query?.start, req?.query?.end)));
 
 export default router;
