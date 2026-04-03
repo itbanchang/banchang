@@ -1565,16 +1565,24 @@ function OPDTab() {
                                             <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
                                             </p>
-                                            {isLatest && prevYear && (
-                                                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
-                                                        {yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%
-                                                    </span>
-                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
-                                                        vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)
-                                                    </span>
-                                                </div>
-                                            )}
+                                            {fi > 0 && (() => {
+                                                const prev = years[fi - 1];
+                                                if (!prev) return null;
+                                                const curRev = fy.comparable_revenue ?? fy.total_revenue;
+                                                const prevRev = prev.comparable_revenue ?? prev.total_revenue;
+                                                const growth = prevRev > 0 ? Math.round((curRev - prevRev) / prevRev * 1000) / 10 : 0;
+                                                const months = fy.comparable_months || 12;
+                                                return (
+                                                    <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        <span style={{ fontSize: '11px', fontWeight: 800, color: growth >= 0 ? '#10b981' : '#f43f5e' }}>
+                                                            {growth >= 0 ? '📈' : '📉'} YoY {growth >= 0 ? '+' : ''}{growth}%
+                                                        </span>
+                                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                                            vs {prev.fiscal_label} {isLatest ? `(เทียบ ${months} ด.)` : ''}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     );
                                 })}
