@@ -79,13 +79,25 @@ router.get(
       const rawYear = Number(req.query.year) || new Date().getFullYear();
       const year = rawYear > 2400 ? rawYear - 543 : rawYear;  // BE → CE
 
+      // Use fiscal year (Oct-Sep) instead of calendar year
+      const mo = new Date().getMonth() + 1;
+      const fiscalStartYear = mo >= 10 ? year : year - 1;
+      const fyStart = `${fiscalStartYear}-10-01`;
+      const fyEnd = `${fiscalStartYear + 1}-09-30`;
+
       // Try materialized view first (instant, refreshed every 15 min)
       const mvData = getMV('mv_fiscal_revenue');
       let rows;
-      if (mvData?.length && (!year || year == new Date().getFullYear())) {
+      if (mvData?.length) {
         rows = mvData.map(r => ({ m: Number(r.month), r: Number(r.revenue || 0), v: Number(r.visits || 0) }));
       } else {
-        rows = await hosxp.getMonthlyRevenue(year);
+        // Fallback: query fiscal year range
+        rows = await dbQuery(`
+          SELECT MONTH(vstdate) as m, SUM(income) as r, COUNT(DISTINCT vn) as v
+          FROM vn_stat
+          WHERE vstdate >= ? AND vstdate <= LEAST(?, CURDATE())
+          GROUP BY MONTH(vstdate) ORDER BY m
+        `, [fyStart, fyEnd]).catch(() => []);
       }
 
       const monthly = Array.from({ length: 12 }, (_, i) => ({
