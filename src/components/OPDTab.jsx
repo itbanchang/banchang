@@ -923,33 +923,44 @@ function OPDTab() {
                 <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.06)', padding: '2px 8px', borderRadius: '99px' }}>Real-time</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
-                {[
+                {(() => {
+                    const slaVal = opd?.sla_pct ?? 0;
+                    const maxW = opd?.max_wait ?? 0;
+                    const wDoc = opd?.waiting_doctor ?? 0;
+                    const thr = opd?.throughput ?? 0;
+                    const peakH = opd?.peak_hour ?? -1;
+                    const peakCnt = opd?.peak_hour_count ?? 0;
+                    const curCnt = opd?.current_hour_count ?? 0;
+                    const curHr = new Date().getHours();
+                    const isAtPeak = peakH === curHr;
+                    const pastPeak = curHr > peakH;
+                    return [
                     {
-                        title: 'SLA ≤60 นาที', value: `${opd?.sla_pct ?? 0}%`, icon: '🎯',
-                        grad: (opd?.sla_pct ?? 0) >= 80 ? ['#10b981', '#059669'] : (opd?.sla_pct ?? 0) >= 60 ? ['#f59e0b', '#d97706'] : ['#f43f5e', '#dc2626'],
-                        sub: (opd?.sla_pct ?? 0) >= 80 ? '✅ ผ่านเกณฑ์' : (opd?.sla_pct ?? 0) >= 60 ? '⚠️ ใกล้เกณฑ์' : '🔴 ต่ำกว่าเกณฑ์',
+                        title: 'SLA ≤60 นาที', value: `${slaVal}%`, icon: '🎯',
+                        grad: slaVal >= 80 ? ['#10b981', '#059669'] : slaVal >= 60 ? ['#f59e0b', '#d97706'] : ['#f43f5e', '#dc2626'],
+                        sub: slaVal >= 80 ? '✅ ผ่านเกณฑ์' : slaVal >= 60 ? '⚠️ ใกล้เกณฑ์' : '🔴 ต่ำกว่าเกณฑ์',
                     },
                     {
-                        title: 'รอนานที่สุด', value: `${opd?.max_wait ?? 0}`, icon: '⚠️', unit: 'นาที',
-                        grad: (opd?.max_wait ?? 0) > 180 ? ['#f43f5e', '#dc2626'] : (opd?.max_wait ?? 0) > 120 ? ['#f59e0b', '#d97706'] : ['#0ea5e9', '#0284c7'],
-                        sub: 'วันนี้',
+                        title: 'รอนานที่สุด', value: `${maxW}`, icon: '⚠️', unit: 'นาที',
+                        grad: maxW > 180 ? ['#f43f5e', '#dc2626'] : maxW > 120 ? ['#f59e0b', '#d97706'] : ['#0ea5e9', '#0284c7'],
+                        sub: maxW > 300 ? `⚠️ ${Math.round(maxW/60)} ชม. — ต้องตรวจสอบ` : 'วันนี้',
                     },
                     {
-                        title: 'คิวรอแพทย์', value: `${opd?.waiting_doctor ?? 0}`, icon: '🩺', unit: 'ราย',
-                        grad: (opd?.waiting_doctor ?? 0) > 30 ? ['#f43f5e', '#dc2626'] : (opd?.waiting_doctor ?? 0) > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
-                        sub: (opd?.waiting_doctor ?? 0) > 30 ? 'คิวยาวมาก' : (opd?.waiting_doctor ?? 0) > 15 ? 'คิวยาว' : 'ปกติ',
+                        title: 'คิวรอแพทย์', value: `${wDoc}`, icon: '🩺', unit: 'ราย',
+                        grad: wDoc > 30 ? ['#f43f5e', '#dc2626'] : wDoc > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
+                        sub: wDoc > 100 ? `🚨 วิกฤต — Est. ${Math.round(wDoc / Math.max(thr / 60, 1))} น.` : wDoc > 30 ? 'คิวยาวมาก' : wDoc > 15 ? 'คิวยาว' : 'ปกติ',
                     },
                     {
-                        title: 'Throughput', value: `${opd?.throughput ?? 0}`, icon: '⚡', unit: 'ราย/ชม.',
-                        grad: ['#6366f1', '#4f46e5'],
-                        sub: 'อัตราบริการ',
+                        title: 'Throughput', value: `${thr}`, icon: '⚡', unit: 'ราย/ชม.',
+                        grad: thr >= 50 ? ['#10b981', '#059669'] : thr >= 25 ? ['#6366f1', '#4f46e5'] : ['#f59e0b', '#d97706'],
+                        sub: thr >= 50 ? '🟢 ดีมาก' : thr >= 25 ? 'อัตราบริการ' : '⚠️ ต่ำ',
                     },
                     {
-                        title: 'Peak Hour', value: opd?.peak_hour >= 0 ? `${String(opd.peak_hour).padStart(2, '0')}:00` : '—', icon: '🕐',
-                        grad: ['#8b5cf6', '#7c3aed'],
-                        sub: 'ผู้ป่วยมากสุด',
+                        title: 'Peak Hour', value: peakH >= 0 ? `${String(peakH).padStart(2, '0')}:00` : '—', icon: '🕐',
+                        grad: isAtPeak ? ['#f43f5e', '#dc2626'] : pastPeak ? ['#10b981', '#059669'] : ['#8b5cf6', '#7c3aed'],
+                        sub: isAtPeak ? `⚡ Peak ตอนนี้! (${peakCnt} ราย)` : pastPeak ? `✅ ผ่าน Peak แล้ว · ตอนนี้ ${curCnt} ราย` : `🔜 Peak ${peakCnt} ราย · ตอนนี้ ${curCnt}`,
                     },
-                ].map((kpi, i) => (
+                ]; })().map((kpi, i) => (
                     <div key={`eff-${i}`} style={{
                         padding: '0.85rem 1rem', borderRadius: '12px',
                         background: `linear-gradient(135deg, ${kpi.grad[0]}0D 0%, ${kpi.grad[1]}06 100%)`,

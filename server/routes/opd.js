@@ -128,10 +128,16 @@ router.get('/today', cached('opdToday', 60000, async () => {
           WHEN st.service2 IS NULL AND st.service7 IS NULL AND r.bill_time IS NULL AND (o.ovstost IS NULL OR o.ovstost IN ('00', '98')) THEN 1
           ELSE 0 END) as waiting_doctor,
 
-        -- Peak hour วันนี้
+        -- Peak hour วันนี้ + count
         (SELECT HOUR(o_inner.vsttime) FROM ovst o_inner FORCE INDEX (ix_vstdate)
           WHERE o_inner.vstdate = CURDATE() GROUP BY HOUR(o_inner.vsttime)
-          ORDER BY COUNT(*) DESC LIMIT 1) as peak_hour
+          ORDER BY COUNT(*) DESC LIMIT 1) as peak_hour,
+        (SELECT COUNT(*) FROM ovst o_inner FORCE INDEX (ix_vstdate)
+          WHERE o_inner.vstdate = CURDATE() GROUP BY HOUR(o_inner.vsttime)
+          ORDER BY COUNT(*) DESC LIMIT 1) as peak_hour_count,
+        -- Current hour count
+        (SELECT COUNT(*) FROM ovst o_inner FORCE INDEX (ix_vstdate)
+          WHERE o_inner.vstdate = CURDATE() AND HOUR(o_inner.vsttime) = HOUR(CURTIME())) as current_hour_count
 
       FROM ovst o FORCE INDEX (ix_vstdate)
       INNER JOIN patient p ON o.hn = p.hn
@@ -414,6 +420,8 @@ router.get('/today', cached('opdToday', 60000, async () => {
     max_wait: Number(b.max_wait || 0),
     waiting_doctor: Number(b.waiting_doctor || 0),
     peak_hour: Number(b.peak_hour ?? -1),
+    peak_hour_count: Number(b.peak_hour_count || 0),
+    current_hour_count: Number(b.current_hour_count || 0),
     throughput,
     // True end-to-end cycle time (vsttime → bill_time/service7 per patient)
     avg_total_minutes: Number(s.true_cycle_time || 0) || Math.round(
