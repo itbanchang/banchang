@@ -151,7 +151,7 @@ export async function getRevenueFiscalByPayer(customStart, customEnd) {
     for (const fy of fiscalYears) {
         const qStart = fy.queryStart || fy.startDate;
         const qEnd = fy.queryEnd || fy.endDate;
-        const fyRows = await dbQueryHeavy(`revByPayer_v_${fy.fiscalBE}_${qStart}_${qEnd}`, 120, `
+        const fyRows = await dbQueryHeavy(`revByPayer_v2_${fy.fiscalBE}_${qStart}_${qEnd}`, 120, `
             SELECT YEAR(v.vstdate) AS yr, MONTH(v.vstdate) AS mo,
                    COALESCE(v.pttype, '??') AS payer_code,
                    SUM(v.income) AS revenue,
@@ -165,12 +165,30 @@ export async function getRevenueFiscalByPayer(customStart, customEnd) {
     const rows = allRows;
 
     // Map payer_code → name in JS (avoid slow JOIN)
+    // After merge, use the target pttype's name
     for (const r of (rows || [])) {
-        r.payer = payerMap[r.payer_code] || 'ไม่ระบุสิทธิ์';
+        const mergedCode = PTTYPE_MERGE_MAP[r.payer_code];
+        r.payer = payerMap[mergedCode || r.payer_code] || payerMap[r.payer_code] || 'ไม่ระบุสิทธิ์';
+        if (mergedCode) r.payer_code = mergedCode; // reassign to merged code
     }
 
-    // Normalize key function
-    const pKey = (code) => code && code !== '??' ? code : '_none_';
+    // Normalize key function + map merged/legacy pttypes for fair YoY comparison
+    // สิทธิ์ที่ถูกยุบรวมเข้า UC ตั้งแต่ปีงบ 2568:
+    //   77 (ผู้สูงอายุ), 71 (เด็ก 0-12), 72 (ผู้มีรายได้น้อย), 74 (ผู้พิการ),
+    //   73 (นักเรียน), 33 (อสม.), 32 (ผู้นำชุมชน), 75 (ทหารผ่านศึก), 76 (ภิกษุ)
+    // → ยุบเข้า A0 (UC ไม่ร่วมจ่าย) เพื่อเปรียบเทียบ fair
+    const PTTYPE_MERGE_MAP = {
+      '77': 'A0', '71': 'A0', '72': 'A0', '74': 'A0', '73': 'A0',
+      '33': 'A0', '32': 'A0', '75': 'A0', '76': 'A0',
+      // ตจว. variants → map to their UC equivalent
+      '87': 'A1', '91': 'A2', '92': 'A2', '93': 'A2', '94': 'A2',
+      '81': 'A1', '82': 'A1', '83': 'A1', '84': 'A1',
+      '95': 'A2', '96': 'A2', '13': 'A2', '53': 'A2',
+    };
+    const pKey = (code) => {
+      if (!code || code === '??') return '_none_';
+      return PTTYPE_MERGE_MAP[code] || code;
+    };
 
     // Aggregate by payer across all months → get top payers by total revenue
     const payerTotals = {};
@@ -183,7 +201,24 @@ export async function getRevenueFiscalByPayer(customStart, customEnd) {
     const topPayers = Object.values(payerTotals).sort((a, b) => b.revenue - a.revenue).slice(0, 15);
     const topPayerKeys = new Set(topPayers.map(p => pKey(p.payer_code)));
 
-    // Build fiscal year structure per payer
+    // Pre-index rows by yr-mo-payer for O(1) lookup (was O(n) scan per month×payer)
+    const rowIndex = new Map(); // key: "yr-mo-payerKey" → { revenue, visits }
+    for (const r of (rows || [])) {
+        const key = pKey(r.payer_code);
+        if (!topPayerKeys.has(key)) continue;
+        const mapKey = `${r.yr}-${r.mo}-${key}`;
+        const existing = rowIndex.get(mapKey);
+        const rev = Number(r.revenue || 0);
+        const vis = Number(r.visit_count || 0);
+        if (existing) {
+            existing.revenue += rev;
+            existing.visits += vis;
+        } else {
+            rowIndex.set(mapKey, { revenue: rev, visits: vis });
+        }
+    }
+
+    // Build fiscal year structure per payer — O(FY × 12 × topPayers) with O(1) lookups
     const result = fiscalYears.map(fy => {
         const payerData = {};
         for (const tp of topPayers) {
@@ -194,14 +229,13 @@ export async function getRevenueFiscalByPayer(customStart, customEnd) {
             const mNum = ((9 + i) % 12) + 1;
             const yNum = mNum >= 10 ? fy.startYear : fy.startYear + 1;
 
-            for (const r of (rows || [])) {
-                if (Number(r.yr) !== yNum || Number(r.mo) !== mNum) continue;
-                const key = pKey(r.payer_code);
-                if (!topPayerKeys.has(key)) continue;
-                if (!payerData[key]) continue;
-                payerData[key].total_revenue += Number(r.revenue || 0);
-                payerData[key].total_visits += Number(r.visit_count || 0);
-                payerData[key].months[mNum] = Number(r.revenue || 0);
+            for (const tp of topPayers) {
+                const key = pKey(tp.payer_code);
+                const entry = rowIndex.get(`${yNum}-${mNum}-${key}`);
+                if (!entry) continue;
+                payerData[key].total_revenue += entry.revenue;
+                payerData[key].total_visits += entry.visits;
+                payerData[key].months[mNum] = (payerData[key].months[mNum] || 0) + entry.revenue;
             }
         }
 
@@ -214,10 +248,35 @@ export async function getRevenueFiscalByPayer(customStart, customEnd) {
         };
     });
 
+    // ---- Comparable Period: fair YoY per payer ----
+    // Find which fiscal month indices have ANY revenue in the LATEST fiscal year (across all payers)
+    const latestFY = result[result.length - 1];
+    const comparableMonthNums = new Set();
+    for (const p of latestFY.payers) {
+        for (const [mNum, rev] of Object.entries(p.months)) {
+            if (rev > 0) comparableMonthNums.add(Number(mNum));
+        }
+    }
+    const comparableMonths = comparableMonthNums.size;
+
+    // For each FY + payer, compute comparable_revenue (only months present in latest FY)
+    for (const fy of result) {
+        for (const p of fy.payers) {
+            let compRev = 0, compVis = 0;
+            for (const mNum of comparableMonthNums) {
+                compRev += p.months[mNum] || 0;
+            }
+            p.comparable_revenue = compRev;
+        }
+        // Also add FY-level comparable info
+        fy.comparable_months = comparableMonths;
+    }
+
     return {
         data_source: 'HOSxP XE · vn_stat + pttype',
         fiscal_years: result,
         top_payers: topPayers,
+        comparable_months: comparableMonths,
         timestamp: new Date().toISOString(),
     };
 }
