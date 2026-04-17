@@ -43,6 +43,8 @@ const CompareTab = React.lazy(() => import('./components/CompareTab.jsx'));
 const ReportTab = React.lazy(() => import('./components/ReportTab.jsx'));
 const EvolutionTab = React.lazy(() => import('./components/EvolutionTab.jsx'));
 const CustomerInsightTab = React.lazy(() => import('./components/CustomerInsightTab.jsx'));
+const AppointmentTab = React.lazy(() => import('./components/AppointmentTab.jsx'));
+const PatientFlowTab = React.lazy(() => import('./components/PatientFlowTab.jsx'));
 
 const TABS = [
   { id: 'report', label: 'Report', icon: '📋', desc: 'REPORT Online โรงพยาบาลบ้านฉาง' },
@@ -54,6 +56,8 @@ const TABS = [
     desc: 'รายได้ · ค่าใช้จ่าย · AI Forecast',
   },
   { id: 'opd', label: 'OPD ผู้ป่วยนอก', icon: '⏱️', desc: 'ระยะเวลารอคอย · สถานะคลินิก' },
+  { id: 'patientflow', label: 'Patient Flow', icon: '🚦', desc: 'Real-time Heatmap · Bottleneck' },
+  { id: 'appointment', label: 'นัดหมาย AI', icon: '📅', desc: 'No-Show Prediction · Smart Booking' },
   { id: 'ipd', label: 'IPD ผู้ป่วยใน', icon: '🏥', desc: 'เตียง · การนอน · AI พยากรณ์' },
   { id: 'er', label: 'ห้องฉุกเฉิน', icon: '🚑', desc: 'สถานะ ER · AI Surge Alert' },
   { id: 'dental', label: 'ทันตกรรม', icon: '🦷', desc: 'คลินิกฟัน · DPI Analytics' },
@@ -632,6 +636,8 @@ export default function App() {
               {activeTab === 'report' && <ReportTab />}
               {activeTab === 'compare' && <CompareTab />}
               {activeTab === 'customer-insight' && <CustomerInsightTab />}
+              {activeTab === 'appointment' && <AppointmentTab />}
+              {activeTab === 'patientflow' && <PatientFlowTab />}
               {activeTab === 'evolution' && <EvolutionTab />}
             </div>
           </Suspense>

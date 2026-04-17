@@ -47,6 +47,8 @@ import reportRoutes from './routes/report.js';
 import staffingRoutes from './routes/staffing.js';
 import safetyRoutes from './routes/safety.js';
 import kpiExtendedRoutes from './routes/kpiExtended.js';
+import appointmentRoutes from './routes/appointment.js';
+import patientFlowRoutes from './routes/patientFlow.js';
 import { authenticate, authorize } from './middleware/rbac.js';
 import { auditMiddleware } from './middleware/audit.js';
 import { trackingMiddleware } from './middleware/tracking.js';
@@ -283,6 +285,8 @@ app.use('/api/report', auditMiddleware('operational'), authorize('finance'), rep
 app.use('/api/staffing', auditMiddleware('operational'), authorize('clinical'), staffingRoutes);
 app.use('/api/safety', auditMiddleware('patient_safety'), authorize('clinical'), safetyRoutes);
 app.use('/api/kpi', auditMiddleware('operational'), authorize('finance'), kpiExtendedRoutes);
+app.use('/api/appointment', auditMiddleware('patient_info'), authorize('appointment'), appointmentRoutes);
+app.use('/api/patientflow', auditMiddleware('operational'), authorize('patientflow'), patientFlowRoutes);
 app.use('/api/infra', authorize('admin'), infraRoutes);
 app.use('/api/debug', authorize('admin'), debugRoutes);
 
