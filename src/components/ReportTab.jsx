@@ -24,6 +24,320 @@ function fmt(v, d = 0) {
   return Number(v).toLocaleString('th-TH', { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
+// ─────────────────────────────────────────────────────────────
+// AI Executive Narrative Builder — OPD Resource (Lab/Drug/CT-Xray)
+// Deterministic rule-based qualitative analysis for executives
+// ─────────────────────────────────────────────────────────────
+function buildOpdResourceNarrative(data, fy1, fy2) {
+  if (!data?.comparison || !data.fy1_totals || !data.fy2_totals) return null;
+  const t1 = data.fy1_totals;
+  const t2 = data.fy2_totals;
+  const comparableMonths = data.comparable_months || 0;
+  if (comparableMonths === 0) {
+    return {
+      headline: `ยังไม่มีเดือนที่เทียบได้ระหว่างปีงบ ${fy1} กับ ${fy2} — ระบบจะวิเคราะห์ได้เมื่อมีข้อมูลครบอย่างน้อย 1 เดือนของทั้งสองปี`,
+      empty: true,
+    };
+  }
+
+  const t1TotOrd = t1.lab_orders + t1.drug_orders + t1.xray_orders;
+  const t1TotPx  = t1.lab_price  + t1.drug_price  + t1.xray_price;
+  const t2TotOrd = t2.lab_orders + t2.drug_orders + t2.xray_orders;
+  const t2TotPx  = t2.lab_price  + t2.drug_price  + t2.xray_price;
+
+  const ordGrowth = Number(data.overall_orders_growth_pct ?? 0);
+  const pxGrowth  = Number(data.overall_price_growth_pct ?? 0);
+
+  const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 100) : a > 0 ? 100 : 0);
+  const cat = {
+    Lab:  { ord: pct(t2.lab_orders,  t1.lab_orders),  px: pct(t2.lab_price,  t1.lab_price)  },
+    Drug: { ord: pct(t2.drug_orders, t1.drug_orders), px: pct(t2.drug_price, t1.drug_price) },
+    Xray: { ord: pct(t2.xray_orders, t1.xray_orders), px: pct(t2.xray_price, t1.xray_price) },
+  };
+
+  const unit = {
+    Lab:  { f1: t1.lab_orders  ? t1.lab_price  / t1.lab_orders  : 0, f2: t2.lab_orders  ? t2.lab_price  / t2.lab_orders  : 0 },
+    Drug: { f1: t1.drug_orders ? t1.drug_price / t1.drug_orders : 0, f2: t2.drug_orders ? t2.drug_price / t2.drug_orders : 0 },
+    Xray: { f1: t1.xray_orders ? t1.xray_price / t1.xray_orders : 0, f2: t2.xray_orders ? t2.xray_price / t2.xray_orders : 0 },
+  };
+  const unitDelta = (u) => (u.f1 > 0 ? Math.round(((u.f2 - u.f1) / u.f1) * 100) : 0);
+
+  const shareFY1 = {
+    lab:  t1TotPx > 0 ? (t1.lab_price  / t1TotPx) * 100 : 0,
+    drug: t1TotPx > 0 ? (t1.drug_price / t1TotPx) * 100 : 0,
+    xray: t1TotPx > 0 ? (t1.xray_price / t1TotPx) * 100 : 0,
+  };
+  const shareFY2 = {
+    lab:  t2TotPx > 0 ? (t2.lab_price  / t2TotPx) * 100 : 0,
+    drug: t2TotPx > 0 ? (t2.drug_price / t2TotPx) * 100 : 0,
+    xray: t2TotPx > 0 ? (t2.xray_price / t2TotPx) * 100 : 0,
+  };
+
+  const topByValueGrowth =
+    cat.Drug.px >= cat.Lab.px && cat.Drug.px >= cat.Xray.px ? { name: 'Drug (ยา)', g: cat.Drug.px } :
+    cat.Lab.px  >= cat.Xray.px ? { name: 'Lab (ห้องปฏิบัติการ)', g: cat.Lab.px } :
+                                 { name: 'CT / X-ray (รังสีวินิจฉัย)', g: cat.Xray.px };
+  const weakByValueGrowth =
+    cat.Drug.px <= cat.Lab.px && cat.Drug.px <= cat.Xray.px ? { name: 'Drug (ยา)', g: cat.Drug.px } :
+    cat.Lab.px  <= cat.Xray.px ? { name: 'Lab (ห้องปฏิบัติการ)', g: cat.Lab.px } :
+                                 { name: 'CT / X-ray (รังสีวินิจฉัย)', g: cat.Xray.px };
+
+  // Seasonality — peak/dip month (by total orders)
+  const comp = data.comparison.filter(c => c.fy1.has_data && c.fy2.has_data);
+  let peakMonth = null, dipMonth = null, peakG = -Infinity, dipG = Infinity;
+  for (const c of comp) {
+    const a = c.fy1.lab_orders + c.fy1.drug_orders + c.fy1.xray_orders;
+    const b = c.fy2.lab_orders + c.fy2.drug_orders + c.fy2.xray_orders;
+    if (a === 0) continue;
+    const g = ((b - a) / a) * 100;
+    if (g > peakG) { peakG = g; peakMonth = c.month; }
+    if (g < dipG)  { dipG  = g; dipMonth  = c.month; }
+  }
+
+  // Headline
+  let headline;
+  const gap = pxGrowth - ordGrowth;
+  if (pxGrowth >= 10 && ordGrowth >= 10) {
+    headline = `ทรัพยากร OPD ปีงบ ${fy2} ขยายตัวแข็งแรง — รายได้ +${pxGrowth}% จากปริมาณ +${ordGrowth}% (เทียบ ${comparableMonths} เดือน) สะท้อนการเติบโตทั้งเชิงปริมาณและคุณภาพพร้อมกัน`;
+  } else if (pxGrowth >= 5 && gap >= 5) {
+    headline = `รายได้ทรัพยากร OPD +${pxGrowth}% สูงกว่าการเติบโตปริมาณ (${ordGrowth}%) — Case Complexity / Acuity สูงขึ้น หรือ Unit Price ถูกปรับ ควรตรวจสอบว่าเป็นการเติบโตที่ยั่งยืนหรือชั่วคราว`;
+  } else if (ordGrowth > 5 && pxGrowth < 0) {
+    headline = `สัญญาณ Margin Compression — ปริมาณเพิ่ม +${ordGrowth}% แต่รายได้ลด ${pxGrowth}% บ่งชี้ราคาต่อครั้งถูกกดดัน ควรเร่งทบทวน Price List และ Formulary`;
+  } else if (pxGrowth <= -5 && ordGrowth <= 0) {
+    headline = `ทรัพยากร OPD หดตัวทั้งสองมิติ — ปริมาณ ${ordGrowth}% และรายได้ ${pxGrowth}% ต้องสอบสวน Root Cause (ผู้ป่วยลด, Referral Leakage, ขาดแคลนยา/รีเอเจนต์, Service Mix เปลี่ยน)`;
+  } else {
+    headline = `ภาพรวมทรัพยากร OPD ${pxGrowth >= 0 ? 'เติบโต' : 'หดตัว'} ${Math.abs(pxGrowth)}% เชิงมูลค่า · ปริมาณ ${ordGrowth >= 0 ? '+' : ''}${ordGrowth}% · ช่วงที่เทียบได้ ${comparableMonths} เดือน`;
+  }
+
+  // Narrative sections
+  const trendAnalysis =
+    `ปีงบ ${fy2} มีคำสั่งใช้ทรัพยากรรวม ${fmt(t2TotOrd)} ครั้ง (เทียบปีงบ ${fy1}: ${fmt(t1TotOrd)} ครั้ง) ` +
+    `เปลี่ยนแปลง ${ordGrowth >= 0 ? '+' : ''}${ordGrowth}% ส่วนมูลค่ารวม ${fmt(t2TotPx)} บาท (ปีงบ ${fy1}: ${fmt(t1TotPx)} บาท) ` +
+    `เปลี่ยนแปลง ${pxGrowth >= 0 ? '+' : ''}${pxGrowth}% — ` +
+    (pxGrowth > ordGrowth + 2
+      ? 'Yield ต่อคำสั่งสูงขึ้น สะท้อน Case Mix ซับซ้อนหรือการปรับอัตราค่าบริการ'
+      : pxGrowth < ordGrowth - 2
+        ? 'Yield ต่อคำสั่งต่ำลง อาจเกิดจาก Generic Substitution, การปรับราคาลง หรือ Case Mix อ่อนลง'
+        : 'Yield ต่อคำสั่งค่อนข้างคงที่ การเติบโตสมดุลระหว่างปริมาณและมูลค่า');
+
+  const mixInsight =
+    `โครงสร้างรายได้ปีงบ ${fy2}: Drug ${shareFY2.drug.toFixed(1)}% · Lab ${shareFY2.lab.toFixed(1)}% · CT/X-ray ${shareFY2.xray.toFixed(1)}% ` +
+    `(ปีงบ ${fy1}: Drug ${shareFY1.drug.toFixed(1)}% · Lab ${shareFY1.lab.toFixed(1)}% · CT/X-ray ${shareFY1.xray.toFixed(1)}%). ` +
+    `หมวดที่เป็น Growth Driver หลักคือ ${topByValueGrowth.name} (+${topByValueGrowth.g}%) ` +
+    `ขณะที่หมวดอ่อนแรงที่สุดคือ ${weakByValueGrowth.name} (${weakByValueGrowth.g >= 0 ? '+' : ''}${weakByValueGrowth.g}%) — ` +
+    (Math.abs(shareFY2.drug - shareFY1.drug) >= 3
+      ? `สัดส่วน Drug ${shareFY2.drug > shareFY1.drug ? 'ขยับขึ้น' : 'ลดลง'} ${Math.abs(shareFY2.drug - shareFY1.drug).toFixed(1)} จุด บ่งชี้พฤติกรรมการสั่งใช้เปลี่ยนไป`
+      : 'โครงสร้าง Portfolio ค่อนข้างคงที่');
+
+  const unitEcon =
+    `ค่าเฉลี่ยต่อครั้ง ปีงบ ${fy2}: ` +
+    `Lab ฿${fmt(Math.round(unit.Lab.f2))}/ครั้ง (${unitDelta(unit.Lab)  >= 0 ? '↑' : '↓'}${Math.abs(unitDelta(unit.Lab))}%) · ` +
+    `Drug ฿${fmt(Math.round(unit.Drug.f2))}/ครั้ง (${unitDelta(unit.Drug) >= 0 ? '↑' : '↓'}${Math.abs(unitDelta(unit.Drug))}%) · ` +
+    `CT/X-ray ฿${fmt(Math.round(unit.Xray.f2))}/ครั้ง (${unitDelta(unit.Xray) >= 0 ? '↑' : '↓'}${Math.abs(unitDelta(unit.Xray))}%) — ` +
+    'ตัวเลขนี้สะท้อน Case Complexity และต้นทุนจริงต่อการให้บริการ ช่วยผู้บริหารเปรียบเทียบ Benchmark ระหว่างคลินิกและวางแผน Cost Control';
+
+  const seasonalInsight = peakMonth
+    ? `เดือนที่เติบโตสูงสุด: ${peakMonth} (${peakG >= 0 ? '+' : ''}${Math.round(peakG)}%) · เดือนที่อ่อนแรงสุด: ${dipMonth} (${dipG >= 0 ? '+' : ''}${Math.round(dipG)}%) — ` +
+      'ช่องว่างระหว่างพีคและดิปบ่งชี้โอกาสในการวางแผน Staffing, Stock Level และ Service Capacity เชิง Seasonality'
+    : 'ข้อมูลรายเดือนยังไม่เพียงพอสำหรับการวิเคราะห์ Seasonality';
+
+  // Risks
+  const risks = [];
+  if (ordGrowth > 10 && pxGrowth < 0) {
+    risks.push(`Margin Compression: ปริมาณ +${ordGrowth}% แต่รายได้ ${pxGrowth}% — ราคาต่อครั้งถูกกดดัน ตรวจสอบ Price List / Discount Policy`);
+  }
+  if (pxGrowth >= 15 && ordGrowth <= 3) {
+    risks.push(`Single-source Growth: รายได้โตจาก Unit Price เป็นหลัก (+${pxGrowth}% vs +${ordGrowth}% volume) — เปราะบางต่อการปรับราคายา/รีเอเจนต์ในปีถัดไป`);
+  }
+  if (cat.Drug.ord > 20 || cat.Drug.px > 20) {
+    risks.push(`Drug Utilization พุ่ง (+${cat.Drug.ord}% orders / +${cat.Drug.px}% value) — ตรวจสอบ Polypharmacy, ความเหมาะสมของการสั่งใช้ และ Formulary Compliance`);
+  }
+  if (cat.Xray.ord > 15 && cat.Xray.ord > ordGrowth * 1.5 + 5) {
+    risks.push(`Imaging โตเร็วกว่าปริมาณผู้ป่วยรวม (+${cat.Xray.ord}% vs ${ordGrowth}%) — ระวัง Defensive Medicine / Over-ordering ควรทบทวน Evidence-based Guideline`);
+  }
+  if (pxGrowth < -10) {
+    risks.push(`รายได้ทรัพยากรหดตัว ${pxGrowth}% — สัญญาณ Referral Leakage, ขาดแคลนยา/รีเอเจนต์ หรือ Service Disruption ต้องสอบสวนด่วน`);
+  }
+  if (Math.max(shareFY2.drug, shareFY2.lab, shareFY2.xray) > 70) {
+    const dom = shareFY2.drug >= shareFY2.lab && shareFY2.drug >= shareFY2.xray ? 'Drug' : shareFY2.lab >= shareFY2.xray ? 'Lab' : 'CT/X-ray';
+    risks.push(`Concentration Risk: หมวด ${dom} ครองสัดส่วนรายได้เกิน 70% — การพึ่งพาหมวดเดียวสูง หากเกิด Supply Disruption จะกระทบรายได้รวมทันที`);
+  }
+  if (risks.length === 0) {
+    risks.push('ไม่พบ Red Flags ที่มีนัยสำคัญในช่วงที่วิเคราะห์ — แนะนำติดตามต่อเนื่องและเทียบ Benchmark ระหว่างคลินิก');
+  }
+
+  // Recommendations
+  const recs = [];
+  if (pxGrowth > 5) {
+    recs.push(`วางแผนงบประมาณและ Supply Chain รองรับการเติบโต +${pxGrowth}% โดยเฉพาะหมวด ${topByValueGrowth.name} ซึ่งเป็น Growth Driver หลัก`);
+  } else if (pxGrowth < -3) {
+    recs.push(`จัดตั้ง Task Force ฟื้นฟูรายได้ทรัพยากร OPD (${pxGrowth}%) วิเคราะห์ Root Cause รายคลินิกและหมวด`);
+  }
+  const highOrd = cat.Lab.ord > 15 ? 'Lab' : cat.Xray.ord > 15 ? 'CT/X-ray' : cat.Drug.ord > 15 ? 'Drug' : null;
+  if (highOrd) {
+    recs.push(`ทบทวน Evidence-based Ordering Protocol สำหรับ ${highOrd} เพื่อคุม Unnecessary Ordering และลด Cost-per-visit`);
+  }
+  if (peakMonth) {
+    recs.push(`ช่วง ${peakMonth} คือเดือน Peak Demand — วางแผน Staffing, Stock Level และ Preventive Maintenance ล่วงหน้า 30–60 วัน`);
+  }
+  recs.push('สร้าง Executive KPI Dashboard ราย 3 เดือน: Cost-per-visit · Order-per-visit · Yield-per-order แยกตามคลินิก เพื่อเปรียบเทียบ Benchmark ภายใน');
+  if (cat.Drug.px > 15 || shareFY2.drug > 55) {
+    recs.push('ตั้ง Pharmacy & Therapeutics Committee ทบทวน High-cost Drug List และส่งเสริม Generic Substitution เพื่อคุม Drug Expense');
+  }
+  if (cat.Xray.ord > 15) {
+    recs.push('พัฒนา Clinical Decision Support สำหรับการสั่ง CT/X-ray ตาม ACR Appropriateness Criteria ลด Inappropriate Imaging');
+  }
+
+  return {
+    headline,
+    trend_analysis: trendAnalysis,
+    mix_insight: mixInsight,
+    unit_economics: unitEcon,
+    seasonal_insight: seasonalInsight,
+    risks,
+    recommendations: recs,
+    meta: { comparable_months: comparableMonths, fy1, fy2 },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Presentational card used by AI Analysis panel
+// ─────────────────────────────────────────────────────────────
+function AINarrativeCard({ icon, title, text, list, color = '#7c3aed' }) {
+  return (
+    <div style={{
+      background: 'var(--md-surface)',
+      border: '1px solid var(--md-border)',
+      borderLeft: `3px solid ${color}`,
+      borderRadius: '10px',
+      padding: '14px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+        <span style={{ fontSize: '16px' }}>{icon}</span>
+        <span style={{ fontWeight: 800, fontSize: '12px', color: 'var(--md-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {title}
+        </span>
+      </div>
+      {text && (
+        <p style={{ fontSize: '13px', color: 'var(--md-text-primary)', lineHeight: 1.7, margin: 0, fontWeight: 500 }}>
+          {text}
+        </p>
+      )}
+      {list && (
+        <ul style={{ margin: '4px 0 0 0', paddingLeft: '18px' }}>
+          {list.map((item, i) => (
+            <li key={i} style={{ fontSize: '13px', color: 'var(--md-text-primary)', lineHeight: 1.7, fontWeight: 500, marginBottom: '3px' }}>
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI Executive Analysis Panel — OPD Resource report
+// ─────────────────────────────────────────────────────────────
+function OpdResourceAIExecutive({ data, fy1, fy2 }) {
+  const narrative = useMemo(() => buildOpdResourceNarrative(data, fy1, fy2), [data, fy1, fy2]);
+  if (!narrative) return null;
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{
+      background: 'var(--md-surface)',
+      border: '1px solid var(--md-border)',
+      boxShadow: 'var(--md-shadow-sm)',
+      marginTop: '16px',
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: '14px 20px',
+        borderBottom: '1px solid var(--md-border)',
+        background: 'linear-gradient(135deg, rgba(124,58,237,.08), rgba(14,165,233,.05))',
+        display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: '18px' }}>🧠</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '14px', fontWeight: 900, color: 'var(--md-text-primary)' }}>
+            AI วิเคราะห์เชิงคุณภาพ — ทรัพยากรผู้ป่วยนอก (สำหรับผู้บริหาร)
+          </div>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginTop: '2px' }}>
+            Executive Qualitative Analysis · Growth · Mix · Unit Economics · Risks · Recommendations
+          </div>
+        </div>
+        <span style={{
+          fontSize: '10px', fontWeight: 700,
+          padding: '3px 10px', borderRadius: '99px',
+          background: 'rgba(124,58,237,.1)', color: '#7c3aed',
+          border: '1px solid rgba(124,58,237,.25)',
+        }}>
+          📐 Rule-based Analysis
+        </span>
+      </div>
+
+      <div style={{ padding: '18px 20px' }}>
+        {narrative.empty ? (
+          <div style={{
+            padding: '14px 16px',
+            background: 'rgba(251,191,36,.08)',
+            borderLeft: '3px solid #f59e0b',
+            borderRadius: '10px',
+            fontSize: '13px', fontWeight: 600, color: 'var(--md-text-primary)',
+          }}>
+            {narrative.headline}
+          </div>
+        ) : (
+          <>
+            {/* Headline */}
+            <div style={{
+              padding: '14px 16px',
+              background: 'rgba(124,58,237,.08)',
+              borderLeft: '3px solid #7c3aed',
+              borderRadius: '10px',
+              marginBottom: '14px',
+              fontSize: '14px', fontWeight: 700, color: 'var(--md-text-primary)', lineHeight: 1.6,
+            }}>
+              {narrative.headline}
+            </div>
+
+            {/* Row 1: Trend + Mix */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+              <AINarrativeCard icon="📊" title="Trend Analysis" text={narrative.trend_analysis} color="#7c3aed" />
+              <AINarrativeCard icon="🧩" title="Resource Mix & Growth Driver" text={narrative.mix_insight} color="#0ea5e9" />
+            </div>
+
+            {/* Row 2: Unit Economics + Seasonality */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+              <AINarrativeCard icon="💠" title="Unit Economics (บาท/ครั้ง)" text={narrative.unit_economics} color="#0d9488" />
+              <AINarrativeCard icon="🗓️" title="Seasonal Pattern" text={narrative.seasonal_insight} color="#8b5cf6" />
+            </div>
+
+            {/* Row 3: Risks + Recommendations */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '10px' }}>
+              <AINarrativeCard icon="⚠️" title="ความเสี่ยง / Red Flags" list={narrative.risks} color="#f59e0b" />
+              <AINarrativeCard icon="💡" title="ข้อเสนอแนะเชิงกลยุทธ์" list={narrative.recommendations} color="#10b981" />
+            </div>
+
+            {/* Footer */}
+            <div style={{
+              marginTop: '14px',
+              padding: '10px 14px',
+              background: 'var(--md-surface-2, rgba(0,0,0,.02))',
+              borderRadius: '8px',
+              fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600,
+              display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px',
+            }}>
+              <span>ฐานข้อมูล: {narrative.meta.comparable_months} เดือนที่เทียบได้ · ปีงบ {narrative.meta.fy1} vs {narrative.meta.fy2}</span>
+              <span>⚠ การตัดสินใจเชิงนโยบายควรพิจารณาข้อมูลทางคลินิกและบริบทเพิ่มเติม</span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ReportTab() {
   const [reportType, setReportType] = useState('opd-compare');
   const [ipdData, setIpdData] = useState(null);
@@ -1137,6 +1451,11 @@ export default function ReportTab() {
           </div>
         );
       })()}
+
+      {/* ── AI Executive Qualitative Analysis — shown under OPD Resource table ── */}
+      {!loading && reportType === 'resource-opd' && resOpdMonthly?.comparison && (
+        <OpdResourceAIExecutive data={resOpdMonthly} fy1={fy1} fy2={fy2} />
+      )}
 
       {/* ── Resource IPD Table (yearly summary — unchanged) ── */}
       {!loading && reportType === 'resource-ipd' && resourceData && (() => {
