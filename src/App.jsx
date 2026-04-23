@@ -12,8 +12,9 @@ import { useWebSocket } from './hooks/useWebSocket.js';
 import KPICardV2 from './components/KPICardV2.jsx';
 import AlertBanner from './components/AlertBanner.jsx';
 import DataFreshnessBar from './components/shared/DataFreshnessBar.jsx';
+import Sidebar from './components/Sidebar.jsx';
 const AIAssistant = React.lazy(() => import('./components/AIAssistant.jsx'));
-import Clock from './components/Clock.tsx';
+import Clock from './components/Clock.jsx';
 import DrillDownModal from './components/shared/DrillDownModal.jsx';
 import ProjectTeamPanel from './components/ProjectTeamPanel.jsx';
 const ExecutiveCommandCenter = React.lazy(() => import('./components/ExecutiveCommandCenter.jsx'));
@@ -184,6 +185,34 @@ export default function App() {
   const [showServerSettings, setShowServerSettings] = useState(false);
   const [summaryTimedOut, setSummaryTimedOut] = useState(false);
 
+  // ── Sidebar state (incremental V2 feature, April 2026) ──
+  const [sidebarOpen, setSidebarOpen] = useState(false);   // mobile drawer
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('bch-sidebar-collapsed') === '1'; } catch { return false; }
+  });
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed(v => {
+      const next = !v;
+      try { localStorage.setItem('bch-sidebar-collapsed', next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
+  // Ctrl/Cmd+B toggles collapse on desktop, drawer on mobile
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        if (window.matchMedia('(max-width: 1023px)').matches) {
+          setSidebarOpen(v => !v);
+        } else {
+          toggleSidebarCollapsed();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const {
     insights,
     anomalies,
@@ -276,6 +305,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--md-bg)' }}>
+      {/* Sidebar (incremental V2) */}
+      <Sidebar
+        tabs={TABS}
+        activeTab={activeTab}
+        onSelect={setTab}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={toggleSidebarCollapsed}
+        brand={{ title: 'BCH 360°', subtitle: 'Hospital Intelligence' }}
+      />
+
+      {/* Content area shifts right on desktop to clear the fixed sidebar */}
+      <div className={'transition-[padding] duration-300 ' + (sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[240px]')}>
       {/* ===================================================
                 HEADER — Material AppBar
             =================================================== */}
@@ -293,6 +336,19 @@ export default function App() {
           <div className="flex items-center justify-between gap-4">
             {/* Brand */}
             <div className="flex items-center gap-3">
+              {/* Mobile hamburger — opens sidebar drawer */}
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="เปิดเมนู"
+                title="เปิดเมนู (Ctrl/Cmd+B)"
+                className="lg:hidden w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--md-surface-2)] transition-colors"
+                style={{ color: 'var(--md-text-primary)' }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                  <path d="M3 6h18M3 12h18M3 18h18" />
+                </svg>
+              </button>
               {/* Logo badge */}
               <div className="relative">
                 <div
@@ -512,99 +568,7 @@ export default function App() {
           />
         </div>
 
-        {/* ===================================================
-                    TAB NAVIGATION — Material Expanded Tabs
-                =================================================== */}
-        <div className="mb-5 sticky z-40" style={{ top: '64px' }}>
-          {/* Tab pill wrapper — flex-wrap to prevent items from being hidden */}
-          <div
-            className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-2xl w-full"
-            style={{
-              background: 'var(--md-surface)',
-              border: '1px solid var(--md-border)',
-              boxShadow: 'var(--md-shadow-sm)',
-            }}
-          >
-            {TABS.map(tab => (
-              <button
-                key={tab.id}
-                id={`tab-${tab.id}`}
-                onClick={() => setTab(tab.id)}
-                className="md-tab-item"
-                data-active={activeTab === tab.id}
-                style={{
-                  flex: '1 1 auto',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '0.625rem',
-                  padding: '0.625rem 1.25rem',
-                  borderRadius: '0.75rem',
-                  transition: 'all 0.2s ease',
-                  cursor: 'pointer',
-                  border: 'none',
-                  background: activeTab === tab.id ? 'var(--md-primary)' : 'transparent',
-                  boxShadow: activeTab === tab.id ? '0 4px 14px rgba(15, 118, 110, .28)' : 'none',
-                  minWidth: '150px',
-                }}
-              >
-                {/* Icon */}
-                <span style={{ fontSize: '1.5rem', lineHeight: 1, flexShrink: 0 }}>{tab.icon}</span>
-
-                {/* Label stack */}
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    gap: '3px',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 'var(--fs-base)' /* 15px */,
-                      fontWeight: 800,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.04em',
-                      lineHeight: 1,
-                      color: activeTab === tab.id ? '#fff' : 'var(--md-text-primary)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {tab.label}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '11px' /* 11px */,
-                      fontWeight: 600,
-                      letterSpacing: '0.04em',
-                      lineHeight: 1,
-                      opacity: activeTab === tab.id ? 0.85 : 0.65,
-                      color: activeTab === tab.id ? '#fff' : 'var(--md-text-secondary)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {tab.desc}
-                  </span>
-                </div>
-
-                {/* Active indicator dot */}
-                {activeTab === tab.id && (
-                  <span
-                    style={{
-                      width: '6px',
-                      height: '6px',
-                      borderRadius: '50%',
-                      background: 'rgba(255,255,255,0.7)',
-                      flexShrink: 0,
-                      marginLeft: 'auto',
-                    }}
-                  />
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* TAB NAVIGATION moved to Sidebar (see src/components/Sidebar.jsx) */}
 
         {/* Tab Content */}
         <ErrorBoundary
@@ -768,6 +732,7 @@ export default function App() {
       <Suspense fallback={null}>
         <ServerSettings open={showServerSettings} onClose={() => setShowServerSettings(false)} />
       </Suspense>
+      </div>{/* /content-area (sidebar padding wrapper) */}
     </div>
   );
 }
