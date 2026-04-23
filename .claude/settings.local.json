@@ -82,7 +82,23 @@
       "Bash(curl -s -o /dev/null -w \"HTTP Status: %{http_code}\\\\n\" http://10.1.0.68:4001/)",
       "Bash(for f:*)",
       "Read(//c/BCH 360° Intelligence V.10/**)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(node .claude/skills/bch-360-expert/scripts/scaffold_tab.mjs Dialysis --thai \"ไตเทียม\")",
+      "Bash(node -e \"console.log\\(require\\('crypto'\\).randomBytes\\(32\\).toString\\('hex'\\)\\)\")",
+      "Bash(node -e \"const p = JSON.parse\\(require\\('fs'\\).readFileSync\\('package.json'\\)\\); console.log\\('vitest:', !!p.devDependencies?.vitest, '@vitest/coverage-v8:', !!p.devDependencies?.['@vitest/coverage-v8'], 'web-vitals:', !!p.dependencies?.['web-vitals']\\);\")",
+      "Bash(node -e \"import\\('./server/metrics/index.js'\\).then\\(m => m.listMetrics\\(\\)\\).then\\(ms => console.log\\('✓ Loaded', ms.length, 'metrics:', ms.map\\(m=>m.id\\).join\\('\\\\n  '\\)\\)\\)\")",
+      "Bash(timeout 10 node -e \"import\\('./server/metrics/index.js'\\).then\\(m => m.listMetrics\\(\\)\\).then\\(ms => console.log\\('Loaded', ms.length, 'metrics:', ms.map\\(m=>m.id\\)\\)\\).catch\\(e => console.error\\('ERR:', e.message\\)\\)\")",
+      "Bash(node scripts/probes/generate_datadic_v2.mjs)",
+      "Bash(node -e ' *)",
+      "Bash(awk -F: '{print $1 \":\" $2}')",
+      "Bash(ssh -V)",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"echo '=== HOST ===' && uname -a && echo && echo '=== UPTIME ===' && uptime && echo && echo '=== DISK ===' && df -h / /var 2>/dev/null && echo && echo '=== MEMORY ===' && free -h 2>&1 | head -3\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"nproc && echo && echo '=== PM2 LIST ===' && pm2 list 2>&1 | head -30 && echo && echo '=== APP DIRS ===' && ls -la /opt/ /srv/ /var/www/ 2>/dev/null | grep -iE 'bch|360|intelligence' && find / -maxdepth 4 -name 'package.json' -path '*bch*' 2>/dev/null | head -5 && find / -maxdepth 4 -name 'ecosystem.config.cjs' 2>/dev/null | head -5\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"echo '=== LISTENING PORTS ===' && ss -tlnp 2>/dev/null | grep -E ':\\(80|443|3000|4000|4001\\)\\\\s' | head -20 && echo && echo '=== NODE PROCESSES ===' && ps aux | grep -E 'node|npm' | grep -v grep | head -10 && echo && echo '=== SYSTEMD SERVICES \\(bch/node\\) ===' && systemctl list-units --type=service --state=running 2>/dev/null | grep -iE 'bch|node|360' | head -10 && echo && echo '=== CURL LOCAL ===' && curl -sk -o /dev/null -w 'HTTPS:443 → %{http_code} \\(%{time_total}s\\)\\\\n' https://127.0.0.1/ 2>&1 && curl -s  -o /dev/null -w 'HTTP:4000 → %{http_code}\\\\n' http://127.0.0.1:4000/ 2>&1\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"echo '=== DOCKER PS ===' && docker ps --format 'table {{.Names}}\\\\t{{.Image}}\\\\t{{.Status}}\\\\t{{.Ports}}' 2>&1 | head -20 && echo && echo '=== REPO STATE ===' && cd /opt/bch360 && git log --oneline -5 && echo && echo 'Current branch:' && git branch --show-current && echo 'Current SHA:' && git rev-parse HEAD && echo && echo '=== DEPLOY SCRIPT HEAD ===' && ls -la deploy/ 2>/dev/null | head -10 && echo && echo '=== RECENT LOGS ===' && docker logs --tail 10 \\\\$\\(docker ps --format '{{.Names}}' | grep -i bch | head -1\\) 2>&1 | tail -12\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"echo '=== /opt/bch360 contents ===' && ls -la /opt/bch360/ | head -25 && echo && echo '=== git repos anywhere ===' && find / -maxdepth 5 -name '.git' -type d 2>/dev/null | grep -v node_modules | head -10 && echo && echo '=== bch360 image ===' && docker images bch360 --format '{{.Repository}}:{{.Tag}}  {{.CreatedSince}}  {{.Size}}' && echo && echo '=== container mount points ===' && docker inspect bch360 --format '{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}} \\(ro:{{.RO}}\\){{println}}{{end}}' && echo '=== container entrypoint ===' && docker inspect bch360 --format '{{.Path}} {{range .Args}}{{.}} {{end}}' && echo '=== container env \\(filtered\\) ===' && docker inspect bch360 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -iE 'NODE_ENV|PORT|VERSION' | head -10\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"echo '=== /home/dashboard git ===' && cd /home/dashboard && git log --oneline -5 2>&1 && echo 'Branch:' && git branch --show-current 2>&1 && echo 'Remote:' && git remote -v 2>&1 | head -3 && echo 'Uncommitted:' && git status --short 2>&1 | head -10 && echo && echo '=== docker-compose.yml ===' && cat /opt/bch360/docker-compose.yml && echo && echo '=== container mounts \\(fixed\\) ===' && docker inspect bch360 --format '{{json .Mounts}}' | head -c 500\")",
+      "Bash(plink -ssh -pw 'boom123boom123' root@10.109.0.33 \"cd /home/dashboard && git log --oneline -3 2>&1 && echo '--- branch ---' && git rev-parse --abbrev-ref HEAD 2>&1 && echo '--- remotes ---' && git remote -v 2>&1 | head -2 && echo '--- HEAD SHA ---' && git rev-parse HEAD 2>&1\")"
     ]
   }
 }

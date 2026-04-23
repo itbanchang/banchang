@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>BCH 360° — Metric Registry</title>
+<style>
+  body { font-family: Inter, 'Noto Sans Thai', system-ui, sans-serif; max-width: 1200px; margin: 2em auto; padding: 0 1em; color: #1e293b; line-height: 1.6; }
+  h1 { color: #7c3aed; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1em; }
+  th { background: #f5f3ff; color: #5b21b6; text-align: left; padding: .75em; border-bottom: 2px solid #c4b5fd; }
+  td { padding: .75em; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  .id { font-family: 'JetBrains Mono', monospace; font-size: .9em; color: #475569; }
+  .owner { color: #64748b; font-size: .9em; }
+  .target { font-weight: 600; color: #10b981; }
+  .desc-th { color: #334155; }
+  .reviewed { font-family: monospace; color: #64748b; }
+  footer { margin-top: 2em; color: #94a3b8; font-size: .9em; }
+</style>
+</head>
+<body>
+<h1>📊 BCH 360° — Metric Registry</h1>
+<p>ทะเบียน KPI กลางของระบบ <strong>26</strong> ตัว — ค่านิยามเดียว สูตรเดียว ที่เดียว.</p>
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>ป้าย (TH/EN)</th>
+      <th>หน่วย</th>
+      <th>Target</th>
+      <th>เจ้าของ</th>
+      <th>Reviewed</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="id">opd.waitTime.avgTotalMinutes</td>
+      <td><strong>เวลารอเฉลี่ย OPD (ต้นจนจบ)</strong><br><span class="owner">OPD Wait Time — end-to-end average</span></td>
+      <td>minutes</td>
+      <td class="target">40</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ระยะเวลารวมตั้งแต่ผู้ป่วยลงทะเบียนจนรับยาครบหรือจ่ายเงินเสร็จ นับเฉพาะผู้ป่วยที่จบการตรวจแบบปกติ (ไม่รวมผู้ที่ถูกส่งต่อ, admit, หรือยกเลิก)</td>
+    </tr>
+    <tr>
+      <td class="id">opd.throughput.visitsPerHour</td>
+      <td><strong>อัตราผ่านงาน OPD ต่อชั่วโมง</strong><br><span class="owner">OPD Throughput — visits/hr</span></td>
+      <td>visits/hr</td>
+      <td class="target">20</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">จำนวนผู้ป่วยที่ผ่านงานต่อชั่วโมงเปิดทำการ ค่าสูง = คลินิกคัดกรอง-ส่งออกเร็ว ค่าต่ำ = คอขวด</td>
+    </tr>
+    <tr>
+      <td class="id">opd.dropout.rate</td>
+      <td><strong>อัตราการออกไปกลางคัน OPD</strong><br><span class="owner">OPD Dropout Rate</span></td>
+      <td>percent</td>
+      <td class="target">0.02</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วยที่มาลงทะเบียนแล้วไม่มีการบันทึก service1 ภายใน 2 ชั่วโมง (ออกไปเอง) / ผู้ป่วยทั้งหมด</td>
+    </tr>
+    <tr>
+      <td class="id">opd.sla.percent</td>
+      <td><strong>OPD SLA (ผ่านเกณฑ์ 60 นาที)</strong><br><span class="owner">OPD SLA — % under 60 min</span></td>
+      <td>percent</td>
+      <td class="target">0.85</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วยที่จบ visit ภายใน 60 นาที — เป้าหมาย ≥ 85%</td>
+    </tr>
+    <tr>
+      <td class="id">opd.dpi.compositeScore</td>
+      <td><strong>DPI — คะแนนรวมประสิทธิภาพ OPD</strong><br><span class="owner">OPD Department Performance Index</span></td>
+      <td>score</td>
+      <td class="target">80</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">คะแนนรวม 0-100 = SLA×30% + WaitScore×25% + ThroughputScore×25% + (100−Dropout)×20% — ใช้เปรียบเทียบคลินิก/เดือน</td>
+    </tr>
+    <tr>
+      <td class="id">opd.revisit.rate</td>
+      <td><strong>อัตรากลับมาซ้ำ 7 วัน (OPD)</strong><br><span class="owner">OPD 7-Day Revisit Rate</span></td>
+      <td>percent</td>
+      <td class="target">0.15</td>
+      <td class="owner">OPD Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วย OPD วันนี้ที่เคยมาใน 7 วันก่อนหน้า — สูง = อาการไม่หาย / ยาไม่พอ</td>
+    </tr>
+    <tr>
+      <td class="id">ipd.los.averageDays</td>
+      <td><strong>ระยะเวลานอนเฉลี่ย IPD</strong><br><span class="owner">IPD Average Length of Stay</span></td>
+      <td>days</td>
+      <td class="target">4.5</td>
+      <td class="owner">Medical Records</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ค่าเฉลี่ยจำนวนวันนอนของผู้ป่วยใน (dchdate - regdate) ไม่รวมห้องทารกแรกเกิด (ward 06)</td>
+    </tr>
+    <tr>
+      <td class="id">ipd.readmission30d.rate</td>
+      <td><strong>อัตรา Readmit 30 วัน</strong><br><span class="owner">IPD 30-Day Readmission Rate</span></td>
+      <td>percent</td>
+      <td class="target">0.1</td>
+      <td class="owner">Medical Records</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วน admit ที่ผู้ป่วยเดิมกลับมานอนใหม่ภายใน 30 วันหลังจำหน่าย นับผู้ป่วยที่จำหน่ายในช่วง dateRange (ยกเว้นแผนกทารกแรกเกิด)</td>
+    </tr>
+    <tr>
+      <td class="id">ipd.occupancy.percent</td>
+      <td><strong>อัตราครองเตียง IPD</strong><br><span class="owner">IPD Bed Occupancy</span></td>
+      <td>percent</td>
+      <td class="target">0.8</td>
+      <td class="owner">Clinical Operations</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนเตียงที่มีผู้ป่วยอยู่ ณ เวลาปัจจุบัน / จำนวนเตียงทั้งหมด (>95% = ไม่มีพื้นที่รองรับ ER boarding)</td>
+    </tr>
+    <tr>
+      <td class="id">ipd.adjrw.sum</td>
+      <td><strong>AdjRW รวม (DRG)</strong><br><span class="owner">Sum of AdjRW (DRG)</span></td>
+      <td>rw</td>
+      <td class="target">—</td>
+      <td class="owner">Medical Records + Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ผลรวม AdjRW จาก ipt + an_stat สำหรับ admit ที่จำหน่ายในช่วง ใช้คาดการณ์การเบิก DRG (ยกเว้น ward 06)</td>
+    </tr>
+    <tr>
+      <td class="id">ipd.cmi.caseMixIndex</td>
+      <td><strong>Case Mix Index (CMI)</strong><br><span class="owner">Case Mix Index</span></td>
+      <td>rw</td>
+      <td class="target">1</td>
+      <td class="owner">Medical Records + Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ค่าเฉลี่ย AdjRW ของ admit ที่มี RW > 0 ค่าสูง = ผู้ป่วยอาการหนัก / ได้เบิก DRG ต่อรายสูง</td>
+    </tr>
+    <tr>
+      <td class="id">er.timeToDoctor.minutes</td>
+      <td><strong>เวลารอพบแพทย์ ER</strong><br><span class="owner">ER Time to Doctor</span></td>
+      <td>minutes</td>
+      <td class="target">30</td>
+      <td class="owner">ER</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ค่าเฉลี่ยเวลาจากลงทะเบียน ER ถึงพบแพทย์ครั้งแรก — ต่อ triage level มีเป้าหมายต่างกัน (1:≤1, 2:≤15, 3:≤30, 4-5:≤60)</td>
+    </tr>
+    <tr>
+      <td class="id">er.boarding.hours</td>
+      <td><strong>ER Boarding (ชั่วโมงรอเตียง IPD)</strong><br><span class="owner">ER Boarding Hours</span></td>
+      <td>hours</td>
+      <td class="target">4</td>
+      <td class="owner">ER + IPD</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">เวลารอเฉลี่ยจากตัดสินใจ admit ถึงย้ายเข้า ward (ผู้ป่วย ER ที่ถูก admit) เกิน 6 ชม. = วิกฤต</td>
+    </tr>
+    <tr>
+      <td class="id">er.leftWithoutSeen.rate</td>
+      <td><strong>ER ออกไปก่อนพบแพทย์</strong><br><span class="owner">ER Left Without Being Seen</span></td>
+      <td>percent</td>
+      <td class="target">0.01</td>
+      <td class="owner">ER</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วย ER ที่ออกไปก่อนได้พบแพทย์ อาจหมายถึง คิวยาวเกินไป หรือ ความรุนแรงไม่เร่งด่วน</td>
+    </tr>
+    <tr>
+      <td class="id">er.surge.ratio</td>
+      <td><strong>ER Surge (ความหนาแน่น)</strong><br><span class="owner">ER Surge Ratio</span></td>
+      <td>ratio</td>
+      <td class="target">0.8</td>
+      <td class="owner">ER</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">อัตราส่วนผู้ป่วย ER ที่กำลังอยู่ ต่อ ER capacity (>1.2 = surge ต้องปรับแผน)</td>
+    </tr>
+    <tr>
+      <td class="id">finance.revenue.total</td>
+      <td><strong>รายได้รวม</strong><br><span class="owner">Total Revenue</span></td>
+      <td>THB</td>
+      <td class="target">—</td>
+      <td class="owner">Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">รายได้รวมจาก vn_stat.income ในช่วงวันที่กำหนด สามารถกรองตามสิทธิการรักษา (pttype) และคลินิก (dep)</td>
+    </tr>
+    <tr>
+      <td class="id">finance.denialRate.percent</td>
+      <td><strong>อัตรา Claim ไม่ผ่าน</strong><br><span class="owner">Claim Denial Rate</span></td>
+      <td>percent</td>
+      <td class="target">0.05</td>
+      <td class="owner">Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วน visit ที่ยังมี remain_money > 0 หลัง 60 วัน (approximation ของ claim denial) — confirm คำจำกัดความกับ Finance ก่อน production</td>
+    </tr>
+    <tr>
+      <td class="id">finance.underCharging.suspectCount</td>
+      <td><strong>จำนวน visit น่าสงสัย under-charging</strong><br><span class="owner">Suspected Under-charging Visits</span></td>
+      <td>count</td>
+      <td class="target">—</td>
+      <td class="owner">Finance + Medical Records</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">จำนวน visit ที่อาจมีการคิดค่าใช้จ่ายต่ำกว่าที่ควร (proxy: visits มี procedure แต่ไม่มี line ใน opitemrece) — wire real detector ใน server/ai/billing*.js</td>
+    </tr>
+    <tr>
+      <td class="id">finance.arBalance.total</td>
+      <td><strong>ยอดค้างรับ (A/R)</strong><br><span class="owner">Accounts Receivable Balance</span></td>
+      <td>THB</td>
+      <td class="target">—</td>
+      <td class="owner">Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ผลรวม remain_money ของ visit ที่ยังค้างจ่าย แบ่งตาม aging bucket (0-30 / 31-60 / 61-90 / 90+ วัน)</td>
+    </tr>
+    <tr>
+      <td class="id">finance.collectionRate.percent</td>
+      <td><strong>อัตราการจัดเก็บรายได้</strong><br><span class="owner">Collection Rate</span></td>
+      <td>percent</td>
+      <td class="target">0.95</td>
+      <td class="owner">Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">(income - remain_money) / income ของ visit ในช่วง ช่วยวัดว่าเก็บเงินได้จริงกี่ % ของที่เรียกเก็บ</td>
+    </tr>
+    <tr>
+      <td class="id">finance.yoyGrowth.percent</td>
+      <td><strong>การเติบโต Revenue YoY</strong><br><span class="owner">Revenue YoY Growth</span></td>
+      <td>percent</td>
+      <td class="target">—</td>
+      <td class="owner">Finance</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">อัตราการเติบโตของรายได้เมื่อเทียบกับช่วงเดียวกันปีก่อน — บวก = โต, ลบ = หด</td>
+    </tr>
+    <tr>
+      <td class="id">clinical.news2.criticalCount</td>
+      <td><strong>ผู้ป่วย NEWS2 วิกฤต (≥7)</strong><br><span class="owner">Patients with NEWS2 ≥ 7</span></td>
+      <td>count</td>
+      <td class="target">0</td>
+      <td class="owner">Clinical</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">จำนวนผู้ป่วย IPD ที่มีคะแนน NEWS2 ≥ 7 จากการวัด vital signs ล่าสุด ต้องรีบตอบสนอง RRT</td>
+    </tr>
+    <tr>
+      <td class="id">clinical.sepsisBundle.compliance</td>
+      <td><strong>การทำตาม 1-hour sepsis bundle</strong><br><span class="owner">Sepsis 1-Hour Bundle Compliance</span></td>
+      <td>percent</td>
+      <td class="target">0.9</td>
+      <td class="owner">Clinical</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วย SIRS+/qSOFA+ ที่ได้ bundle ครบภายใน 1 ชม. (lactate, blood culture, broad-spectrum abx, fluids)</td>
+    </tr>
+    <tr>
+      <td class="id">clinical.mortalityRisk.highCount</td>
+      <td><strong>ผู้ป่วยเสี่ยงสูงต่อการเสียชีวิต</strong><br><span class="owner">High Mortality-Risk Patients</span></td>
+      <td>count</td>
+      <td class="target">0</td>
+      <td class="owner">Clinical</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">จำนวนผู้ป่วย IPD ที่มีคะแนน mortality risk > 0.20 จาก sepsisEngine ใช้จัด priority morning rounds</td>
+    </tr>
+    <tr>
+      <td class="id">ncd.goalAttainment.rate</td>
+      <td><strong>อัตราถึงเป้าหมาย NCD</strong><br><span class="owner">NCD Goal Attainment</span></td>
+      <td>percent</td>
+      <td class="target">0.65</td>
+      <td class="owner">Clinical / NCD</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">สัดส่วนผู้ป่วย NCD (DM/HT/IHD/Stroke/COPD/CKD) ที่บรรลุเป้าหมายทางคลินิกในการตรวจล่าสุด — ตัวอย่าง: DM HbA1c ≤ 7, HT BP < 140/90</td>
+    </tr>
+    <tr>
+      <td class="id">ncd.hba1cControl.average</td>
+      <td><strong>HbA1c เฉลี่ย (DM)</strong><br><span class="owner">Mean HbA1c (DM)</span></td>
+      <td>percent</td>
+      <td class="target">7</td>
+      <td class="owner">Clinical / NCD</td>
+      <td class="reviewed">2026-04-23</td>
+      <td class="desc-th">ค่าเฉลี่ย HbA1c ของผู้ป่วย DM ที่ตรวจในช่วง — target ≤ 7.0% (individualised for elderly)</td>
+    </tr>
+  </tbody>
+</table>
+<footer>Generated 2026-04-23T14:42:25.356Z • bch-360-expert/references/architecture.md • bch-analytics-engineer/SKILL.md</footer>
+</body>
+</html>

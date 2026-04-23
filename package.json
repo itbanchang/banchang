@@ -22,7 +22,15 @@
     "pm2:reload": "pm2 reload ecosystem.config.cjs --env production",
     "pm2:logs": "pm2 logs bch360-server",
     "pm2:monit": "pm2 monit",
-    "health": "bash scripts/health-check.sh"
+    "health": "bash scripts/health-check.sh",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "eval": "node eval/runners/index.js",
+    "metrics:docs": "node server/metrics/generate-docs.mjs",
+    "dq:run": "node --env-file=.env -e \"import('./server/dq/index.js').then(m => m.runAllChecks()).then(r => { console.log(JSON.stringify(r.summary, null, 2), '\\n status:', r.status); process.exit(r.status === 'danger' ? 1 : 0); })\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",
@@ -49,21 +57,32 @@
     "socket.io-client": "^4.7.4",
     "uuid": "^9.0.0",
     "winston": "^3.14.2",
+    "web-vitals": "^4.2.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
+    "@types/supertest": "^7.2.0",
     "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^4.1.1",
     "autoprefixer": "^10.4.16",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
+    "jsdom": "^29.0.1",
     "postcss": "^8.4.32",
     "prettier": "^3.8.1",
+    "supertest": "^7.2.2",
     "tailwindcss": "^3.4.0",
-    "vite": "^5.0.8"
+    "typescript": "^6.0.2",
+    "vite": "^5.0.8",
+    "vitest": "^4.1.1"
   }
 }

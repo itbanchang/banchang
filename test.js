@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 
 async function run() {
-  const pool = mysql.createPool({ host: '10.1.0.3', user: 'dataaudit', password: 'dataaudit', database: 'bchhosxpxe' });
+  const pool = mysql.createPool({ host: process.env.MYSQL_HOST || '10.109.0.33', user: process.env.MYSQL_USER || 'dataaudit', password: process.env.MYSQL_PASS || 'dataaudit', database: process.env.MYSQL_DB || 'bchhosxpxe' });
 
   const sql = `
       SELECT 

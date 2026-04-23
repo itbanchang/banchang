@@ -13,7 +13,7 @@ import KPICardV2 from './components/KPICardV2.jsx';
 import AlertBanner from './components/AlertBanner.jsx';
 import DataFreshnessBar from './components/shared/DataFreshnessBar.jsx';
 const AIAssistant = React.lazy(() => import('./components/AIAssistant.jsx'));
-import Clock from './components/Clock.tsx';
+import Clock from './components/Clock.jsx';
 import DrillDownModal from './components/shared/DrillDownModal.jsx';
 import ProjectTeamPanel from './components/ProjectTeamPanel.jsx';
 const ExecutiveCommandCenter = React.lazy(() => import('./components/ExecutiveCommandCenter.jsx'));
@@ -34,6 +34,8 @@ const DentalTab = React.lazy(() => import('./components/DentalTab.jsx'));
 const ThaiMedTab = React.lazy(() => import('./components/ThaiMedTab.jsx'));
 const PhysTherapyTab = React.lazy(() => import('./components/PhysTherapyTab.jsx'));
 const NCDTab = React.lazy(() => import('./components/NCDTab.jsx'));
+const DialysisTab = React.lazy(() => import('./components/DialysisTab.jsx'));
+const DataQualityTab = React.lazy(() => import('./components/DataQualityTab.jsx'));
 const MedRecTab = React.lazy(() => import('./components/MedRecTab.jsx'));
 const XRAYTab = React.lazy(() => import('./components/XRAYTab.jsx'));
 const PharmacyTab = React.lazy(() => import('./components/PharmacyTab.jsx'));
@@ -63,6 +65,7 @@ const TABS = [
   { id: 'thaimed', label: 'แพทย์แผนไทย', icon: '🌿', desc: 'นวด · สมุนไพร · TPI Analytics' },
   { id: 'phystherapy', label: 'กายภาพบำบัด', icon: '🏋️', desc: 'Rehab · PT · PPI Analytics' },
   { id: 'ncd', label: 'NCD', icon: '🫀', desc: 'DM · HT · CKD · NCI Analytics' },
+  { id: 'dialysis', label: 'ไตเทียม', icon: '🩸', desc: 'Dialysis · Adequacy Analytics' },
   {
     id: 'medrec',
     label: 'Medical Record Audit',
@@ -77,6 +80,7 @@ const TABS = [
     desc: 'คัดกรองผู้รับบริการ · สิทธิ · การเบิกจ่าย',
   },
   { id: 'evolution', label: 'Self-Upgrade', icon: '🧬', desc: 'Learning Journal · Evolution Log' },
+  { id: 'dq', label: 'Data Quality', icon: '🛡️', desc: 'Schema · Freshness · Anomaly · Invariants' },
 ];
 
 /* ----- Utility: คำนวณ trend % เทียบกับค่าก่อนหน้า ----------- */
@@ -625,6 +629,7 @@ export default function App() {
               {activeTab === 'thaimed' && <ThaiMedTab />}
               {activeTab === 'phystherapy' && <PhysTherapyTab />}
               {activeTab === 'ncd' && <NCDTab />}
+              {activeTab === 'dialysis' && <DialysisTab />}
               {activeTab === 'medrec' && <MedRecTab />}
               {activeTab === 'pharmacy' && <PharmacyTab />}
               {activeTab === 'lab' && <LaboratoryTab />}
@@ -633,6 +638,7 @@ export default function App() {
               {activeTab === 'compare' && <CompareTab />}
               {activeTab === 'customer-insight' && <CustomerInsightTab />}
               {activeTab === 'evolution' && <EvolutionTab />}
+              {activeTab === 'dq' && <DataQualityTab />}
             </div>
           </Suspense>
         </ErrorBoundary>

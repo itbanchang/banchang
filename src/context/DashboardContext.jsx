@@ -80,6 +80,9 @@ const initialState = {
     ncdGoalAttainment: null,
     medRecToday: null,
     medRecAnalytics: null,
+    dialysisToday: null,
+    dialysisTrend: null,
+    dqStatus: null,
     loading: {},
     errors: {},
     lastUpdated: null,
@@ -326,4 +329,53 @@ export function useDashboard() {
     const context = useContext(DashboardContext);
     if (!context) throw new Error('useDashboard must be used within DashboardProvider');
     return context;
+}
+
+/**
+ * Selector hook — API-compatible with the Zustand-based version on master
+ * so tabs written for either branch work here.
+ *
+ * Note: since this branch backs the store with useReducer + useContext, any
+ * dispatch already re-renders every consumer of the context regardless of
+ * which slice changed. The "shallow" in the name matches master's API; there
+ * is no extra memoisation to add here because the outer object identity
+ * tracks state identity one-to-one (state is already spread-copied on every
+ * dispatch). Downstream useMemo/useEffect deps should key on the INNER
+ * slice (e.g. `state.opdToday`) whose reference is stable when that slice
+ * hasn't changed.
+ *
+ * Usage:
+ *   const { opdToday, loading } = useShallowDashboardSelector(s => ({
+ *     opdToday: s.opdToday,
+ *     loading: s.loading,
+ *   }));
+ */
+export function useShallowDashboardSelector(selector) {
+    const { state } = useDashboard();
+    return selector(state);
+}
+
+/**
+ * Stable-reference action accessors. Each function is already memoised
+ * inside DashboardProvider, so this hook just forwards them.
+ *
+ * Usage:
+ *   const { fetchData, setTab } = useDashboardActions();
+ */
+export function useDashboardActions() {
+    const ctx = useDashboard();
+    return useMemo(() => ({
+        setTab: ctx.setTab,
+        dispatch: ctx.dispatch,
+        fetchData: ctx.fetchData,
+        fetchParallel: ctx.fetchParallel,
+        batchFetch: ctx.batchFetch,
+        addAlert: ctx.addAlert,
+        dismissAlert: ctx.dismissAlert,
+        openDrillDown: ctx.openDrillDown,
+        closeDrillDown: ctx.closeDrillDown,
+    }), [
+        ctx.setTab, ctx.dispatch, ctx.fetchData, ctx.fetchParallel, ctx.batchFetch,
+        ctx.addAlert, ctx.dismissAlert, ctx.openDrillDown, ctx.closeDrillDown,
+    ]);
 }
