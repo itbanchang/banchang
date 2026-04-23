@@ -1,24 +1,28 @@
 // ============================================================
-// Verify IPD Data Consistency Across All 3 HOSxP Servers
-// Slave1 (10.1.0.3) vs Master (10.109.0.240) vs Slave2 (10.1.0.239)
+// Verify IPD Data Consistency Across HOSxP Servers
+// Master (10.109.0.240) vs Slave2 (10.1.0.239)
 // ============================================================
+import 'dotenv/config';
 import mysql from 'mysql2/promise';
 
+// Credentials from .env; fall back to host-only so the script still identifies
+// the target but fails loudly on auth if env is unset.
 const SERVERS = {
-  slave1: {
-    label: 'Slave1 (10.1.0.3)',
-    host: '10.1.0.3', database: 'bchhosxpxe',
-    user: 'dataaudit', password: 'dataaudit', port: 3306,
-  },
   master: {
-    label: 'Master (10.109.0.240)',
-    host: '10.109.0.240', database: 'bchhosxpxe',
-    user: 'bch', password: '10828@adminbch', port: 3306,
+    label: `Master (${process.env.MYSQL_MASTER_HOST || '10.109.0.240'})`,
+    host: process.env.MYSQL_MASTER_HOST || '10.109.0.240',
+    database: process.env.MYSQL_MASTER_DB || 'bchhosxpxe',
+    user: process.env.MYSQL_MASTER_USER,
+    password: process.env.MYSQL_MASTER_PASS,
+    port: parseInt(process.env.MYSQL_MASTER_PORT || '3306'),
   },
   slave2: {
-    label: 'Slave2 (10.1.0.239)',
-    host: '10.1.0.239', database: 'bchhosxpxe',
-    user: 'root', password: 'boom123', port: 3306,
+    label: `Slave2 (${process.env.MYSQL_SLAVE2_HOST || '10.1.0.239'})`,
+    host: process.env.MYSQL_SLAVE2_HOST || '10.1.0.239',
+    database: process.env.MYSQL_SLAVE2_DB || 'bchhosxpxe',
+    user: process.env.MYSQL_SLAVE2_USER,
+    password: process.env.MYSQL_SLAVE2_PASS,
+    port: parseInt(process.env.MYSQL_SLAVE2_PORT || '3306'),
   },
 };
 
@@ -59,8 +63,8 @@ async function queryServer(pool, sql, params) {
 
 async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('  IPD Data Consistency Check — 3 Servers');
-  console.log('  Slave1 (10.1.0.3) vs Master (10.109.0.240) vs Slave2 (10.1.0.239)');
+  console.log('  IPD Data Consistency Check');
+  console.log('  Master (10.109.0.240) vs Slave2 (10.1.0.239)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   // Create connection pools
@@ -86,7 +90,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`\n  เชื่อมต่อสำเร็จ ${activeServers.length}/3 servers\n`);
+  console.log(`\n  เชื่อมต่อสำเร็จ ${activeServers.length}/${Object.keys(SERVERS).length} servers\n`);
 
   const issues = [];
   const results = {}; // { serverId: { fy: { month: data } } }

@@ -1,24 +1,29 @@
 // ============================================================
-// Deep Anomaly Detection — All 3 HOSxP Servers
+// Deep Anomaly Detection — HOSxP Servers
 // อ้างอิง Master เป็นหลัก ตรวจหาความผิดปกติ
 // ============================================================
+import 'dotenv/config';
 import mysql from 'mysql2/promise';
 
+// Credentials from .env; hosts keep a fallback for identification only.
 const SERVERS = {
   master: {
-    id: 'master', label: 'Master (10.109.0.240)',
-    host: '10.109.0.240', database: 'bchhosxpxe',
-    user: 'bch', password: '10828@adminbch', port: 3306,
-  },
-  slave1: {
-    id: 'slave1', label: 'Slave1 (10.1.0.3)',
-    host: '10.1.0.3', database: 'bchhosxpxe',
-    user: 'dataaudit', password: 'dataaudit', port: 3306,
+    id: 'master',
+    label: `Master (${process.env.MYSQL_MASTER_HOST || '10.109.0.240'})`,
+    host: process.env.MYSQL_MASTER_HOST || '10.109.0.240',
+    database: process.env.MYSQL_MASTER_DB || 'bchhosxpxe',
+    user: process.env.MYSQL_MASTER_USER,
+    password: process.env.MYSQL_MASTER_PASS,
+    port: parseInt(process.env.MYSQL_MASTER_PORT || '3306'),
   },
   slave2: {
-    id: 'slave2', label: 'Slave2 (10.1.0.239)',
-    host: '10.1.0.239', database: 'bchhosxpxe',
-    user: 'root', password: 'boom123', port: 3306,
+    id: 'slave2',
+    label: `Slave2 (${process.env.MYSQL_SLAVE2_HOST || '10.1.0.239'})`,
+    host: process.env.MYSQL_SLAVE2_HOST || '10.1.0.239',
+    database: process.env.MYSQL_SLAVE2_DB || 'bchhosxpxe',
+    user: process.env.MYSQL_SLAVE2_USER,
+    password: process.env.MYSQL_SLAVE2_PASS,
+    port: parseInt(process.env.MYSQL_SLAVE2_PORT || '3306'),
   },
 };
 
@@ -53,7 +58,7 @@ function fmt(n) {
 
 async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('  Deep Anomaly Detection — 3 HOSxP Servers (Reference: Master)');
+  console.log('  Deep Anomaly Detection — HOSxP Servers (Reference: Master)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   const pools = {};

@@ -35,6 +35,7 @@ import dentalRoutes from './routes/dental.js';
 import thaimedRoutes from './routes/thaimedicine.js';
 import ptRoutes from './routes/physicaltherapy.js';
 import ncdRoutes from './routes/ncd.js';
+import dialysisRoutes from './routes/dialysis.js';
 import medrecRoutes from './routes/medrec.js';
 import debugRoutes from './routes/debug.js';
 import xrayRoutes from './routes/xray.js';
@@ -47,6 +48,10 @@ import reportRoutes from './routes/report.js';
 import staffingRoutes from './routes/staffing.js';
 import safetyRoutes from './routes/safety.js';
 import kpiExtendedRoutes from './routes/kpiExtended.js';
+import dqRoutes from './routes/dq.js';
+import rumRoutes from './routes/rum.js';
+import briefingRoutes from './routes/briefing.js';
+import v2Shims from './routes/v2Shims.js';
 import { authenticate, authorize } from './middleware/rbac.js';
 import { auditMiddleware } from './middleware/audit.js';
 import { trackingMiddleware } from './middleware/tracking.js';
@@ -56,6 +61,7 @@ import dw from './db/dataWarehouse.js';
 import logger from './logger.js';
 import { startOccupancySyncJob } from './jobs/occupancySync.js';
 import { metricsMiddleware, renderMetrics, getMetricsJSON } from './monitoring/metrics.js';
+import { observabilityMiddleware } from './middleware/observability.js';
 import { startAlertEngine, getAlertStatus } from './monitoring/alerts.js';
 import { startCalibrationEngine, runFullCalibration, getCalibrated, getCalibrationMeta } from './ai/calibration.js';
 import { getRedisClient, isRedisConnected } from './infra/redisClient.js';
@@ -91,7 +97,7 @@ if (process.env.JWT_SECRET.length < 32) {
 }
 
 // ---- Network config (needed before server creation) ----
-const SERVER_IP = process.env.SERVER_IP || '10.1.0.3';
+const SERVER_IP = process.env.SERVER_IP || '10.109.0.33';
 const PROD_PORT = process.env.PROD_PORT || 4000;
 const DEV_PORT = process.env.DEV_PORT || 3001;
 
@@ -144,7 +150,7 @@ const ALLOWED_ORIGINS = IS_PRODUCTION
       `${PROTOCOL}://localhost:${PROD_PORT}`,        // Production localhost
     ]
   : [
-      'http://localhost:5173',                       // Vite dev (exact port)
+      'http://localhost:4001',                       // Vite dev (exact port)
       'http://localhost:4000',                       // Dev backend (exact port)
       'http://localhost:3001',                       // Alternative dev port
       `http://${SERVER_IP}:${DEV_PORT}`,             // LAN dev (exact port)
@@ -225,6 +231,9 @@ app.use(trackingMiddleware());
 // ====== PROMETHEUS METRICS COLLECTION ======
 app.use(metricsMiddleware());
 
+// ====== STRUCTURED LOGS + REQUEST ID (bch-observability) ======
+app.use(observabilityMiddleware);
+
 // ---- Serve Production Frontend (dist/) ----
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -255,11 +264,17 @@ app.use('/api', apiLimiter);
 
 // ---- Public Routes (before authenticate middleware) ----
 app.use('/api/auth', authRoutes);
+// RUM ingestion — anonymous + internally rate-limited (web-vitals, client errors)
+app.use('/api/rum', rumRoutes);
 
 // ---- AI-1: Enable Authentication on all /api/* routes ----
 // All routes below this line require a valid JWT token.
 // If no token is provided, fallback to 'demo/director' role (Phase 1 grace period).
 app.use('/api', authenticate);
+
+// V2 shims — mounted before domain-specific routers so their exact paths
+// (e.g. /api/finance/summary, /api/clinical/insights) win over legacy handlers.
+app.use('/api', v2Shims);
 
 // ---- Protected Routes (RBAC authorize on ALL routes) ----
 app.use('/api/finance', auditMiddleware('financial_data'), authorize('finance'), financeRoutes);
@@ -271,6 +286,7 @@ app.use('/api/dental', auditMiddleware('patient_info'), authorize('dental'), den
 app.use('/api/thaimedicine', auditMiddleware('patient_info'), authorize('thaimed'), thaimedRoutes);
 app.use('/api/physicaltherapy', auditMiddleware('patient_info'), authorize('phystherapy'), ptRoutes);
 app.use('/api/ncd', auditMiddleware('patient_info'), authorize('ncd'), ncdRoutes);
+app.use('/api/dialysis', auditMiddleware('patient_info'), authorize('clinical'), dialysisRoutes);
 app.use('/api/medrec', auditMiddleware('patient_info'), authorize('medrec'), medrecRoutes);
 app.use('/api/xray', auditMiddleware('patient_info'), authorize('xray'), xrayRoutes);
 app.use('/api/pharmacy', auditMiddleware('patient_info'), authorize('pharmacy'), pharmacyRoutes);
@@ -285,6 +301,9 @@ app.use('/api/safety', auditMiddleware('patient_safety'), authorize('clinical'),
 app.use('/api/kpi', auditMiddleware('operational'), authorize('finance'), kpiExtendedRoutes);
 app.use('/api/infra', authorize('admin'), infraRoutes);
 app.use('/api/debug', authorize('admin'), debugRoutes);
+// ── Tier 1/2 additions: Data Quality / RUM ingestion / Briefing reports ──
+app.use('/api/dq', authorize('admin'), dqRoutes);
+app.use('/api/briefing', auditMiddleware('executive_data'), authorize('finance'), briefingRoutes);
 
 // ---- Cache Helper (Stale-While-Revalidate + Request Deduplication) ----
 const cache = {};
@@ -430,7 +449,7 @@ async function getRevenueFiscal(mainDep, dataSource) {
 app.get('/api/system/status', (req, res) => {
   res.json({
     version: '10.0.0', mysql_connected: isMySQLConnected(),
-    mysql_host: '10.1.0.3', mysql_db: 'bchhosxpxe',
+    mysql_host: process.env.MYSQL_HOST || '10.109.0.33', mysql_db: process.env.MYSQL_DB || 'bchhosxpxe',
     data_source: isMySQLConnected() ? 'HOSxP XE (Live)' : 'Disconnected',
     ai_modules: [
       'NEWS2 EWS', 'Revenue Forecast', 'Readmission Risk', 'Bed Demand', 'DRG Optimizer',
@@ -469,11 +488,21 @@ app.post('/api/system/servers/test', authorize('admin'), async (req, res) => {
   const profile = profiles.find(p => p.id === server_id);
   if (!profile) return res.status(400).json({ error: `Unknown server: ${server_id}` });
 
+  // Credentials come from .env per profile — keeps secrets out of source.
+  // Note: historical copy of this block had the slave2 password as
+  // 'boom123boom123' (vs 'boom123' in server/db/mysql.js); if slave2 auth
+  // fails here, check which value is actually correct and set it in .env.
+  const creds = ({
+    slave1: { user: process.env.MYSQL_USER, password: process.env.MYSQL_PASS },
+    master: { user: process.env.MYSQL_MASTER_USER, password: process.env.MYSQL_MASTER_PASS },
+    slave2: { user: process.env.MYSQL_SLAVE2_USER, password: process.env.MYSQL_SLAVE2_PASS },
+  })[profile.id] || {};
+
   try {
     const testPool = (await import('mysql2/promise')).default.createPool({
       host: profile.host, database: profile.database,
-      user: profile.id === 'master' ? 'bch' : profile.id === 'slave2' ? 'root' : 'dataaudit',
-      password: profile.id === 'master' ? '10828@adminbch' : profile.id === 'slave2' ? 'boom123boom123' : 'dataaudit',
+      user: creds.user,
+      password: creds.password,
       port: profile.port,
       connectionLimit: 1, connectTimeout: 5000,
     });
@@ -636,7 +665,7 @@ app.get('/api/system/health', async (req, res) => {
         latency_ms: Date.now() - t0,
         server_time: result?.server_time,
         version: result?.version,
-        host: process.env.MYSQL_HOST || '10.1.0.3',
+        host: process.env.MYSQL_HOST || '10.109.0.33',
         database: process.env.MYSQL_DB || 'bchhosxpxe',
       };
     } catch (err) {
@@ -1170,7 +1199,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 ║  Local: ${protocol}://localhost:${PORT}${' '.repeat(38 - protocol.length - String(PORT).length)}║
 ║  Network: ${protocol}://${lanIP}:${PORT}${' '.repeat(35 - protocol.length - lanIP.length - String(PORT).length)}║
 ║                                                   ║
-║  Data: HOSxP XE(10.1.0.3)                       ║
+║  Data: HOSxP XE(10.109.0.33)                    ║
 ║  🧠 AI: 11 Modules Active                         ║
 ║  🛡️ Phase 1 Security: HARDENED                    ║
 ║  🕒 Server Status: LISTENING                      ║

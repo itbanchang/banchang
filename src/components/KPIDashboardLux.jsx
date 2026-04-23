@@ -211,7 +211,7 @@ function SummaryHeader({ kpiMetrics }) {
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-12">
-            {summaryCard('ระบบ DB', 'LIVE', 'HOSxP XE — 10.1.0.3', null)}
+            {summaryCard('ระบบ DB', 'LIVE', 'HOSxP XE — 10.109.0.33', null)}
             {summaryCard('รายได้เดือนนี้', revDisplay, new Date().toLocaleString('th-TH', { month: 'long', year: 'numeric' }), 'from-emerald-500 to-teal-600')}
             {summaryCard('ผู้ป่วยวันนี้', totalPatients != null ? `${totalPatients}+` : '—', 'OPD + IPD วันนี้', 'from-indigo-500 to-blue-600')}
             {summaryCard('อัปเดต', 'เรียลไทม์', '⚡ อัปเดตทุก 30 วินาที', null)}

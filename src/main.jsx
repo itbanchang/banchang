@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
+import App from './AppV2.jsx';
 import './index.css';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { DashboardProvider } from './context/DashboardContext.jsx';
