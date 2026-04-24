@@ -1,5 +1,10 @@
 # Deploy Runbook — BCH 360° V.10
 
+> **Superseded by [promote-flow.md](./promote-flow.md).** This document describes the
+> older PM2-based path. Production now runs in Docker (container `bch360`) and is
+> deployed with `npm run promote` from a developer's local machine over SSH key auth.
+> Kept for historical reference.
+
 Canonical deploy path. Every production change follows this.
 
 ## Pre-flight (once per machine)

@@ -49,8 +49,16 @@ Claude should use these automatically based on the task. Each lives at `.claude/
 ## Common commands
 
 ```bash
+# Local dev (this machine)
 npm run dev              # Vite on :4001 + backend on :4000
-npm run production       # auto-deploy watcher (prod single-host)
+
+# Promote local -> prod (10.109.0.33) — see docs/ops/promote-flow.md
+npm run promote          # gates (typecheck, lint, build) + snapshot + auto-rollback
+npm run promote:dry      # show what promote would do, no remote changes
+npm run rollback         # restore prod from latest snapshot
+npm run rollback:list    # list snapshots on prod
+
+# Quality
 npm run build            # Vite build to dist/
 npm run test             # Vitest
 npm run test:e2e         # Playwright
@@ -62,6 +70,12 @@ npm run metrics:docs     # regenerate docs/metrics/index.html
 ```
 
 See `package.json` for the full list.
+
+## Dev → Prod flow (TL;DR)
+
+`local desktop (npm run dev)` → `git commit` → `npm run promote` → `https://10.109.0.33`
+
+`promote` runs gates, snapshots prod, syncs source via SSH, rebuilds the Docker container, healthchecks, and auto-rolls back on failure. Full runbook at [docs/ops/promote-flow.md](docs/ops/promote-flow.md).
 
 ## Directory map (high-level)
 
