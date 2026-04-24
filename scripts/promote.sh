@@ -85,7 +85,9 @@ ssh_exec() {
     local out rc
     out=$(ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1)
     rc=$?
-    [ -n "$out" ] && printf "%s\n" "$out" | grep -v '^\*\*'
+    # Print non-warning lines if any. `|| true` is required: when the entire output
+    # is OpenSSH PQ warnings (very common), grep returns 1 and `set -e` would kill us.
+    [ -n "$out" ] && { printf "%s\n" "$out" | grep -v '^\*\*' || true; }
     return $rc
 }
 scp_send() { scp "${SSH_OPTS[@]}" "$@"; }

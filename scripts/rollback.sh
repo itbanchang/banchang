@@ -44,7 +44,7 @@ ssh_exec() {
     local out rc
     out=$(ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1)
     rc=$?
-    [ -n "$out" ] && printf "%s\n" "$out" | grep -v '^\*\*'
+    [ -n "$out" ] && { printf "%s\n" "$out" | grep -v '^\*\*' || true; }
     return $rc
 }
 detect_compose_cmd() {
