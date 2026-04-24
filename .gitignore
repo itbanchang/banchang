@@ -15,6 +15,18 @@ logs
 *.log
 npm-debug.log*
 
+# Data — runtime artifacts, not source
+data_lake/
+*.db
+*.db-shm
+*.db-wal
+
+# Backup / cruft
+*.bak
+*.bak-*
+*_backup.*
+scripts/old_server*.js
+
 # Temp & test files
 tmp/
 probe*.js
