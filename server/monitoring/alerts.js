@@ -5,6 +5,7 @@
 import os from 'os';
 import { getQueryMetrics, getSemaphoreStats, isMySQLConnected } from '../db/mysql.js';
 import { getMVStatus } from '../db/materializedViews.js';
+import { broadcast } from '../socket.js';
 import logger from '../logger.js';
 
 // ── Alert Severity ──
@@ -247,6 +248,10 @@ export function startAlertEngine(intervalMs = 60_000) {
         logger.warn(`Alert engine: ${fired.length} alert(s) fired`, {
           alerts: fired.map(a => `[${a.severity}] ${a.name}`),
         });
+        // Push alerts to connected clients via WebSocket
+        for (const alert of fired) {
+          broadcast('alert:new', alert);
+        }
       }
     } catch (err) {
       logger.error('Alert engine error', { error: err.message });

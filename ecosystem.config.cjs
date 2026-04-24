@@ -22,10 +22,10 @@ module.exports = {
       // ── Production Server ──
       name: 'bch360-server',
       script: './server/server.js',
-      node_args: '--max-old-space-size=512',
+      node_args: '--max-old-space-size=768 --gc-interval=100',
 
-      // Cluster mode — ใช้ CPU หลาย core
-      instances: 2,
+      // Cluster mode — ใช้ CPU หลาย core (16 cores available)
+      instances: 4,
       exec_mode: 'cluster',
 
       // Auto-restart policies
@@ -35,7 +35,9 @@ module.exports = {
       restart_delay: 3000,
 
       // Memory limit — restart ถ้าเกิน
-      max_memory_restart: '512M',
+      // Bumped 512→768 MB (4 workers = 3 GB total) to absorb peak-hour
+      // chart rendering + bulk AI narrative computations without cascade restarts
+      max_memory_restart: '768M',
 
       // Watch mode (production ปิด, dev เปิด)
       watch: false,

@@ -13,7 +13,7 @@ const router = Router();
 // GET /today — Real-time Staffing Snapshot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get('/today', cached('staffing_today_v1', 120000, async () => {
-  const [doctorActivity, nurseActivity, pharmacistActivity, labActivity, xrayActivity, ipdCensus] = await Promise.all([
+  const [doctorActivity, nurseActivity, ipdNurseActivity, pharmacistActivity, labActivity, xrayActivity, ipdCensus] = await Promise.all([
     // 1. Doctor productivity today
     dbQuery(`
       SELECT o.doctor AS code, d.name,
@@ -30,22 +30,42 @@ router.get('/today', cached('staffing_today_v1', 120000, async () => {
       ORDER BY patients_seen DESC
     `, [], { timeoutMs: 10000 }),
 
-    // 2. Nurse/Staff activity today (from assessment_head + ovst)
+    // 2. Nurse activity today (from clinical activity: BP screening, PQ, Assessment)
     dbQuery(`
-      SELECT u.loginname, u.name,
-        COUNT(DISTINCT o.vn) AS visits_handled,
-        CASE
-          WHEN u.doctorcode IS NOT NULL AND u.doctorcode != '' THEN 'doctor'
-          WHEN u.drug_access_level >= 2 THEN 'pharmacist'
-          WHEN u.xray_staff = 'Y' THEN 'xray_tech'
-          ELSE 'nurse_staff'
-        END AS role
-      FROM opduser u
-      JOIN ovst o ON o.staff = u.loginname
-      WHERE o.vstdate = CURDATE()
-      GROUP BY u.loginname, u.name, role
-      ORDER BY visits_handled DESC
+      SELECT
+        u.loginname, u.name,
+        COUNT(*) AS screen_count,
+        SUM(CASE WHEN HOUR(activity_time) < 12 THEN 1 ELSE 0 END) AS morning_count,
+        SUM(CASE WHEN HOUR(activity_time) >= 12 AND HOUR(activity_time) < 17 THEN 1 ELSE 0 END) AS afternoon_count,
+        SUM(CASE WHEN HOUR(activity_time) >= 17 THEN 1 ELSE 0 END) AS night_count
+      FROM (
+        SELECT staff, screen_time AS activity_time FROM opdscreen_bp WHERE screen_date = CURDATE()
+        UNION ALL
+        SELECT staff, screen_time AS activity_time FROM pq_screen WHERE screen_date = CURDATE()
+        UNION ALL
+        SELECT assessment_head_staff AS staff, assessment_head_datetime AS activity_time FROM assessment_head WHERE DATE(assessment_head_datetime) = CURDATE()
+      ) AS activity
+      INNER JOIN opduser u ON activity.staff = u.loginname
+      WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
+        AND u.name NOT LIKE 'นพ.%' AND u.name NOT LIKE 'พญ.%'
+      GROUP BY u.loginname, u.name
+      ORDER BY screen_count DESC
     `, [], { timeoutMs: 10000 }),
+
+    // 2b. IPD Nurse activity today (assessment_head IPD + ipd_nurse_note)
+    dbQuery(`
+      SELECT u.loginname, u.name, COUNT(*) AS note_count
+      FROM (
+        SELECT assessment_head_staff AS staff FROM assessment_head
+        WHERE DATE(assessment_head_datetime) = CURDATE() AND patient_type = 'IPD'
+        UNION ALL
+        SELECT staff FROM ipd_nurse_note WHERE DATE(entry_datetime) = CURDATE()
+      ) AS activity
+      INNER JOIN opduser u ON activity.staff = u.loginname
+      WHERE (u.name LIKE 'พว.%' OR u.name LIKE 'พยาบาล%' OR u.name LIKE 'นป.%' OR u.name LIKE 'พช.%')
+      GROUP BY u.loginname, u.name
+      ORDER BY note_count DESC
+    `, [], { timeoutMs: 10000 }).catch(() => []),
 
     // 3. Pharmacist activity today
     dbQuery(`
@@ -103,10 +123,13 @@ router.get('/today', cached('staffing_today_v1', 120000, async () => {
   const totalPatientsSeen = (doctorActivity || []).reduce((s, d) => s + d.patients_seen, 0);
   const avgPatientsPerDoctor = totalDoctors > 0 ? Math.round(totalPatientsSeen / totalDoctors) : 0;
 
-  const nurseCount = (nurseActivity || []).filter(n => n.role === 'nurse_staff').length;
+  const nurseCount = (nurseActivity || []).length;
+  const ipdNurseCount = (ipdNurseActivity || []).length;
   const currentIPD = Number(ipdCensus?.current_patients || 0);
-  const nurseToPatientRatio = nurseCount > 0 && currentIPD > 0
-    ? `1:${Math.round(currentIPD / nurseCount)}`
+  // IPD ratio uses IPD nurses only; falls back to all nurses if IPD query returns 0
+  const ratioNurses = ipdNurseCount > 0 ? ipdNurseCount : nurseCount;
+  const nurseToPatientRatio = ratioNurses > 0 && currentIPD > 0
+    ? `1:${Math.round(currentIPD / ratioNurses)}`
     : 'N/A';
 
   return {
@@ -118,6 +141,7 @@ router.get('/today', cached('staffing_today_v1', 120000, async () => {
       total_opd_patients: totalPatientsSeen,
       avg_patients_per_doctor: avgPatientsPerDoctor,
       active_nurses: nurseCount,
+      ipd_nurses: ipdNurseCount,
       ipd_census: currentIPD,
       nurse_to_patient_ratio: nurseToPatientRatio,
       active_pharmacists: (pharmacistActivity || []).length,
@@ -132,6 +156,19 @@ router.get('/today', cached('staffing_today_v1', 120000, async () => {
       clinics: d.clinics,
       first_patient: d.first_patient,
       last_patient: d.last_patient,
+    })),
+
+    nurses: (nurseActivity || []).map(n => ({
+      username: n.loginname, name: n.name,
+      screen_count: n.screen_count,
+      morning: n.morning_count,
+      afternoon: n.afternoon_count,
+      night: n.night_count,
+    })),
+
+    ipd_nurses: (ipdNurseActivity || []).map(n => ({
+      username: n.loginname, name: n.name,
+      note_count: n.note_count,
     })),
 
     pharmacists: (pharmacistActivity || []).map(p => ({

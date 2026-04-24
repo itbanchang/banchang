@@ -15,7 +15,7 @@ const CALIBRATED = {
   // ─── Finance ──────────────────────────────────────────────
   finance: {
     expense_ratio:     0.82,   // จะ calibrate จาก GL จริง
-    rw_price:          8000,   // Global Budget per RW
+    rw_price:          8350,   // Unit cost per RW (Global Budget + overhead)
     cc_rw_gain:        0.35,
     low_rw_gain:       0.40,
   },
@@ -129,28 +129,45 @@ export function getCalibrationMeta()  { return CALIBRATED._meta; }
  */
 async function calibrateExpenseRatio() {
   try {
-    const row = await dbQueryOne(`
+    // Strategy: IPD cost proxy — DRG RW × standard price vs actual income
+    // If RW-based cost > income → hospital undercharges (expense ratio > 1 → clamp)
+    // If RW-based cost < income → hospital overcharges (healthy margin)
+    const ipd = await dbQueryOne(`
       SELECT
         SUM(income) AS total_income,
         SUM(paid_money) AS total_paid,
-        SUM(income) - SUM(paid_money) AS total_profit
-      FROM vn_stat
-      WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-        AND vstdate < CURDATE()
+        SUM(remain_money) AS total_remain,
+        SUM(rw) AS total_rw,
+        COUNT(*) AS cases
+      FROM an_stat
+      WHERE dchdate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+        AND dchdate < CURDATE()
         AND income > 0
     `, [], { timeoutMs: 15000 });
 
-    if (row?.total_income > 0 && row?.total_paid > 0) {
-      // expense_ratio = 1 - (profit / income)
-      const ratio = Math.round((1 - (row.total_profit / row.total_income)) * 100) / 100;
-      // Clamp between 0.5 and 0.98 for safety
-      CALIBRATED.finance.expense_ratio = Math.min(0.98, Math.max(0.5, ratio));
-      return { expense_ratio: CALIBRATED.finance.expense_ratio, income: row.total_income, paid: row.total_paid };
+    if (ipd?.total_income > 0 && ipd?.total_rw > 0) {
+      // RW price 8,350 THB = adjusted unit cost per RW for community hospital
+      // (สปสช. global budget ~8,000 + overhead ~350 for staff, utilities, depreciation)
+      const rwPrice = CALIBRATED.finance.rw_price || 8350;
+      const estimatedCost = ipd.total_rw * rwPrice;
+      const ratio = Math.round((estimatedCost / ipd.total_income) * 100) / 100;
+      // Clamp 0.70-0.92 — valid range for community hospitals
+      CALIBRATED.finance.expense_ratio = Math.min(0.92, Math.max(0.70, ratio));
+      return {
+        expense_ratio: CALIBRATED.finance.expense_ratio,
+        source: 'ipd_rw_cost',
+        total_rw: Math.round(ipd.total_rw * 100) / 100,
+        rw_price: rwPrice,
+        estimated_cost: Math.round(estimatedCost),
+        income: ipd.total_income,
+        cases: ipd.cases,
+      };
     }
   } catch (e) {
     logger.warn('Calibration: expense_ratio failed', { error: e.message });
   }
-  return null;
+  // Keep default 0.82 if all methods fail
+  return { expense_ratio: CALIBRATED.finance.expense_ratio, source: 'default' };
 }
 
 /**

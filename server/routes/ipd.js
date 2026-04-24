@@ -1064,5 +1064,92 @@ router.get('/bed-flow', cacheMiddleware(600), async (req, res) => {
     }
 });
 
+// ============================================================
+// Undiagnosed on Day-1 Admission (IPD patients admitted without PDX)
+// ============================================================
+router.get('/undiagnosed-day1', cacheMiddleware(60), async (req, res) => {
+    try {
+        // Find currently-admitted patients who are on Day 0-1 of admission
+        // AND have no Principal Diagnosis (iptdiag.diagtype = 1) recorded
+        const patients = await dbQuery(`
+            SELECT
+                i.an,
+                i.hn,
+                COALESCE(CONCAT(p.pname, p.fname, ' ', p.lname), i.an) AS name,
+                p.sex,
+                TIMESTAMPDIFF(YEAR, p.birthday, CURDATE()) AS age,
+                i.regdate,
+                i.regtime,
+                TIMESTAMPDIFF(HOUR, CONCAT(i.regdate, ' ', COALESCE(i.regtime, '00:00:00')), NOW()) AS hours_since_admit,
+                i.ward AS ward_id,
+                w.name AS ward_name,
+                COALESCE(u.name, i.admdoctor) AS admit_doctor,
+                (SELECT COUNT(*) FROM iptdiag d2 WHERE d2.an = i.an) AS diag_count,
+                (SELECT COUNT(*) FROM iptdiag d3 WHERE d3.an = i.an AND d3.diagtype = 1) AS pdx_count
+            FROM ipt i
+            LEFT JOIN patient p ON i.hn = p.hn
+            LEFT JOIN ward w ON i.ward = w.ward
+            LEFT JOIN opduser u ON i.admdoctor = u.doctorcode OR i.admdoctor = u.loginname
+            WHERE i.dchdate IS NULL
+              AND DATEDIFF(CURDATE(), i.regdate) <= 1
+              AND i.ward != 'HWS'
+              AND NOT EXISTS (
+                  SELECT 1 FROM iptdiag d
+                  WHERE d.an = i.an AND d.diagtype = 1
+              )
+            ORDER BY i.regdate DESC, i.regtime DESC
+            LIMIT 200
+        `);
+
+        // Summary by ward
+        const byWard = {};
+        for (const p of patients) {
+            const key = p.ward_name || p.ward_id || 'Unknown';
+            byWard[key] = (byWard[key] || 0) + 1;
+        }
+        const wardSummary = Object.entries(byWard)
+            .map(([ward, count]) => ({ ward, count }))
+            .sort((a, b) => b.count - a.count);
+
+        // Total currently-admitted for context (denominator)
+        const [totalActive] = await dbQuery(`
+            SELECT COUNT(*) AS total
+            FROM ipt i
+            WHERE i.dchdate IS NULL AND i.ward != 'HWS'
+              AND DATEDIFF(CURDATE(), i.regdate) <= 1
+        `).catch(() => [{ total: 0 }]);
+
+        const total = Number(totalActive?.total || 0);
+        const undiagnosed = patients.length;
+        const pct = total > 0 ? Math.round((undiagnosed / total) * 100) : 0;
+
+        res.json({
+            data_source: 'HOSxP XE · ipt + iptdiag (Day-1 Admission without Principal Diagnosis)',
+            as_of: new Date().toISOString(),
+            total_new_admits: total,
+            undiagnosed_count: undiagnosed,
+            undiagnosed_pct: pct,
+            ward_summary: wardSummary,
+            patients: patients.map(p => ({
+                an: p.an,
+                hn: p.hn,
+                name: p.name,
+                sex: p.sex,
+                age: p.age,
+                regdate: p.regdate,
+                regtime: p.regtime,
+                hours_since_admit: Number(p.hours_since_admit || 0),
+                ward_name: p.ward_name || p.ward_id,
+                admit_doctor: p.admit_doctor || 'N/A',
+                diag_count: Number(p.diag_count || 0),
+                pdx_count: Number(p.pdx_count || 0),
+            })),
+        });
+    } catch (err) {
+        logger.error('Undiagnosed day-1 error', { error: err.message });
+        safeError(res, err, 'IPD');
+    }
+});
+
 export default router;
 

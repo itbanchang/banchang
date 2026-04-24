@@ -7,6 +7,7 @@
 // to the Dashboard API instantly from in-memory cache.
 // ============================================================
 import { dbQuery, dbQueryOne, dbQueryHeavy } from './mysql.js';
+import { broadcast } from '../socket.js';
 
 // ── In-Memory Materialized View Store ──
 const MV_STORE = {};
@@ -76,7 +77,7 @@ const VIEW_DEFINITIONS = [
                 COUNT(DISTINCT v.vn) as visit_count,
                 COUNT(DISTINCT v.hn) as patient_count,
                 SUM(v.income) as revenue
-            FROM vn_stat v FORCE INDEX (idx_vnstat_vstdate_income)
+            FROM vn_stat v
             STRAIGHT_JOIN ovst o ON v.vn = o.vn
             INNER JOIN kskdepartment k ON o.main_dep = k.depcode
             WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
@@ -308,6 +309,14 @@ async function refreshView(viewDef) {
         };
 
         process.stdout.write(`📊 [MV] ${viewDef.name}: ${rows?.length || 0} rows (${duration}ms) `);
+
+        // Push update to connected clients via WebSocket
+        broadcast('dashboard:update', {
+          view: viewDef.name,
+          category: viewDef.category,
+          row_count: rows?.length || 0,
+          refreshed_at: new Date().toISOString(),
+        });
     } catch (err) {
         const duration = Date.now() - startTime;
         MV_META[viewDef.name] = {
@@ -344,12 +353,19 @@ export async function initMaterializedViews() {
 
     console.log(`\n✅ Materialized Views initialized in ${Date.now() - t0}ms`);
 
-    // Phase 2: Set up periodic refresh with jitter
+    // Phase 2: Set up periodic refresh with per-tick jitter
+    // Uses setTimeout chain instead of setInterval so jitter varies each cycle
     for (const vd of VIEW_DEFINITIONS) {
-        // Add random jitter (up to +50%) to spread refreshes and prevent thundering herd
-        const jitter = vd.refreshIntervalMs + (Math.random() * vd.refreshIntervalMs * 0.5);
-        const timer = setInterval(() => refreshView(vd), jitter);
-        timers.push(timer);
+        function scheduleNext() {
+            // Random jitter: base interval ± 25% each cycle to prevent thundering herd
+            const jitter = vd.refreshIntervalMs * (0.75 + Math.random() * 0.5);
+            const timer = setTimeout(async () => {
+                await refreshView(vd);
+                scheduleNext(); // re-schedule with fresh jitter
+            }, jitter);
+            timers.push(timer);
+        }
+        scheduleNext();
     }
 
     return getMVStatus();
@@ -426,7 +442,7 @@ export function getCodingAudit(days = 30) {
 
 // ── Cleanup ──
 export function stopMaterializedViews() {
-    for (const t of timers) clearInterval(t);
+    for (const t of timers) { clearInterval(t); clearTimeout(t); }
     timers.length = 0;
     console.log('🛑 Materialized Views stopped');
 }

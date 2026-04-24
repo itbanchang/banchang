@@ -416,7 +416,7 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         ROUND(AVG(DATEDIFF(i1.dchdate, i1.regdate)), 1) as avg_los
       FROM ipt i1
       INNER JOIN an_stat a ON i1.an = a.an
-      LEFT JOIN icd101 d ON a.pdx = d.icd10
+      LEFT JOIN icd101 d ON a.pdx = d.code
       LEFT JOIN ipt i2 ON i1.hn = i2.hn AND i2.an != i1.an
         AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 28 DAY)
       WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)

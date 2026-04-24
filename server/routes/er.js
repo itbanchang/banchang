@@ -9,6 +9,93 @@ const router = Router();
 // ============================================================
 // 🚑 ER Operations — Live from HOSxP XE
 // ============================================================
+
+// ER Today Summary — triage + patients + bottlenecks in one call
+router.get('/today', cached('erToday_v2', 30000, async () => {
+  const TRIAGE_NAMES = { '1': 'Resuscitation', '2': 'Emergency', '3': 'Urgent', '4': 'Semi-urgent', '5': 'Non-urgent' };
+  const TRIAGE_COLORS = { '1': '#f43f5e', '2': '#f59e0b', '3': '#eab308', '4': '#10b981', '5': '#94a3b8' };
+
+  const [summary, triage, hourly, rawPatients, flowData] = await Promise.all([
+    // 1. Summary KPIs
+    dbQueryOne(`
+      SELECT COUNT(*) as total,
+        SUM(CASE WHEN e.finish_time IS NOT NULL THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN e.finish_time IS NULL THEN 1 ELSE 0 END) as waiting,
+        SUM(CASE WHEN e.er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) as critical,
+        ROUND(AVG(NULLIF(GREATEST(0, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))), 0)) / 60, 1) as avg_ttd,
+        SUM(CASE WHEN e.er_dch_type = '2' THEN 1 ELSE 0 END) as admitted
+      FROM er_regist e WHERE e.vstdate = CURDATE()
+    `).catch(() => null),
+
+    // 2. Triage breakdown
+    dbQuery(`
+      SELECT e.er_emergency_type as level, COUNT(*) as cnt
+      FROM er_regist e WHERE e.vstdate = CURDATE() AND e.er_emergency_type IS NOT NULL
+      GROUP BY e.er_emergency_type ORDER BY e.er_emergency_type
+    `).catch(() => []),
+
+    // 3. Hourly distribution
+    dbQuery(`
+      SELECT HOUR(e.enter_er_time) as hr, COUNT(*) as cnt
+      FROM er_regist e WHERE e.vstdate = CURDATE() AND e.enter_er_time IS NOT NULL
+      GROUP BY HOUR(e.enter_er_time) ORDER BY hr
+    `).catch(() => []),
+
+    // 4. Patient list with vitals
+    hosxp.getERTodayPatients().catch(() => []),
+
+    // 5. Flow bottlenecks (lab/xray TAT)
+    hosxp.getERFlowAnalytics().catch(() => ({ lab: [], xray: [] })),
+  ]);
+
+  // Patient list with AI predictions
+  let patients = rawPatients || [];
+  let waitForecast = null;
+  try {
+    patients = await ai.getERAdmissionPrediction(patients);
+    waitForecast = await ai.getERWaitTimeForecast(patients);
+  } catch { /* use raw patients */ }
+
+  // Bottleneck summary
+  const labDurations = (flowData?.lab || []).map(r => Number(r.duration)).filter(d => d > 0);
+  const xrayDurations = (flowData?.xray || []).map(r => Number(r.duration)).filter(d => d > 0);
+  const avg = arr => arr.length ? Math.round(arr.reduce((s, v) => s + v, 0) / arr.length) : 0;
+
+  return {
+    data_source: 'HOSxP XE + AI',
+    total: Number(summary?.total || 0),
+    completed: Number(summary?.completed || 0),
+    waiting: Number(summary?.waiting || 0),
+    critical: Number(summary?.critical || 0),
+    avg_ttd_min: Number(summary?.avg_ttd || 0),
+    admitted: Number(summary?.admitted || 0),
+
+    triage: (triage || []).map(t => ({
+      level: Number(t.level),
+      name: TRIAGE_NAMES[t.level] || `Level ${t.level}`,
+      color: TRIAGE_COLORS[t.level] || '#94a3b8',
+      count: Number(t.cnt),
+    })),
+
+    hourly: Array.from({ length: 24 }, (_, h) => {
+      const d = (hourly || []).find(x => Number(x.hr) === h);
+      return { hour: h, label: `${String(h).padStart(2, '0')}:00`, count: Number(d?.cnt || 0) };
+    }),
+
+    patients,
+    wait_time_forecast: waitForecast,
+
+    bottlenecks: {
+      lab_avg_tat_min: avg(labDurations),
+      lab_orders: labDurations.length,
+      xray_avg_tat_min: avg(xrayDurations),
+      xray_orders: xrayDurations.length,
+    },
+
+    timestamp: new Date().toISOString(),
+  };
+}));
+
 router.get('/today-patients', cached('erPatients', 30000, async () => {
   const patients = await hosxp.getERTodayPatients();
   const predicted = await ai.getERAdmissionPrediction(patients);
@@ -33,7 +120,7 @@ router.get('/flow-bottlenecks', cached('erBottlenecks', 60000, async () => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 🔬 Professional ER Analytics — Advanced KPIs
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/analytics', cached('er_analytics_v12_stable', 300000, async () => {
+router.get('/analytics', cached('er_analytics_v13', 600000, async () => {
   const [
     baseAnalytics,
     percentiles,
@@ -83,34 +170,21 @@ router.get('/analytics', cached('er_analytics_v12_stable', 300000, async () => {
     `).catch(() => null),
 
 
-    // 2. Median & P90 TTD (MariaDB 10.1 Compatible Percentiles - Refined Sorting)
-    // PERF NOTE: This uses session variables (@row := @row + 1) for percentile calculation
-    // which is slow on MariaDB due to lack of window function support. If the DB is upgraded
-    // to MariaDB 10.2+ or MySQL 8.0+, replace with:
-    //   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY wait_min) as median_ttd,
-    //   PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY wait_min) as p90_ttd
-    // or use NTILE()/ROW_NUMBER() window functions for better performance.
-    // Not changing the SQL now to preserve MariaDB 10.1 compatibility.
-    dbQueryOneHeavy('erPercentiles30d', 120, `
-      SELECT
-        AVG(CASE WHEN row_num = ROUND(cnt * 0.5) THEN wait_min END) as median_ttd,
-        AVG(CASE WHEN row_num = ROUND(cnt * 0.9) THEN wait_min END) as p90_ttd
-      FROM (
-        SELECT
-          t_inner.wait_min,
-          @row := @row + 1 as row_num,
-          t_inner.cnt
-        FROM (
-          SELECT
-            GREATEST(0.1, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))) / 60 as wait_min,
-            (SELECT COUNT(*) FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND doctor_tx_time IS NOT NULL) as cnt
-          FROM er_regist e
-          WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND e.doctor_tx_time IS NOT NULL
-          ORDER BY wait_min
-        ) t_inner, (SELECT @row := 0) r
-      ) t
-    `).catch(() => ({ median_ttd: 0, p90_ttd: 0 })),
+    // 2. Percentiles — calculate in JS instead of slow session variable SQL
+    dbQueryHeavy('erWaitTimes30d', 60, `
+      SELECT ROUND(TIMESTAMPDIFF(SECOND, enter_er_time, doctor_tx_time) / 60, 1) as wait_min
+      FROM er_regist
+      WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND enter_er_time IS NOT NULL AND doctor_tx_time IS NOT NULL
+        AND doctor_tx_time > enter_er_time
+      ORDER BY wait_min
+    `).then(rows => {
+      if (!rows?.length) return { median_ttd: null, p90_ttd: null, p10_ttd: null };
+      const vals = rows.map(r => Number(r.wait_min)).filter(v => v > 0 && v < 480);
+      vals.sort((a, b) => a - b);
+      const p = (pct) => { const i = Math.floor(vals.length * pct); return vals[Math.min(i, vals.length - 1)]; };
+      return { median_ttd: p(0.5), p90_ttd: p(0.9), p10_ttd: p(0.1) };
+    }).catch(() => ({ median_ttd: null, p90_ttd: null, p10_ttd: null })),
 
     // 3. Revenue & Cost
     dbQueryOneHeavy('erRevenue30d', 60, `
@@ -129,9 +203,9 @@ router.get('/analytics', cached('er_analytics_v12_stable', 300000, async () => {
 
     // 5. Top Diagnoses (30-day)
     dbQueryHeavy('erTopDiag30d', 60, `
-      SELECT od.icd10, d.icd10_name as name, COUNT(*) as cnt
-      FROM ovstdiag od INNER JOIN er_regist e ON od.vn = e.vn LEFT JOIN icd101 d ON od.icd10 = d.icd10
-      WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY od.icd10, d.icd10_name ORDER BY cnt DESC LIMIT 10
+      SELECT od.icd10, d.name as name, COUNT(*) as cnt
+      FROM ovstdiag od INNER JOIN er_regist e ON od.vn = e.vn LEFT JOIN icd101 d ON od.icd10 = d.code
+      WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY od.icd10, d.name ORDER BY cnt DESC LIMIT 10
     `).catch(() => []),
 
     // 6. Age Distribution
@@ -224,12 +298,13 @@ router.get('/analytics', cached('er_analytics_v12_stable', 300000, async () => {
     `).catch(() => []),
 
     // 15. 72h Return Visit — ผู้ป่วยที่กลับมา ER ภายใน 72 ชั่วโมง (30 วัน)
-    // Window: นับจาก finish_time ของ visit แรก ถึง enter_er_time ของ visit ถัดไป
-    dbQueryOneHeavy('erReturn72h30d', 300, `
+    // NOTE: er_regist has no hn field (only vn) — join with ovst to get hn
+    dbQueryOneHeavy('erReturn72h30d', 60, `
       SELECT COUNT(DISTINCT e2.vn) as return_72h_count
       FROM er_regist e2
-      INNER JOIN er_regist e1
-        ON e1.hn = e2.hn
+      INNER JOIN ovst o2 ON e2.vn = o2.vn
+      INNER JOIN ovst o1 ON o1.hn = o2.hn AND o1.vn != o2.vn
+      INNER JOIN er_regist e1 ON e1.vn = o1.vn
         AND e1.vstdate >= DATE_SUB(e2.vstdate, INTERVAL 3 DAY)
         AND e1.vstdate < e2.vstdate
         AND TIMESTAMPDIFF(HOUR,

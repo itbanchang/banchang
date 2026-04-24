@@ -28,12 +28,16 @@ import safetyRoutes from '../routes/safety.js';
 import kpiExtendedRoutes from '../routes/kpiExtended.js';
 import infraRoutes from '../routes/infrastructure.js';
 import doctorActivityRoutes from '../routes/doctorActivity.js';
+import smokeRoutes from '../routes/smoke.js';
 import { authenticate, authorize } from '../middleware/rbac.js';
 import { auditMiddleware } from '../middleware/audit.js';
 
 export function registerRoutes(app) {
   // Public routes (before authenticate middleware)
   app.use('/api/auth', authRoutes);
+  // Functional smoke test — promote.sh polls this after deploy.
+  // Public on purpose so external monitoring can poll without a token.
+  app.use('/api/smoke', smokeRoutes);
 
   // All routes below require a valid JWT token
   app.use('/api', authenticate);
