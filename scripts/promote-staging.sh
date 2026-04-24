@@ -74,8 +74,10 @@ ssh_exec() {
 }
 scp_send() { scp "${SSH_OPTS[@]}" "$@"; }
 
-STAGING_HEALTH_URL="http://${BCH_PROD_HOST}:${BCH_STAGING_PORT}/healthz"
-STAGING_SMOKE_URL="http://${BCH_PROD_HOST}:${BCH_STAGING_PORT}/api/smoke"
+# NOTE: prod's container reads SSL_KEY_PATH from .env and listens with HTTPS,
+# so even on the staging port we must use https://. curl -sk skips cert verify.
+STAGING_HEALTH_URL="${BCH_STAGING_HEALTH_URL:-https://${BCH_PROD_HOST}:${BCH_STAGING_PORT}/healthz}"
+STAGING_SMOKE_URL="${BCH_STAGING_SMOKE_URL:-https://${BCH_PROD_HOST}:${BCH_STAGING_PORT}/api/smoke}"
 
 header "BCH 360 Promote-STAGING — Local Dev -> $BCH_PROD_HOST:$BCH_STAGING_PORT"
 [ $DRY_RUN -eq 1 ] && warn "DRY RUN — no remote changes"
@@ -183,7 +185,7 @@ if [ $DRY_RUN -eq 0 ]; then
     DEADLINE=$(($(date +%s) + BCH_STAGING_HEALTHCHECK_TIMEOUT))
     HEALTHY=0; STATUS=000
     while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$STAGING_HEALTH_URL" 2>/dev/null) || STATUS="000"
+        STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "$STAGING_HEALTH_URL" 2>/dev/null) || STATUS="000"
         [[ "$STATUS" =~ ^2 ]] && { HEALTHY=1; break; }
         printf "."
         sleep 3
@@ -197,16 +199,23 @@ if [ $DRY_RUN -eq 0 ]; then
     fi
 
     # Smoke
-    SMOKE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$STAGING_SMOKE_URL" 2>/dev/null) || SMOKE_HTTP="000"
+    SMOKE_HTTP=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "$STAGING_SMOKE_URL" 2>/dev/null) || SMOKE_HTTP="000"
+    SMOKE_BODY=$(curl -sk --max-time 10 "$STAGING_SMOKE_URL" 2>/dev/null) || SMOKE_BODY=""
     case "$SMOKE_HTTP" in
-        200) ok "Smoke HTTP 200" ;;
+        200)
+            if echo "$SMOKE_BODY" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                ok "Smoke HTTP 200, status=ok"
+            else
+                warn "Smoke HTTP 200 but status != ok: $(echo "$SMOKE_BODY" | head -c 200)"
+            fi
+            ;;
         404) warn "Smoke endpoint not present (404) — likely older source" ;;
         *)   warn "Smoke HTTP $SMOKE_HTTP — investigate before promoting to prod" ;;
     esac
 fi
 
 header "Staging Ready"
-printf "  %sURL:%s         %s\n" "$BOLD" "$NC" "http://${BCH_PROD_HOST}:${BCH_STAGING_PORT}"
+printf "  %sURL:%s         %s\n" "$BOLD" "$NC" "$STAGING_HEALTH_URL"
 printf "  %sBranch:%s      %s @ %s\n" "$BOLD" "$NC" "$BRANCH" "$SHORT_SHA"
 printf "  %sContainer:%s   %s\n" "$BOLD" "$NC" "$BCH_STAGING_CONTAINER"
 printf "  %sImage:%s       %s:latest\n" "$BOLD" "$NC" "$BCH_STAGING_IMAGE"
