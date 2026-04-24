@@ -37,7 +37,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 [ -f .env ] && { set -a; . ./.env; set +a; }
 
-BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/api/system/health}"
+BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/healthz}"
 
 SSH_OPTS=(-i "$BCH_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
 ssh_exec() { ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1 | grep -v '^\*\*' || true; }

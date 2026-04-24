@@ -36,7 +36,7 @@ There is **one** production host. Dev = your laptop. There is no staging tier ye
 3. **Snapshot** current `/opt/bch360` → `/opt/bch360-snapshots/snapshot-<ts>.tar.gz`. Keeps the 5 newest, prunes the rest.
 4. **Tar local source** (excludes `node_modules`, `.git`, `data_lake`, `logs`, `tmp`, `.claude/scheduled_tasks.lock`, `.claude/settings.local.json`) → `scp` to prod → extract over `/opt/bch360` (additive — does **not** delete files that exist on prod but not locally).
 5. **`docker compose build && docker compose up -d`** on prod.
-6. **Healthcheck** poll `https://<host>/api/system/health` for up to 60s.
+6. **Healthcheck** poll `https://<host>/healthz` for up to 60s.
 7. On healthcheck **failure** → automatically run `rollback.sh --auto` to restore the snapshot from step 3, then exit non-zero.
 
 ## Setup (once per developer machine)

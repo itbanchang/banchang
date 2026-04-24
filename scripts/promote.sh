@@ -7,7 +7,7 @@
 #   2. Snapshot current prod -> /opt/bch360-snapshots/snapshot-<ts>.tar.gz
 #   3. Tar local source, scp, extract over /opt/bch360 (additive)
 #   4. docker compose build && docker compose up -d
-#   5. Healthcheck https://<host>/api/system/health
+#   5. Healthcheck https://<host>/healthz
 #   6. On healthcheck fail -> auto rollback to the snapshot just taken
 #
 # Usage:
@@ -21,7 +21,7 @@
 #   BCH_PROD_USER            (default root)
 #   BCH_PROD_PATH            (default /opt/bch360)
 #   BCH_SSH_KEY              (default ~/.ssh/id_ed25519)
-#   BCH_HEALTHCHECK_URL      (default https://<host>/api/system/health)
+#   BCH_HEALTHCHECK_URL      (default https://<host>/healthz)
 #   BCH_HEALTHCHECK_TIMEOUT  (default 60 seconds)
 #   BCH_SNAPSHOT_DIR         (default /opt/bch360-snapshots)
 #   BCH_SNAPSHOT_KEEP        (default 5)
@@ -75,7 +75,7 @@ if [ -f .env ]; then
     set -a; . ./.env; set +a
 fi
 
-BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/api/system/health}"
+BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/healthz}"
 
 # ── SSH helpers ──
 SSH_OPTS=(-i "$BCH_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
