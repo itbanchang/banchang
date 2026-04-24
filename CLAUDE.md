@@ -52,8 +52,9 @@ Claude should use these automatically based on the task. Each lives at `.claude/
 # Local dev (this machine)
 npm run dev              # Vite on :4001 + backend on :4000
 
-# Promote local -> prod (10.109.0.33) — see docs/ops/promote-flow.md
-npm run promote          # gates (typecheck, lint, build) + snapshot + auto-rollback
+# Promote local -> staging -> prod (10.109.0.33) — see docs/ops/promote-flow.md
+npm run promote:staging  # parallel container on :4002 — click around before prod
+npm run promote          # gates (typecheck, lint baseline, build) + image swap + auto-rollback
 npm run promote:dry      # show what promote would do, no remote changes
 npm run rollback         # restore prod from latest snapshot
 npm run rollback:list    # list snapshots on prod
@@ -81,6 +82,11 @@ See `package.json` for the full list.
 - `bch360:safe` — auto-rollback target. Rotated only after running container is healthy ≥1h. **Never overwritten by `promote.sh`.**
 - `bch360:latest` — current deploy.
 - `bch360:sha-<short>` and `bch360:deploy-<YYYYMMDD-HHMM>` — immutable per-deploy tags (10 newest kept).
+- `bch360-staging:latest` — staging container image (rebuilt by `promote:staging`).
+
+**Functional smoke gate** (`/api/smoke`) — `promote.sh` polls this in addition to `/healthz`. Returns `{status:"ok"|"fail", checks:{db, db_today, asset}}`. If status != ok, auto-rollback to `bch360:safe`. This catches "healthz=200 but UI broken" failures (the V2 incident on 2026-04-24).
+
+**CI on PRs to master** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) — typecheck + lint baseline + build. Branch protection setup at [docs/ops/branch-protection.md](docs/ops/branch-protection.md).
 
 ## Directory map (high-level)
 
