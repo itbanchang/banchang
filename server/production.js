@@ -263,7 +263,7 @@ ${C.cyan}${C.bold}╔═══════════════════�
 ║     src/    → auto vite build → dist/ updated             ║
 ║     server/ → auto server restart                         ║
 ║                                                           ║
-║  💡 Dev Server: npm run dev (port 4001)                   ║
+║  💡 Dev Server: npm run dev (port 5173)                   ║
 ║  💡 This Prod:  port ${PROD_PORT} (auto-deploy on change)        ║
 ╚════════════════════════════════════════════════════════════╝${C.reset}
 `);

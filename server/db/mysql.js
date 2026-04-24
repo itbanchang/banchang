@@ -34,36 +34,23 @@ function semRelease() {
 // SAFETY: ระบบจะ SET SESSION TRANSACTION READ ONLY ทุก connection
 // + Application-level regex blocking ป้องกัน INSERT/UPDATE/DELETE
 // ไม่ว่าจะ switch ไป server ไหน จะไม่มีการเขียนข้อมูลลง HOSxP XE เด็ดขาด
-// Credentials live in .env (see .env.example). Hosts keep a sensible fallback
-// since they are infrastructure, not secrets. If env user/pass are missing,
-// the connection will fail with a clear auth error — that is intentional so
-// stale deployments don't silently fall back to dev credentials.
 const SERVER_PROFILES = {
     slave1: {
-        id: 'slave1', label: 'App-local replica', role: 'Read Replica',
-        host: process.env.MYSQL_HOST || '10.109.0.33',
-        database: process.env.MYSQL_DB || 'bchhosxpxe',
-        user: process.env.MYSQL_USER,
-        password: process.env.MYSQL_PASS,
-        port: parseInt(process.env.MYSQL_PORT || '3306'),
+        id: 'slave1', label: 'Server2 (Slave1)', role: 'Read Replica',
+        host: '10.1.0.3', database: 'bchhosxpxe',
+        user: 'dataaudit', password: 'dataaudit', port: 3306,
         readonly: true,
     },
     master: {
-        id: 'master', label: 'HOSxP Master', role: 'Master',
-        host: process.env.MYSQL_MASTER_HOST || '10.109.0.240',
-        database: process.env.MYSQL_MASTER_DB || 'bchhosxpxe',
-        user: process.env.MYSQL_MASTER_USER,
-        password: process.env.MYSQL_MASTER_PASS,
-        port: parseInt(process.env.MYSQL_MASTER_PORT || '3306'),
+        id: 'master', label: 'Server1 (Master)', role: 'Master',
+        host: '10.109.0.240', database: 'bchhosxpxe',
+        user: 'bch', password: '10828@adminbch', port: 3306,
         readonly: true, // FORCED READ-ONLY — app never writes to HOSxP
     },
     slave2: {
-        id: 'slave2', label: 'HOSxP Slave2', role: 'Read Replica 2',
-        host: process.env.MYSQL_SLAVE2_HOST || '10.1.0.239',
-        database: process.env.MYSQL_SLAVE2_DB || 'bchhosxpxe',
-        user: process.env.MYSQL_SLAVE2_USER,
-        password: process.env.MYSQL_SLAVE2_PASS,
-        port: parseInt(process.env.MYSQL_SLAVE2_PORT || '3306'),
+        id: 'slave2', label: 'Server3 (Slave2)', role: 'Read Replica 2',
+        host: '10.1.0.239', database: 'bchhosxpxe',
+        user: 'root', password: 'boom123', port: 3306,
         readonly: true,
     },
 };

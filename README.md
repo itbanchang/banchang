@@ -11,8 +11,8 @@
 npm run dev
 ```
 
-- Frontend: <http://localhost:4001> (Vite HMR — hot reload, proxies `/api` to backend)
-- Backend API: <http://localhost:4000>
+- Frontend: <http://localhost:5173> (Vite HMR — hot reload)
+- Backend API: <http://localhost:3001>
 
 ### Production (ใช้งานจริง — Auto Deploy)
 
@@ -77,7 +77,7 @@ cp .env.example .env
 
 ## 🗃️ Database
 
-- **HOSxP XE** (MySQL) — app-local replica at `10.109.0.33:3306` (config via `MYSQL_HOST` env)
+- **HOSxP XE** (MySQL) — Slave1 at `10.1.0.3:3306`
 - Database: `bchhosxpxe`
 - Connection pool: 30 connections, auto health check every 30s
 

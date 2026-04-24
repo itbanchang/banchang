@@ -20,17 +20,6 @@ import AlertBanner from './shared/AlertBanner.jsx';
 import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
 import EmptyState from './shared/EmptyState.jsx';
 import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
-// Sub-component imports (Sprint 3 decomposition)
-import {
-    OPDLiveFeed,
-    OPDKPICards,
-    OPDStaffOnDuty,
-    OPDRootCause,
-    OPDStrategicDashboard,
-    OPDCycleTime,
-    OPDHourlyChart,
-    OPDRevenue,
-} from './opd';
 
 const STATUS_COLORS = {
     'รอคัดกรอง': '#f5365c', // Danger

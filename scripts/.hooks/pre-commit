@@ -1,0 +1,45 @@
+#!/bin/sh
+# ============================================================
+# BCH 360° Intelligence V.10 — Pre-Commit Hook
+# 1. Block files > 100MB (accidental large file commits)
+# 2. Run schema validator when server/routes/*.js are staged
+# ============================================================
+
+toplevel=$(git rev-parse --show-toplevel)
+if [ -z "$toplevel" ]; then
+    exit 0
+fi
+
+# ── 1. Large file guard (keep existing behavior) ──
+limit=104857600 # 100MB in bytes
+git diff --cached --name-only -z | while IFS= read -r -d $'\0' file; do
+    file_size=$(stat -c %s "$file" 2>/dev/null)
+    if [ -n "$file_size" ]; then
+        if [ "$file_size" -gt "$limit" ]; then
+            echo "❌ Cannot commit a file larger than 100 MB: $file"
+            exit 1
+        fi
+    fi
+done
+
+# ── 2. Schema Validator (only if SQL routes changed) ──
+changed_routes=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^server/routes/.+\.js$' || true)
+if [ -n "$changed_routes" ]; then
+    echo "🔍 SQL route files staged — running column schema validator..."
+    cd "$toplevel" || exit 1
+    if node scripts/validate_schema.mjs 2>/dev/null | tee /tmp/bch_validate.log; then
+        if grep -q "❌" /tmp/bch_validate.log; then
+            echo ""
+            echo "❌ Schema validator found column mismatches."
+            echo "   Review the errors above or run 'npm run validate:schema' manually."
+            echo "   To bypass (NOT recommended): git commit --no-verify"
+            exit 1
+        fi
+    else
+        # DB unreachable — warn but allow commit (e.g., offline dev)
+        echo "⚠  Schema validator could not connect to DB — skipping check."
+        echo "   Run 'npm run validate:schema' before pushing."
+    fi
+fi
+
+exit 0

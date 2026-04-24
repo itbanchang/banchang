@@ -1,7 +1,6 @@
 // ============================================================
-// SubErrorBoundary — wraps sub-sections (especially charts) so one
-// broken widget does not nuke the whole tab.
-// Uses React class component (error boundaries require class form).
+// SubErrorBoundary — wraps sub-sections so one broken widget
+// doesn't nuke the whole tab. V1-compatible (no V2 deps).
 // ============================================================
 import React from 'react';
 
@@ -26,18 +25,30 @@ export default class SubErrorBoundary extends React.Component {
 
     render() {
         if (this.state.hasError) {
-            const label = this.props.label || 'section';
+            const label = this.props.label || 'ส่วนนี้';
             return (
                 <div
                     role="alert"
-                    className="rounded-card p-4 border border-danger-200 bg-danger-50 text-danger-700 text-fs-sm"
+                    className="rounded-lg my-3 p-4 text-[13px]"
+                    style={{
+                        background: 'rgba(244,63,94,0.06)',
+                        border: '1px solid rgba(244,63,94,0.2)',
+                        color: '#9f1239',
+                    }}
                 >
-                    <div className="font-bold mb-1">⚠️ โหลด {label} ไม่ได้</div>
-                    <div className="text-fs-xs opacity-70 mb-2">{this.state.message}</div>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠️ โหลด {label} ไม่ได้</div>
+                    <div style={{ fontSize: '11px', opacity: 0.7, marginBottom: 8 }}>{this.state.message}</div>
                     <button
                         type="button"
                         onClick={this.handleReset}
-                        className="px-3 py-1 rounded-lg bg-white border border-danger-200 text-danger-700 text-fs-xs font-semibold hover:bg-danger-100"
+                        className="px-3 py-1 rounded font-semibold"
+                        style={{
+                            background: '#fff',
+                            border: '1px solid rgba(244,63,94,0.25)',
+                            color: '#be123c',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                        }}
                     >
                         ลองใหม่
                     </button>

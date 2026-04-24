@@ -44,6 +44,9 @@ export default function ReportTab() {
   const [fy1, setFy1] = useState(defaultFY1);
   const [fy2, setFy2] = useState(defaultFY2);
 
+  // Sub-sheet selector: onepage (infographic) | overview (summary) | data (tables)
+  const [sheet, setSheet] = useState('onepage');
+
   const fetchIPDCompare = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -537,8 +540,447 @@ export default function ReportTab() {
         </div>
       )}
 
-      {/* Report Table */}
-      {!loading && reportType === 'ipd-compare' && ipdData?.comparison && (
+      {/* ── Sub-sheet tabs: Onepage (infographic) · Overview · ข้อมูล ────── */}
+      <div
+        role="tablist"
+        aria-label="มุมมองรายงาน"
+        style={{
+          display: 'flex',
+          gap: '6px',
+          padding: '4px',
+          borderRadius: '12px',
+          background: 'var(--md-surface-2, rgba(0,0,0,.04))',
+          border: '1px solid var(--md-border)',
+          width: 'fit-content',
+        }}
+      >
+        {[
+          { id: 'onepage', label: 'One Page', icon: '📄', hint: 'สรุป infographic' },
+          { id: 'overview', label: 'Overview', icon: '📊', hint: 'สรุป KPI' },
+          { id: 'data', label: 'ข้อมูล', icon: '📋', hint: 'ตารางรายละเอียด' },
+        ].map(s => {
+          const active = sheet === s.id;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setSheet(s.id)}
+              title={s.hint}
+              style={{
+                padding: '7px 14px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 800,
+                border: 'none',
+                cursor: 'pointer',
+                background: active ? 'linear-gradient(135deg, #0284c7, #7c3aed)' : 'transparent',
+                color: active ? '#fff' : 'var(--md-text-secondary)',
+                boxShadow: active ? '0 2px 6px rgba(124,58,237,.25)' : 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                transition: 'all .15s ease',
+              }}
+            >
+              <span aria-hidden="true">{s.icon}</span>
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Sheet 1: ONE PAGE (infographic) ─────────────────────────────── */}
+      {!loading && sheet === 'onepage' && (() => {
+        // Resolve active dataset + helpers for the infographic
+        const anyData = reportType === 'ipd-compare' ? ipdData
+          : reportType === 'opd-compare' ? opdData
+          : reportType === 'resource-opd' ? resOpdMonthly
+          : resourceData;
+        if (!anyData) {
+          return (
+            <div
+              className="rounded-2xl p-6 text-center"
+              style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)', color: 'var(--md-text-tertiary)', fontSize: '13px', fontWeight: 600 }}
+            >
+              ยังไม่มีข้อมูล — กดปุ่ม &ldquo;โหลดข้อมูล&rdquo; ด้านบน
+            </div>
+          );
+        }
+
+        const reportTitle =
+          reportType === 'ipd-compare' ? 'สรุปรายงานผู้ป่วยใน (IPD)'
+          : reportType === 'opd-compare' ? 'สรุปรายงานผู้ป่วยนอก (OPD)'
+          : reportType === 'resource-opd' ? 'สรุปการใช้ทรัพยากรผู้ป่วยนอก (Lab · Drug · CT/X-ray)'
+          : 'สรุปการใช้ทรัพยากรผู้ป่วยใน (Lab · Drug · CT/X-ray)';
+        const subtitle = `เปรียบเทียบปีงบประมาณ ${fy1} กับ ${fy2}` +
+          (anyData.comparable_months ? ` · ข้อมูล ${anyData.comparable_months} เดือน` : '');
+
+        // ── Tile primitive (big stat) ──
+        const Tile = ({ label, value, sub, accent = '#0284c7', icon }) => (
+          <div
+            style={{
+              padding: '18px',
+              borderRadius: '14px',
+              border: '1px solid var(--md-border)',
+              background: 'var(--md-surface)',
+              boxShadow: 'var(--md-shadow-sm)',
+              position: 'relative',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ position: 'absolute', inset: 0, background: `linear-gradient(135deg, ${accent}14, transparent 60%)`, pointerEvents: 'none' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '11px', fontWeight: 800, color: accent, textTransform: 'uppercase', letterSpacing: '.05em' }}>
+              <span aria-hidden="true" style={{ fontSize: '18px' }}>{icon}</span>
+              {label}
+            </div>
+            <div style={{ fontSize: '26px', fontWeight: 900, color: 'var(--md-text-primary)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
+            {sub && <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginTop: '4px' }}>{sub}</div>}
+          </div>
+        );
+
+        // ── Growth pill ──
+        const Growth = ({ pct, label }) => {
+          const up = pct >= 0;
+          const color = up ? '#16a34a' : '#dc2626';
+          const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '—';
+          return (
+            <div
+              style={{
+                padding: '16px',
+                borderRadius: '14px',
+                border: `1px solid ${color}33`,
+                background: `${color}0c`,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div style={{ fontSize: '11px', fontWeight: 800, color, textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                {label || 'การเปลี่ยนแปลง'}
+              </div>
+              <div style={{ fontSize: '28px', fontWeight: 900, color, lineHeight: 1 }}>
+                {arrow} {Math.abs(pct)}%
+              </div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>
+                FY{fy2} vs FY{fy1}
+              </div>
+            </div>
+          );
+        };
+
+        // ── Content per report type ──
+        let section1 = null, section2 = null;
+
+        if (reportType === 'ipd-compare' && ipdData?.fy1_totals && ipdData?.fy2_totals) {
+          const t1 = ipdData.fy1_totals, t2 = ipdData.fy2_totals;
+          const g = ipdData.overall_growth_pct || 0;
+          const diff = ipdData.overall_admit_diff || 0;
+
+          // Find top month (highest admits fy2)
+          const monthData = (ipdData.comparison || []).filter(c => c.fy2?.has_data ?? c.fy2?.admits > 0);
+          const topMonth = monthData.length ? monthData.reduce((a, b) => (b.fy2.admits > a.fy2.admits ? b : a)) : null;
+          const biggestMover = monthData.length ? monthData.reduce((a, b) => (Math.abs(b.growth_pct) > Math.abs(a.growth_pct) ? b : a)) : null;
+
+          section1 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Tile icon="🏥" label={`Admit ปีงบ ${fy2}`} value={fmt(t2.admits)} sub={`ปีงบ ${fy1}: ${fmt(t1.admits)} ราย`} accent="#db2777" />
+              <Tile icon="🛏️" label="อัตราครองเตียง" value={`${fmt(t2.occupancy_rate, 1)}%`} sub={`เตียงรวม: ${fmt(ipdData.total_beds)} · ใช้จริง ${fmt(t2.active_beds, 1)}`} accent="#0284c7" />
+              <Tile icon="📅" label="ALOS (วันนอนเฉลี่ย)" value={fmt(t2.alos, 2)} sub={`วันนอนรวม: ${fmt(t2.total_los)}`} accent="#7c3aed" />
+              <Tile icon="⚖️" label="CMI / AdjRW" value={fmt(t2.cmi, 3)} sub={`Sum AdjRW: ${fmt(t2.sum_adjrw, 0)}`} accent="#0d9488" />
+            </div>
+          );
+
+          section2 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+              <Growth pct={g} label="อัตราการเติบโตของ Admit" />
+              <div style={{ padding: '16px', borderRadius: '14px', border: '1px solid var(--md-border)', background: 'var(--md-surface)', boxShadow: 'var(--md-shadow-sm)' }}>
+                <div style={{ fontSize: '11px', fontWeight: 800, color: '#0284c7', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '6px' }}>
+                  📌 ส่วนต่าง Admit (ปี)
+                </div>
+                <div style={{ fontSize: '24px', fontWeight: 900, color: diff >= 0 ? '#16a34a' : '#dc2626', fontVariantNumeric: 'tabular-nums' }}>
+                  {diff > 0 ? '+' : ''}{fmt(diff)} ราย
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', marginTop: '4px' }}>รวมทุกเดือนที่เปรียบเทียบได้</div>
+              </div>
+              {topMonth && (
+                <div style={{ padding: '16px', borderRadius: '14px', border: '1px solid var(--md-border)', background: 'var(--md-surface)', boxShadow: 'var(--md-shadow-sm)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '6px' }}>
+                    🏆 เดือน Admit สูงสุด
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: 900, color: 'var(--md-text-primary)' }}>{topMonth.month}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>{fmt(topMonth.fy2.admits)} ราย</div>
+                </div>
+              )}
+              {biggestMover && (
+                <div style={{ padding: '16px', borderRadius: '14px', border: '1px solid var(--md-border)', background: 'var(--md-surface)', boxShadow: 'var(--md-shadow-sm)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#db2777', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '6px' }}>
+                    🎯 เดือนที่เปลี่ยนแปลงมากที่สุด
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: 900, color: 'var(--md-text-primary)' }}>{biggestMover.month}</div>
+                  <div style={{ fontSize: '12px', color: biggestMover.growth_pct >= 0 ? '#16a34a' : '#dc2626', marginTop: '2px', fontWeight: 700 }}>
+                    {biggestMover.growth_pct > 0 ? '▲' : '▼'} {Math.abs(biggestMover.growth_pct)}%
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        } else if (reportType === 'opd-compare' && opdData?.fy1_totals && opdData?.fy2_totals) {
+          const t1 = opdData.fy1_totals, t2 = opdData.fy2_totals;
+          const visitsGrowth = t1.visits > 0 ? Math.round(((t2.visits - t1.visits) / t1.visits) * 100) : 0;
+          const revGrowth = t1.revenue > 0 ? Math.round(((t2.revenue - t1.revenue) / t1.revenue) * 100) : 0;
+          const monthData = (opdData.comparison || []).filter(c => c.fy2?.visits > 0);
+          const topMonth = monthData.length ? monthData.reduce((a, b) => (b.fy2.visits > a.fy2.visits ? b : a)) : null;
+
+          section1 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Tile icon="👥" label={`Visits ปีงบ ${fy2}`} value={fmt(t2.visits)} sub={`ปีงบ ${fy1}: ${fmt(t1.visits)} ครั้ง`} accent="#0284c7" />
+              <Tile icon="🧑" label={`ผู้ป่วยรวม ปีงบ ${fy2}`} value={fmt(t2.patients)} sub={`Visits/คน: ${t2.patients > 0 ? (t2.visits / t2.patients).toFixed(2) : '—'}`} accent="#7c3aed" />
+              <Tile icon="💰" label={`รายได้ ปีงบ ${fy2}`} value={`฿${fmt(t2.revenue)}`} sub={`ปีงบ ${fy1}: ฿${fmt(t1.revenue)}`} accent="#16a34a" />
+              <Tile icon="📈" label="รายได้เฉลี่ย/ครั้ง" value={`฿${fmt(t2.avg_income, 0)}`} sub={`ปีงบ ${fy1}: ฿${fmt(t1.avg_income, 0)}`} accent="#db2777" />
+            </div>
+          );
+
+          section2 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+              <Growth pct={visitsGrowth} label="การเติบโต Visits" />
+              <Growth pct={revGrowth} label="การเติบโตรายได้" />
+              {topMonth && (
+                <div style={{ padding: '16px', borderRadius: '14px', border: '1px solid var(--md-border)', background: 'var(--md-surface)', boxShadow: 'var(--md-shadow-sm)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '6px' }}>
+                    🏆 เดือน Visits สูงสุด
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: 900, color: 'var(--md-text-primary)' }}>{topMonth.month}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>{fmt(topMonth.fy2.visits)} ครั้ง</div>
+                </div>
+              )}
+            </div>
+          );
+        } else if (reportType === 'resource-opd' && resOpdMonthly?.fy1_totals && resOpdMonthly?.fy2_totals) {
+          const t1 = resOpdMonthly.fy1_totals, t2 = resOpdMonthly.fy2_totals;
+          const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : a > 0 ? 100 : 0;
+          const labG = pct(t2.lab_orders, t1.lab_orders);
+          const drugG = pct(t2.drug_orders, t1.drug_orders);
+          const xrayG = pct(t2.xray_orders, t1.xray_orders);
+          const totalOrd2 = t2.lab_orders + t2.drug_orders + t2.xray_orders;
+          const totalPrice2 = t2.lab_price + t2.drug_price + t2.xray_price;
+
+          section1 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Tile icon="🧪" label={`Lab · ${fy2}`} value={fmt(t2.lab_orders)} sub={`มูลค่า: ฿${fmt(t2.lab_price)}`} accent="#0284c7" />
+              <Tile icon="💊" label={`Drug · ${fy2}`} value={fmt(t2.drug_orders)} sub={`มูลค่า: ฿${fmt(t2.drug_price)}`} accent="#7c3aed" />
+              <Tile icon="🩻" label={`CT/X-ray · ${fy2}`} value={fmt(t2.xray_orders)} sub={`มูลค่า: ฿${fmt(t2.xray_price)}`} accent="#db2777" />
+              <Tile icon="💰" label="มูลค่ารวม" value={`฿${fmt(totalPrice2)}`} sub={`สั่งรวม: ${fmt(totalOrd2)} ครั้ง`} accent="#16a34a" />
+            </div>
+          );
+
+          section2 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Growth pct={labG} label="Lab orders" />
+              <Growth pct={drugG} label="Drug orders" />
+              <Growth pct={xrayG} label="CT/X-ray orders" />
+            </div>
+          );
+        } else if (reportType === 'resource-ipd' && resourceData?.inpatient) {
+          const lv = resourceData.inpatient;
+          const lab1 = lv.Lab?.fy1 || { orders: 0, total_price: 0 };
+          const lab2 = lv.Lab?.fy2 || { orders: 0, total_price: 0 };
+          const drug1 = lv.Drug?.fy1 || { orders: 0, total_price: 0 };
+          const drug2 = lv.Drug?.fy2 || { orders: 0, total_price: 0 };
+          const xray1 = lv['CT / X-ray']?.fy1 || { orders: 0, total_price: 0 };
+          const xray2 = lv['CT / X-ray']?.fy2 || { orders: 0, total_price: 0 };
+          const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : a > 0 ? 100 : 0;
+          const totalPrice2 = lab2.total_price + drug2.total_price + xray2.total_price;
+          const totalOrd2 = lab2.orders + drug2.orders + xray2.orders;
+
+          section1 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Tile icon="🧪" label={`Lab · ${fy2}`} value={fmt(lab2.orders)} sub={`มูลค่า: ฿${fmt(lab2.total_price)}`} accent="#0284c7" />
+              <Tile icon="💊" label={`Drug · ${fy2}`} value={fmt(drug2.orders)} sub={`มูลค่า: ฿${fmt(drug2.total_price)}`} accent="#7c3aed" />
+              <Tile icon="🩻" label={`CT/X-ray · ${fy2}`} value={fmt(xray2.orders)} sub={`มูลค่า: ฿${fmt(xray2.total_price)}`} accent="#db2777" />
+              <Tile icon="💰" label="มูลค่ารวม" value={`฿${fmt(totalPrice2)}`} sub={`สั่งรวม: ${fmt(totalOrd2)} ครั้ง`} accent="#16a34a" />
+            </div>
+          );
+
+          section2 = (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <Growth pct={pct(lab2.orders, lab1.orders)} label="Lab orders" />
+              <Growth pct={pct(drug2.orders, drug1.orders)} label="Drug orders" />
+              <Growth pct={pct(xray2.orders, xray1.orders)} label="CT/X-ray orders" />
+            </div>
+          );
+        }
+
+        return (
+          <div
+            className="rounded-2xl overflow-hidden"
+            style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)', boxShadow: 'var(--md-shadow-sm)' }}
+          >
+            {/* Gradient title strip */}
+            <div
+              style={{
+                padding: '18px 22px',
+                background: 'linear-gradient(135deg, rgba(2,132,199,.08), rgba(124,58,237,.08))',
+                borderBottom: '2px solid var(--md-border)',
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: '18px', fontWeight: 900, color: 'var(--md-text-primary)' }}>
+                {reportTitle} · โรงพยาบาลบ้านฉาง
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginTop: '4px' }}>
+                {subtitle}
+              </div>
+            </div>
+
+            {/* Two-column sections */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '18px', padding: '20px' }}>
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: 'var(--md-text-secondary)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: '10px' }}>
+                  SECTION 1 · ภาพรวมสถิติ (OVERVIEW &amp; VOLUME)
+                </div>
+                {section1 || <div style={{ fontSize: '12px', color: 'var(--md-text-tertiary)' }}>รอข้อมูล</div>}
+              </div>
+
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: 'var(--md-text-secondary)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: '10px' }}>
+                  SECTION 2 · ประเด็นสำคัญ (HIGHLIGHTS &amp; TRENDS)
+                </div>
+                {section2 || <div style={{ fontSize: '12px', color: 'var(--md-text-tertiary)' }}>รอข้อมูล</div>}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div
+              style={{
+                padding: '10px 22px',
+                borderTop: '1px solid var(--md-border)',
+                background: 'linear-gradient(90deg, rgba(2,132,199,.04), rgba(124,58,237,.04))',
+                fontSize: '10px',
+                color: 'var(--md-text-tertiary)',
+                fontWeight: 700,
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span>BCH 360° Intelligence · One-Page Summary</span>
+              <span>{anyData?.timestamp && new Date(anyData.timestamp).toLocaleString('th-TH')}</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Sheet 2: OVERVIEW (quick KPI cards) ─────────────────────────── */}
+      {!loading && sheet === 'overview' && (() => {
+        const anyData = reportType === 'ipd-compare' ? ipdData
+          : reportType === 'opd-compare' ? opdData
+          : reportType === 'resource-opd' ? resOpdMonthly
+          : resourceData;
+        if (!anyData) {
+          return (
+            <div
+              className="rounded-2xl p-6 text-center"
+              style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)', color: 'var(--md-text-tertiary)', fontSize: '13px', fontWeight: 600 }}
+            >
+              ยังไม่มีข้อมูล — กดปุ่ม &ldquo;โหลดข้อมูล&rdquo; ด้านบน
+            </div>
+          );
+        }
+
+        // Build KPI rows per report type
+        const rows = [];
+        if (reportType === 'ipd-compare' && ipdData?.fy1_totals && ipdData?.fy2_totals) {
+          const t1 = ipdData.fy1_totals, t2 = ipdData.fy2_totals;
+          rows.push(
+            { label: 'Admit',      fy1: fmt(t1.admits),            fy2: fmt(t2.admits),            growth: ipdData.overall_growth_pct },
+            { label: 'วันนอนรวม',  fy1: fmt(t1.total_los),         fy2: fmt(t2.total_los) },
+            { label: 'ALOS',       fy1: fmt(t1.alos, 2),           fy2: fmt(t2.alos, 2) },
+            { label: 'Occupancy',  fy1: `${fmt(t1.occupancy_rate, 1)}%`, fy2: `${fmt(t2.occupancy_rate, 1)}%` },
+            { label: 'Active Bed', fy1: fmt(t1.active_beds, 1),    fy2: fmt(t2.active_beds, 1) },
+            { label: 'Sum AdjRW',  fy1: fmt(t1.sum_adjrw, 0),      fy2: fmt(t2.sum_adjrw, 0) },
+            { label: 'CMI',        fy1: fmt(t1.cmi, 3),            fy2: fmt(t2.cmi, 3) },
+          );
+        } else if (reportType === 'opd-compare' && opdData?.fy1_totals && opdData?.fy2_totals) {
+          const t1 = opdData.fy1_totals, t2 = opdData.fy2_totals;
+          const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : 0;
+          rows.push(
+            { label: 'Visits',             fy1: fmt(t1.visits),   fy2: fmt(t2.visits),   growth: pct(t2.visits, t1.visits) },
+            { label: 'ผู้ป่วย (Patients)',  fy1: fmt(t1.patients), fy2: fmt(t2.patients), growth: pct(t2.patients, t1.patients) },
+            { label: 'รายได้ (บาท)',        fy1: fmt(t1.revenue),  fy2: fmt(t2.revenue),  growth: pct(t2.revenue, t1.revenue) },
+            { label: 'รายได้/ครั้ง',        fy1: fmt(t1.avg_income, 0), fy2: fmt(t2.avg_income, 0) },
+          );
+        } else if (reportType === 'resource-opd' && resOpdMonthly?.fy1_totals && resOpdMonthly?.fy2_totals) {
+          const t1 = resOpdMonthly.fy1_totals, t2 = resOpdMonthly.fy2_totals;
+          const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : 0;
+          rows.push(
+            { label: 'Lab — ครั้ง',        fy1: fmt(t1.lab_orders),   fy2: fmt(t2.lab_orders),   growth: pct(t2.lab_orders, t1.lab_orders) },
+            { label: 'Lab — มูลค่า (บาท)',  fy1: fmt(t1.lab_price),    fy2: fmt(t2.lab_price),    growth: pct(t2.lab_price, t1.lab_price) },
+            { label: 'Drug — ครั้ง',       fy1: fmt(t1.drug_orders),  fy2: fmt(t2.drug_orders),  growth: pct(t2.drug_orders, t1.drug_orders) },
+            { label: 'Drug — มูลค่า (บาท)', fy1: fmt(t1.drug_price),   fy2: fmt(t2.drug_price),   growth: pct(t2.drug_price, t1.drug_price) },
+            { label: 'Xray — ครั้ง',       fy1: fmt(t1.xray_orders),  fy2: fmt(t2.xray_orders),  growth: pct(t2.xray_orders, t1.xray_orders) },
+            { label: 'Xray — มูลค่า (บาท)', fy1: fmt(t1.xray_price),   fy2: fmt(t2.xray_price),   growth: pct(t2.xray_price, t1.xray_price) },
+          );
+        } else if (reportType === 'resource-ipd' && resourceData?.inpatient) {
+          const lv = resourceData.inpatient;
+          const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : 0;
+          ['Lab', 'Drug', 'CT / X-ray'].forEach(cat => {
+            const r1 = lv[cat]?.fy1 || { orders: 0, total_price: 0 };
+            const r2 = lv[cat]?.fy2 || { orders: 0, total_price: 0 };
+            rows.push(
+              { label: `${cat} — ครั้ง`,       fy1: fmt(r1.orders),      fy2: fmt(r2.orders),      growth: pct(r2.orders, r1.orders) },
+              { label: `${cat} — มูลค่า (บาท)`, fy1: fmt(r1.total_price), fy2: fmt(r2.total_price), growth: pct(r2.total_price, r1.total_price) },
+            );
+          });
+        }
+
+        return (
+          <div
+            className="rounded-2xl overflow-hidden"
+            style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)', boxShadow: 'var(--md-shadow-sm)' }}
+          >
+            <div
+              style={{
+                padding: '16px 20px',
+                borderBottom: '2px solid var(--md-border)',
+                background: 'linear-gradient(135deg, rgba(2,132,199,.04), rgba(124,58,237,.04))',
+              }}
+            >
+              <div style={{ fontSize: '14px', fontWeight: 900, color: 'var(--md-text-primary)' }}>Overview · สรุปตัวเลขรวม</div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginTop: '2px' }}>
+                ปีงบ {fy1} vs {fy2}{anyData.comparable_months ? ` · ${anyData.comparable_months} เดือน` : ''}
+              </div>
+            </div>
+            <div style={{ padding: '16px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...S.th, textAlign: 'left' }}>รายการ</th>
+                    <th style={{ ...S.th, background: S.fy1Bg, color: '#2563eb' }}>ปีงบ {fy1}</th>
+                    <th style={{ ...S.th, background: S.fy2Bg, color: '#db2777' }}>ปีงบ {fy2}</th>
+                    <th style={{ ...S.th, background: S.growthBg, color: '#16a34a' }}>เปลี่ยนแปลง</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'var(--md-surface-2, rgba(0,0,0,.02))' }}>
+                      <td style={{ ...S.td, textAlign: 'left', fontWeight: 700 }}>{r.label}</td>
+                      <td style={S.tdNum}>{r.fy1}</td>
+                      <td style={S.tdNum}>{r.fy2}</td>
+                      <td style={{ ...S.tdNum, fontWeight: 800, color: r.growth == null ? 'var(--md-text-tertiary)' : r.growth >= 0 ? '#16a34a' : '#dc2626' }}>
+                        {r.growth == null ? '—' : `${r.growth > 0 ? '▲' : r.growth < 0 ? '▼' : ''} ${Math.abs(r.growth)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Sheet 3: DATA (detailed tables) ─────────────────────────────── */}
+      {!loading && sheet === 'data' && reportType === 'ipd-compare' && ipdData?.comparison && (
         <div
           className="rounded-2xl overflow-hidden"
           style={{
@@ -881,7 +1323,7 @@ export default function ReportTab() {
       )}
 
       {/* ── OPD Compare Table ── */}
-      {!loading && reportType === 'opd-compare' && opdData?.comparison && (
+      {!loading && sheet === 'data' && reportType === 'opd-compare' && opdData?.comparison && (
         <div
           className="rounded-2xl overflow-hidden"
           style={{ background: 'var(--md-surface)', border: '1px solid var(--md-border)', boxShadow: 'var(--md-shadow-sm)' }}
@@ -962,7 +1404,7 @@ export default function ReportTab() {
       )}
 
       {/* ── Resource OPD Monthly Table (ทรัพยากร ผู้ป่วยนอก — รายเดือน) ── */}
-      {!loading && reportType === 'resource-opd' && resOpdMonthly?.comparison && (() => {
+      {!loading && sheet === 'data' && reportType === 'resource-opd' && resOpdMonthly?.comparison && (() => {
         const d = resOpdMonthly;
         const t1 = d.fy1_totals;
         const t2 = d.fy2_totals;
@@ -1139,7 +1581,7 @@ export default function ReportTab() {
       })()}
 
       {/* ── Resource IPD Table (yearly summary — unchanged) ── */}
-      {!loading && reportType === 'resource-ipd' && resourceData && (() => {
+      {!loading && sheet === 'data' && reportType === 'resource-ipd' && resourceData && (() => {
         const level = 'inpatient';
         const levelTH = 'ผู้ป่วยใน (IPD)';
         const gradBg = 'linear-gradient(135deg, rgba(236,72,153,.05), rgba(251,146,60,.05))';

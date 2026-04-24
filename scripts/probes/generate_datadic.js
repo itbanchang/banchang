@@ -3,10 +3,10 @@ import fs from 'fs';
 
 async function generateDataDictionary() {
     const connectionConfig = {
-        host: process.env.MYSQL_HOST || '10.109.0.33',
-        user: process.env.MYSQL_USER || 'dataaudit',
-        password: process.env.MYSQL_PASS || 'dataaudit',
-        database: process.env.MYSQL_DB || 'bchhosxpxe',
+        host: '10.1.0.3',
+        user: 'dataaudit',
+        password: 'dataaudit',
+        database: 'bchhosxpxe',
     };
 
     const tablesToInspect = [
