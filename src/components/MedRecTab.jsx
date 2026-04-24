@@ -2,14 +2,16 @@
 // BCH 360° Intelligence V.10 — Medical Record Audit Tab
 // ออกแบบใหม่: แบ่งส่วน OPD / IPD / Coder Performance ชัดเจน
 // ============================================================
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
-    LineChart, Line, Legend, CartesianGrid
+    LineChart, Line, Legend, CartesianGrid, ReferenceLine,
+    PieChart, Pie, Cell
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 // ─── Color tokens ────────────────────────────────────────────
 const C = {
@@ -179,7 +181,8 @@ function Divider() {
 
 // ─── Main Component ───────────────────────────────────────────
 function MedRecTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ medRecToday: s.medRecToday, medRecAnalytics: s.medRecAnalytics, medRecDrgOpt: s.medRecDrgOpt, medRecFiscal: s.medRecFiscal, medRecHeatmap: s.medRecHeatmap, medRecTATrend: s.medRecTATrend, medRecRecovery: s.medRecRecovery }));
+    const { fetchData } = useDashboardActions();
     const today    = state.medRecToday    || {};
     const analytics = state.medRecAnalytics || {};
 
@@ -192,6 +195,9 @@ function MedRecTab() {
         fetchData('medRecAnalytics','/api/medrec/analytics');
         fetchData('medRecDrgOpt',   '/api/medrec/drg-optimization');
         fetchData('medRecFiscal',   '/api/medrec/revenue-fiscal');
+        fetchData('medRecHeatmap', '/api/medrec/coding-heatmap');
+        fetchData('medRecTATrend', '/api/medrec/turnaround-trend');
+        fetchData('medRecRecovery', '/api/medrec/revenue-recovery');
     }, [fetchData]);
 
     // ── Hourly chart data ──
@@ -327,6 +333,7 @@ function MedRecTab() {
             {/* ══════════════════════════════════════════
                 AI Analytics Cards — 4 Intelligence Panels
             ══════════════════════════════════════════ */}
+            <SubErrorBoundary name="AI Medical Record Intelligence">
             <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                     <div style={{
@@ -344,6 +351,7 @@ function MedRecTab() {
                     ))}
                 </div>
             </div>
+            </SubErrorBoundary>
 
             {/* ══════════════════════════════════════════
                 TOP BAR — Live status
@@ -722,6 +730,7 @@ function MedRecTab() {
             {/* ══════════════════════════════════════════════
                 🤖 AI CODER ASSISTANT — DRG Optimization Intelligence
             ══════════════════════════════════════════════ */}
+            <SubErrorBoundary name="AI Coder Assistant & DRG Optimization">
             <Section color="#7c3aed" icon="🤖" title="AI Coder Assistant" sub="ระบบช่วยตรวจสอบการ Coding ด้วย AI" badge="DRG Optimization">
 
                 {/* Coder Performance Leaderboard */}
@@ -895,8 +904,711 @@ function MedRecTab() {
                     </div>
                 )}
             </Section>
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                🔥 SECTION 6 — Coding Quality Heatmap (Coder × Ward)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const hm = state.medRecHeatmap;
+                if (!hm?.coders?.length) return null;
+                const coders = hm.coders;
+                const wards = hm.wards || [];
+                const weakSpots = hm.weak_spots || [];
+
+                // Color scale: CC rate → color
+                const ccColor = (rate) => {
+                    if (rate >= 80) return { bg: '#059669', text: '#fff' };
+                    if (rate >= 60) return { bg: '#10b981', text: '#fff' };
+                    if (rate >= 40) return { bg: '#fbbf24', text: '#1e1b4b' };
+                    if (rate >= 20) return { bg: '#f97316', text: '#fff' };
+                    if (rate > 0) return { bg: '#ef4444', text: '#fff' };
+                    return { bg: '#1e1b4b', text: '#6b7280' };
+                };
+
+                return (
+                    <Section color="#e11d48" icon="🔥" title="Coding Quality Heatmap" sub="Coder × Ward — CC/MCC Completeness (30 วัน)" badge="AI Analytics">
+                        {/* Heatmap Grid */}
+                        <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
+                            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '3px', fontSize: '10px' }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 800, color: C.sub, fontSize: '10px', minWidth: '140px', position: 'sticky', left: 0, background: 'var(--md-surface, #fff)', zIndex: 1 }}>
+                                            Coder
+                                        </th>
+                                        {wards.map((w, i) => (
+                                            <th key={i} style={{ padding: '4px 6px', textAlign: 'center', fontWeight: 700, color: C.sub, fontSize: '9px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', writingMode: wards.length > 4 ? 'vertical-rl' : undefined, height: wards.length > 4 ? '80px' : undefined }}>
+                                                {w?.replace('หอผู้ป่วย', '').replace('สามัญ', '')}
+                                            </th>
+                                        ))}
+                                        <th style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 800, color: C.sub, fontSize: '10px' }}>AVG</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {coders.map((c, ci) => (
+                                        <tr key={ci}>
+                                            <td style={{ padding: '6px 10px', fontWeight: 700, color: C.text, fontSize: '10px', position: 'sticky', left: 0, background: 'var(--md-surface, #fff)', zIndex: 1, borderRight: '2px solid var(--md-border, #e2e8f0)' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <span style={{ fontSize: '12px' }}>👩‍💻</span>
+                                                    <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                                                </div>
+                                                <span style={{ fontSize: '9px', color: C.muted }}>{c.total_cases} เคส</span>
+                                            </td>
+                                            {wards.map((w, wi) => {
+                                                const cell = c.wards?.[w];
+                                                if (!cell) return <td key={wi} style={{ padding: '4px', textAlign: 'center', borderRadius: '6px', background: 'var(--md-surface-2, #f8fafc)', color: C.muted }}>—</td>;
+                                                const clr = ccColor(cell.cc_rate);
+                                                return (
+                                                    <td key={wi} title={`${c.name} × ${w}: CC ${cell.cc_rate}% · ${cell.cases} เคส · ${cell.diag_per_case} dx/case`}
+                                                        style={{ padding: '4px 6px', textAlign: 'center', borderRadius: '8px', background: clr.bg, color: clr.text, fontWeight: 800, fontSize: '11px', cursor: 'default', transition: 'transform 0.15s', minWidth: '44px' }}>
+                                                        {cell.cc_rate}%
+                                                        <div style={{ fontSize: '8px', fontWeight: 600, opacity: 0.8 }}>{cell.cases}เคส</div>
+                                                    </td>
+                                                );
+                                            })}
+                                            <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 900, fontSize: '12px', color: c.avg_cc >= 60 ? '#059669' : c.avg_cc >= 40 ? '#f59e0b' : '#ef4444', background: `${c.avg_cc >= 60 ? '#059669' : c.avg_cc >= 40 ? '#f59e0b' : '#ef4444'}10`, borderRadius: '8px' }}>
+                                                {c.avg_cc}%
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            {[{ label: '≥80% ดีเยี่ยม', bg: '#059669' }, { label: '60-79% ดี', bg: '#10b981' }, { label: '40-59% พอใช้', bg: '#fbbf24' }, { label: '20-39% ต่ำ', bg: '#f97316' }, { label: '<20% วิกฤต', bg: '#ef4444' }, { label: '0% ไม่มี CC', bg: '#1e1b4b' }].map((l, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <div style={{ width: '14px', height: '14px', borderRadius: '4px', background: l.bg }} />
+                                    <span style={{ fontSize: '9px', color: C.sub, fontWeight: 600 }}>{l.label}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Weak Spots — AI Coaching Recommendations */}
+                        {weakSpots.length > 0 && (
+                            <div style={{ background: 'rgba(239,68,68,0.04)', borderRadius: '14px', padding: '14px', border: '1px solid rgba(239,68,68,0.12)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                                    <span style={{ fontSize: '14px' }}>🎯</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#e11d48' }}>AI Coaching Targets — จุดที่ต้องปรับปรุง</span>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {weakSpots.map((ws, i) => (
+                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', background: 'rgba(255,255,255,0.7)', borderRadius: '10px', border: '1px solid rgba(239,68,68,0.1)' }}>
+                                            <span style={{ fontSize: '16px', fontWeight: 900, color: '#e11d48', minWidth: '20px' }}>{i + 1}</span>
+                                            <div style={{ flex: 1 }}>
+                                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: C.text }}>{ws.coder} — {ws.ward}</p>
+                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: C.sub }}>
+                                                    CC Rate <b style={{ color: '#ef4444' }}>{ws.cc_rate}%</b> · {ws.cases} เคส · {ws.diag_per_case} dx/case
+                                                </p>
+                                            </div>
+                                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#e11d48', background: 'rgba(239,68,68,0.08)', padding: '2px 8px', borderRadius: '99px' }}>
+                                                {ws.cc_rate === 0 ? 'อบรมเร่งด่วน' : 'Peer Review'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                ⏱️ SECTION 7 — Coding Turnaround Trend (12 weeks × Coder)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const trend = state.medRecTATrend;
+                if (!trend?.weeks?.length) return null;
+                const weeks = trend.weeks;
+                const coders = trend.coders || [];
+                const target = trend.target_days || 3;
+                const COLORS = ['#e11d48', '#0284c7', '#059669', '#f59e0b', '#7c3aed', '#0ea5e9', '#ec4899'];
+
+                // Overall stats
+                const allAvgs = weeks.map(w => w.avg_all).filter(v => v > 0);
+                const overallAvg = allAvgs.length > 0 ? Math.round(allAvgs.reduce((s, v) => s + v, 0) / allAvgs.length * 10) / 10 : 0;
+                const latestAvg = weeks[weeks.length - 1]?.avg_all || 0;
+                const firstAvg = weeks[0]?.avg_all || 0;
+                const trendDir = latestAvg < firstAvg ? 'improving' : latestAvg > firstAvg ? 'worsening' : 'stable';
+
+                return (
+                    <Section color="#0284c7" icon="⏱️" title="Coding Turnaround Trend" sub={`เวลาสรุปรหัส IPD รายสัปดาห์ (${weeks.length} สัปดาห์) · แยก Coder`} badge="12 Weeks">
+                        {/* KPI Strip */}
+                        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>เฉลี่ยรวม</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: overallAvg <= target ? '#059669' : '#e11d48' }}>{overallAvg} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>สัปดาห์ล่าสุด</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: latestAvg <= target ? '#059669' : '#e11d48' }}>{latestAvg} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: 'rgba(2,132,199,0.06)', border: '1px solid rgba(2,132,199,0.15)', textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>เป้าหมาย</span>
+                                <p style={{ margin: 0, fontSize: '22px', fontWeight: 900, color: '#f43f5e' }}>≤{target} วัน</p>
+                            </div>
+                            <div style={{ padding: '10px 16px', borderRadius: '12px', background: trendDir === 'improving' ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)', border: `1px solid ${trendDir === 'improving' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}`, textAlign: 'center' }}>
+                                <span style={{ fontSize: '10px', color: C.muted, fontWeight: 600 }}>แนวโน้ม</span>
+                                <p style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: trendDir === 'improving' ? '#059669' : trendDir === 'worsening' ? '#e11d48' : '#64748b' }}>
+                                    {trendDir === 'improving' ? '📈 ดีขึ้น' : trendDir === 'worsening' ? '📉 แย่ลง' : '➡️ คงที่'}
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Line Chart */}
+                        <ResponsiveContainer width="100%" height={280}>
+                            <LineChart data={weeks} margin={{ top: 8, right: 12, bottom: 0, left: 4 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
+                                <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                                <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={30} unit=" d" domain={[0, 'auto']} />
+                                <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
+                                    formatter={(v, name) => v != null ? [`${v} วัน`, name === 'avg_all' ? 'เฉลี่ยรวม' : name] : [null, null]} />
+                                <ReferenceLine y={target} stroke="#f43f5e" strokeWidth={2} strokeDasharray="8 4" label={{ value: `เป้า ${target} วัน`, fill: '#f43f5e', fontSize: 10, fontWeight: 700, position: 'right' }} />
+                                {/* Per-coder lines */}
+                                {coders.slice(0, 5).map((c, i) => (
+                                    <Line key={c} type="monotone" dataKey={c} stroke={COLORS[i % COLORS.length]} strokeWidth={2}
+                                        dot={{ r: 3, fill: COLORS[i % COLORS.length] }} connectNulls name={c} />
+                                ))}
+                                {/* Overall avg line (thick) */}
+                                <Line type="monotone" dataKey="avg_all" stroke="#1e1b4b" strokeWidth={3}
+                                    dot={{ r: 4, fill: '#1e1b4b', stroke: '#fff', strokeWidth: 2 }} name="เฉลี่ยรวม" />
+                            </LineChart>
+                        </ResponsiveContainer>
+
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '10px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ width: '16px', height: '3px', background: '#1e1b4b', borderRadius: '2px' }} />
+                                <span style={{ fontSize: '10px', color: C.sub, fontWeight: 700 }}>เฉลี่ยรวม</span>
+                            </div>
+                            {coders.slice(0, 5).map((c, i) => (
+                                <div key={c} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
+                                    <span style={{ fontSize: '9px', color: C.sub, fontWeight: 600, maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</span>
+                                </div>
+                            ))}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ width: '16px', height: '2px', background: '#f43f5e', borderRadius: '2px', borderTop: '2px dashed #f43f5e' }} />
+                                <span style={{ fontSize: '10px', color: '#f43f5e', fontWeight: 700 }}>เป้า {target} วัน</span>
+                            </div>
+                        </div>
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                💰 SECTION 8 — Revenue Recovery Tracker
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const rec = state.medRecRecovery;
+                if (!rec?.summary?.total_flagged) return null;
+                const s = rec.summary;
+                const cats = rec.categories || [];
+                const rw = rec.rw_impact || {};
+
+                return (
+                    <Section color="#059669" icon="💰" title="Revenue Recovery Tracker" sub="ติดตามผลจาก AI แนะนำ DRG Optimization (30 วัน)" badge="AI Follow-up">
+                        {/* Funnel KPIs */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0', marginBottom: '20px', flexWrap: 'wrap' }}>
+                            {[
+                                { label: 'AI แนะนำ', value: s.total_flagged, icon: '🤖', color: '#7c3aed', sub: 'เคสที่ AI ตรวจพบ' },
+                                null, // arrow
+                                { label: 'Coder แก้ไข', value: s.total_actioned, icon: '✅', color: '#059669', sub: `${s.conversion_rate}% conversion` },
+                                null, // arrow
+                                { label: 'Revenue Recovered', value: `฿${(s.recovered_revenue / 1000).toFixed(0)}K`, icon: '💰', color: '#f59e0b', sub: 'ประมาณการ' },
+                            ].map((item, i) => item === null ? (
+                                <div key={i} style={{ fontSize: '24px', color: C.muted, padding: '0 8px', fontWeight: 900 }}>→</div>
+                            ) : (
+                                <div key={i} style={{ textAlign: 'center', padding: '14px 20px', borderRadius: '16px', background: `${item.color}08`, border: `2px solid ${item.color}20`, minWidth: '130px' }}>
+                                    <span style={{ fontSize: '20px' }}>{item.icon}</span>
+                                    <p style={{ margin: '4px 0 0', fontSize: '10px', fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{item.label}</p>
+                                    <p style={{ margin: '4px 0 0', fontSize: '28px', fontWeight: 900, color: item.color, lineHeight: 1 }}>{typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</p>
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: C.sub, fontWeight: 600 }}>{item.sub}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Conversion Rate Gauge */}
+                        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
+                            <div style={{ width: '200px', textAlign: 'center' }}>
+                                <div style={{ position: 'relative', height: '12px', borderRadius: '99px', background: '#e2e8f0', overflow: 'hidden' }}>
+                                    <div style={{
+                                        height: '100%', borderRadius: '99px', transition: 'width 0.8s ease',
+                                        width: `${Math.min(s.conversion_rate, 100)}%`,
+                                        background: s.conversion_rate >= 80 ? 'linear-gradient(90deg, #059669, #10b981)' : s.conversion_rate >= 50 ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : 'linear-gradient(90deg, #ef4444, #f43f5e)',
+                                    }} />
+                                </div>
+                                <p style={{ margin: '4px 0 0', fontSize: '11px', fontWeight: 800, color: s.conversion_rate >= 80 ? '#059669' : s.conversion_rate >= 50 ? '#f59e0b' : '#ef4444' }}>
+                                    Conversion Rate: {s.conversion_rate}%
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Category Breakdown */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+                            {cats.map((cat, i) => (
+                                <div key={i} style={{ padding: '14px', borderRadius: '14px', background: C.bg, border: `1px solid ${C.border}` }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                        <span style={{ fontSize: '16px' }}>{cat.icon}</span>
+                                        <span style={{ fontSize: '12px', fontWeight: 800, color: C.text }}>{cat.type}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                                        <span style={{ fontSize: '10px', color: C.muted }}>แนะนำ <b style={{ color: '#7c3aed' }}>{cat.flagged}</b></span>
+                                        <span style={{ fontSize: '10px', color: C.muted }}>แก้ไข <b style={{ color: '#059669' }}>{cat.actioned}</b></span>
+                                        <span style={{ fontSize: '10px', fontWeight: 800, color: cat.rate >= 80 ? '#059669' : cat.rate >= 50 ? '#f59e0b' : '#ef4444' }}>{cat.rate}%</span>
+                                    </div>
+                                    <div style={{ height: '6px', borderRadius: '99px', background: '#e2e8f0', overflow: 'hidden' }}>
+                                        <div style={{ height: '100%', width: `${Math.min(cat.rate, 100)}%`, background: cat.rate >= 80 ? '#059669' : cat.rate >= 50 ? '#f59e0b' : '#ef4444', borderRadius: '99px', transition: 'width 0.6s ease' }} />
+                                    </div>
+                                    {cat.revenue > 0 && (
+                                        <p style={{ margin: '6px 0 0', fontSize: '11px', fontWeight: 800, color: '#059669' }}>
+                                            💰 ฿{cat.revenue.toLocaleString()}
+                                        </p>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* RW Impact Summary */}
+                        {rw.total_cases > 0 && (
+                            <div style={{ padding: '12px 16px', borderRadius: '12px', background: 'rgba(5,150,105,0.04)', border: '1px solid rgba(5,150,105,0.12)' }}>
+                                <p style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: '#059669', marginBottom: '6px' }}>📊 RW Impact Summary (30 วัน)</p>
+                                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px' }}>
+                                    <span>📁 {rw.total_cases} เคส DRG</span>
+                                    <span style={{ color: '#059669' }}>📈 RW เพิ่ม {rw.rw_increased} เคส (+฿{rw.rw_gain?.toLocaleString()})</span>
+                                    <span style={{ color: '#ef4444' }}>📉 RW ลด {rw.rw_decreased} เคส (-฿{rw.rw_loss?.toLocaleString()})</span>
+                                    <span style={{ fontWeight: 800, color: rw.rw_gain > rw.rw_loss ? '#059669' : '#ef4444' }}>
+                                        สุทธิ: {rw.rw_gain > rw.rw_loss ? '+' : '-'}฿{Math.abs((rw.rw_gain || 0) - (rw.rw_loss || 0)).toLocaleString()}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                🧬 SECTION 9 — Diagnosis Depth Analysis (Nested Donut per Coder)
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const hm = state.medRecHeatmap;
+                if (!hm?.coders?.length) return null;
+
+                const DEPTH_COLORS = ['#7c3aed', '#0ea5e9', '#f59e0b', '#10b981'];
+                const DEPTH_LABELS = ['PDx (หลัก)', 'CC (ร่วม)', 'MCC (แทรกซ้อน)', 'Procedure (หัตถการ)'];
+
+                // Aggregate per-coder depth from heatmap wards data
+                const coderDepth = hm.coders.map(c => {
+                    let totalCases = 0, sumPdx = 0, sumCc = 0, sumMcc = 0, sumProc = 0;
+                    for (const wd of Object.values(c.wards || {})) {
+                        totalCases += wd.cases;
+                        sumPdx += (wd.pdx || 0) * wd.cases;
+                        sumCc += (wd.cc || 0) * wd.cases;
+                        sumMcc += (wd.mcc || 0) * wd.cases;
+                        sumProc += (wd.proc || 0) * wd.cases;
+                    }
+                    const avg = (v) => totalCases > 0 ? Math.round(v / totalCases * 100) / 100 : 0;
+                    return {
+                        name: c.name, cases: totalCases,
+                        pdx: avg(sumPdx), cc: avg(sumCc), mcc: avg(sumMcc), proc: avg(sumProc),
+                        total: avg(sumPdx + sumCc + sumMcc + sumProc),
+                    };
+                }).filter(c => c.cases >= 5).sort((a, b) => b.total - a.total);
+
+                if (!coderDepth.length) return null;
+
+                // Hospital average
+                const hospAvg = {
+                    pdx: Math.round(coderDepth.reduce((s, c) => s + c.pdx * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    cc: Math.round(coderDepth.reduce((s, c) => s + c.cc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    mcc: Math.round(coderDepth.reduce((s, c) => s + c.mcc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                    proc: Math.round(coderDepth.reduce((s, c) => s + c.proc * c.cases, 0) / Math.max(1, coderDepth.reduce((s, c) => s + c.cases, 0)) * 100) / 100,
+                };
+
+                return (
+                    <Section color="#7c3aed" icon="🧬" title="Diagnosis Depth Analysis" sub="ความลึกของ Coding แยก Coder — PDx / CC / MCC / Procedure (30 วัน)" badge="Per Coder">
+                        {/* Legend */}
+                        <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                            {DEPTH_LABELS.map((l, i) => (
+                                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                    <div style={{ width: '12px', height: '12px', borderRadius: '3px', background: DEPTH_COLORS[i] }} />
+                                    <span style={{ fontSize: '10px', fontWeight: 700, color: C.sub }}>{l}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Donut Charts Grid */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                            {/* Hospital Average */}
+                            <div style={{ padding: '16px', borderRadius: '16px', background: 'linear-gradient(135deg, rgba(124,58,237,0.06), rgba(124,58,237,0.02))', border: '2px solid rgba(124,58,237,0.2)', textAlign: 'center' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 900, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em' }}>🏥 ค่าเฉลี่ย รพ.</p>
+                                <ResponsiveContainer width="100%" height={120}>
+                                    <PieChart>
+                                        <Pie data={[{ v: hospAvg.pdx }, { v: hospAvg.cc }, { v: hospAvg.mcc }, { v: hospAvg.proc }].filter(d => d.v > 0)}
+                                            dataKey="v" cx="50%" cy="50%" innerRadius={30} outerRadius={50} paddingAngle={3} strokeWidth={0}>
+                                            {[hospAvg.pdx, hospAvg.cc, hospAvg.mcc, hospAvg.proc].filter(v => v > 0).map((_, i) => <Cell key={i} fill={DEPTH_COLORS[i]} />)}
+                                        </Pie>
+                                    </PieChart>
+                                </ResponsiveContainer>
+                                <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: '#7c3aed' }}>{(hospAvg.pdx + hospAvg.cc + hospAvg.mcc + hospAvg.proc).toFixed(1)}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: C.muted }}>dx/case</p>
+                            </div>
+
+                            {/* Per Coder */}
+                            {coderDepth.slice(0, 5).map((c, ci) => {
+                                const pieData = [{ v: c.pdx, l: 'PDx' }, { v: c.cc, l: 'CC' }, { v: c.mcc, l: 'MCC' }, { v: c.proc, l: 'Proc' }].filter(d => d.v > 0);
+                                const isLow = c.total < (hospAvg.pdx + hospAvg.cc + hospAvg.mcc + hospAvg.proc) * 0.7;
+                                return (
+                                    <div key={ci} style={{ padding: '14px', borderRadius: '14px', background: isLow ? 'rgba(239,68,68,0.04)' : C.bg, border: `1px solid ${isLow ? 'rgba(239,68,68,0.2)' : C.border}`, textAlign: 'center' }}>
+                                        <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 800, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {c.name}
+                                        </p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: C.muted }}>{c.cases} เคส</p>
+                                        <ResponsiveContainer width="100%" height={100}>
+                                            <PieChart>
+                                                <Pie data={pieData} dataKey="v" cx="50%" cy="50%" innerRadius={24} outerRadius={42} paddingAngle={3} strokeWidth={0}>
+                                                    {pieData.map((_, i) => <Cell key={i} fill={DEPTH_COLORS[i]} />)}
+                                                </Pie>
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                        <p style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: isLow ? '#ef4444' : '#7c3aed' }}>{c.total.toFixed(1)}</p>
+                                        <p style={{ margin: 0, fontSize: '9px', color: C.muted }}>dx/case</p>
+                                        {isLow && <span style={{ fontSize: '8px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '1px 6px', borderRadius: '99px' }}>ต่ำกว่าค่าเฉลี่ย</span>}
+                                        {/* Breakdown bar */}
+                                        <div style={{ display: 'flex', height: '6px', borderRadius: '99px', overflow: 'hidden', marginTop: '6px', gap: '1px' }}>
+                                            {[c.pdx, c.cc, c.mcc, c.proc].map((v, i) => v > 0 ? <div key={i} style={{ flex: v, background: DEPTH_COLORS[i], borderRadius: '99px' }} /> : null)}
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '8px', color: C.muted }}>
+                                            <span>PDx {c.pdx}</span>
+                                            <span>CC {c.cc}</span>
+                                            <span>MCC {c.mcc}</span>
+                                            <span>Proc {c.proc}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                ⚖️ SECTION 10 — Workload Balance Gauge
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            {(() => {
+                const codersFiscal = today.ipd_coders_fiscal || [];
+                if (codersFiscal.length < 2) return null;
+
+                const cases = codersFiscal.map(c => ({ name: c.name, current: c.current_month_total || 0, prev: c.prev_month_total || 0, fiscal: c.fiscal_total || 0, cc: c.cc_rate || 0 }));
+                const maxCurrent = Math.max(...cases.map(c => c.current), 1);
+                const minCurrent = Math.min(...cases.map(c => c.current));
+                const avgCurrent = Math.round(cases.reduce((s, c) => s + c.current, 0) / cases.length);
+                const totalCurrent = cases.reduce((s, c) => s + c.current, 0);
+
+                // Gini coefficient (0=perfect equality, 1=perfect inequality)
+                const sorted = [...cases].sort((a, b) => a.current - b.current);
+                const n = sorted.length;
+                let giniNum = 0;
+                sorted.forEach((c, i) => { giniNum += (2 * (i + 1) - n - 1) * c.current; });
+                const gini = totalCurrent > 0 ? Math.round(Math.abs(giniNum) / (n * totalCurrent) * 100) / 100 : 0;
+
+                const isBalanced = gini < 0.2;
+                const isModerate = gini >= 0.2 && gini < 0.4;
+                const isImbalanced = gini >= 0.4;
+
+                const statusColor = isBalanced ? '#059669' : isModerate ? '#f59e0b' : '#ef4444';
+                const statusLabel = isBalanced ? 'สมดุลดี' : isModerate ? 'ค่อนข้างเบี่ยง' : 'ไม่สมดุล';
+                const statusIcon = isBalanced ? '✅' : isModerate ? '⚠️' : '🚨';
+
+                // AI recommendations
+                const recs = [];
+                const overloaded = cases.filter(c => c.current > avgCurrent * 1.5 && avgCurrent > 0);
+                const underloaded = cases.filter(c => c.current < avgCurrent * 0.3 && avgCurrent > 0);
+                if (overloaded.length > 0) recs.push(`${overloaded.map(c => c.name.split(' ')[0]).join(', ')} รับงานมากเกินไป (>${Math.round(avgCurrent * 1.5)} เคส) — ควรกระจายงาน`);
+                if (underloaded.length > 0) recs.push(`${underloaded.map(c => c.name.split(' ')[0]).join(', ')} รับงานน้อยมาก (<${Math.round(avgCurrent * 0.3)} เคส) — เพิ่ม Assignment`);
+                if (maxCurrent > 0 && minCurrent === 0) recs.push('มี Coder ที่ยังไม่ได้รับ Assignment เดือนนี้เลย — ตรวจสอบ');
+                if (isBalanced && recs.length === 0) recs.push('การกระจายงานสมดุลดี — รักษามาตรฐาน');
+
+                return (
+                    <Section color="#6366f1" icon="⚖️" title="Workload Balance" sub="สมดุลงาน IPD Coder เดือนนี้ — Gini Coefficient" badge="AI Balancer">
+                        {/* Balance Gauge */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                            {/* Gini Gauge */}
+                            <div style={{ textAlign: 'center' }}>
+                                <svg width="140" height="80" viewBox="0 0 140 80">
+                                    {/* Background arc */}
+                                    <path d="M 15 70 A 55 55 0 0 1 125 70" fill="none" stroke="#e2e8f0" strokeWidth="12" strokeLinecap="round" />
+                                    {/* Green zone (0-0.2) */}
+                                    <path d="M 15 70 A 55 55 0 0 1 37 25" fill="none" stroke="#059669" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Yellow zone (0.2-0.4) */}
+                                    <path d="M 37 25 A 55 55 0 0 1 70 15" fill="none" stroke="#f59e0b" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Red zone (0.4-1.0) */}
+                                    <path d="M 70 15 A 55 55 0 0 1 125 70" fill="none" stroke="#ef4444" strokeWidth="12" strokeLinecap="round" opacity="0.3" />
+                                    {/* Needle */}
+                                    {(() => {
+                                        const angle = -180 + (gini * 180); // 0=left, 1=right
+                                        const rad = (angle * Math.PI) / 180;
+                                        const nx = 70 + 45 * Math.cos(rad);
+                                        const ny = 70 + 45 * Math.sin(rad);
+                                        return <line x1="70" y1="70" x2={nx} y2={ny} stroke={statusColor} strokeWidth="3" strokeLinecap="round" />;
+                                    })()}
+                                    <circle cx="70" cy="70" r="6" fill={statusColor} />
+                                    <circle cx="70" cy="70" r="3" fill="white" />
+                                </svg>
+                                <p style={{ margin: '4px 0 0', fontSize: '20px', fontWeight: 900, color: statusColor }}>{gini.toFixed(2)}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: C.muted, fontWeight: 600 }}>Gini Index</p>
+                                <span style={{ fontSize: '11px', fontWeight: 800, color: statusColor, background: `${statusColor}12`, padding: '2px 10px', borderRadius: '99px' }}>
+                                    {statusIcon} {statusLabel}
+                                </span>
+                            </div>
+
+                            {/* Stats */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {[
+                                    { label: 'Coder ทั้งหมด', value: `${cases.length} คน`, color: '#6366f1' },
+                                    { label: 'เคสรวมเดือนนี้', value: `${totalCurrent} เคส`, color: '#6366f1' },
+                                    { label: 'เฉลี่ยต่อคน', value: `${avgCurrent} เคส`, color: '#0284c7' },
+                                    { label: 'สูงสุด', value: `${maxCurrent} เคส`, color: maxCurrent > avgCurrent * 2 ? '#ef4444' : '#059669' },
+                                    { label: 'ต่ำสุด', value: `${minCurrent} เคส`, color: minCurrent === 0 ? '#ef4444' : '#059669' },
+                                ].map((s, i) => (
+                                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '20px', fontSize: '11px' }}>
+                                        <span style={{ color: C.muted, fontWeight: 600 }}>{s.label}</span>
+                                        <span style={{ fontWeight: 800, color: s.color }}>{s.value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Per-Coder Bar Chart */}
+                        <div style={{ marginBottom: '16px' }}>
+                            {cases.map((c, i) => {
+                                const pct = maxCurrent > 0 ? (c.current / maxCurrent) * 100 : 0;
+                                const isOver = c.current > avgCurrent * 1.5 && avgCurrent > 0;
+                                const isUnder = c.current < avgCurrent * 0.3 && avgCurrent > 0;
+                                const barColor = isOver ? '#ef4444' : isUnder ? '#f59e0b' : '#6366f1';
+                                return (
+                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                        <span style={{ fontSize: '10px', fontWeight: 700, color: C.text, width: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                            {c.name}
+                                        </span>
+                                        <div style={{ flex: 1, height: '20px', background: '#f1f5f9', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
+                                            <div style={{ height: '100%', width: `${pct}%`, background: `linear-gradient(90deg, ${barColor}, ${barColor}cc)`, borderRadius: '6px', transition: 'width 0.6s ease', display: 'flex', alignItems: 'center', paddingLeft: '6px' }}>
+                                                {pct > 20 && <span style={{ fontSize: '10px', fontWeight: 800, color: '#fff' }}>{c.current}</span>}
+                                            </div>
+                                            {/* Average line */}
+                                            <div style={{ position: 'absolute', left: `${(avgCurrent / maxCurrent) * 100}%`, top: 0, bottom: 0, width: '2px', background: '#1e1b4b', opacity: 0.4 }} />
+                                        </div>
+                                        <span style={{ fontSize: '10px', fontWeight: 800, color: barColor, minWidth: '30px', textAlign: 'right' }}>
+                                            {pct <= 20 ? c.current : ''}
+                                        </span>
+                                        {isOver && <span style={{ fontSize: '8px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '1px 4px', borderRadius: '99px', flexShrink: 0 }}>สูง</span>}
+                                        {isUnder && <span style={{ fontSize: '8px', fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', padding: '1px 4px', borderRadius: '99px', flexShrink: 0 }}>ต่ำ</span>}
+                                    </div>
+                                );
+                            })}
+                            <div style={{ fontSize: '9px', color: C.muted, textAlign: 'right', marginTop: '4px' }}>
+                                เส้นดำ = ค่าเฉลี่ย ({avgCurrent} เคส/คน)
+                            </div>
+                        </div>
+
+                        {/* AI Recommendations */}
+                        {recs.length > 0 && (
+                            <div style={{ padding: '12px 14px', borderRadius: '12px', background: `${statusColor}06`, border: `1px solid ${statusColor}15` }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                    <span style={{ fontSize: '14px' }}>🤖</span>
+                                    <span style={{ fontSize: '11px', fontWeight: 800, color: statusColor }}>AI Workload Balancer</span>
+                                </div>
+                                {recs.map((r, i) => (
+                                    <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '4px', fontSize: '11px', color: C.text, fontWeight: 600 }}>
+                                        <span style={{ color: statusColor, fontWeight: 900, flexShrink: 0 }}>{i + 1}.</span>
+                                        <span>{r}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </Section>
+                );
+            })()}
+            </SubErrorBoundary>
+
+            {/* ══════════════════════════════════════════════
+                📋 SECTION 11 — DRG Optimization Kanban Board
+            ══════════════════════════════════════════════ */}
+            <SubErrorBoundary>
+            <KanbanBoard drgOpt={drgOpt} />
+            </SubErrorBoundary>
 
         </div>
+    );
+}
+
+// ── Kanban Board Component ──────────────────────────────────
+const COLUMNS = [
+    { key: 'pending', label: '⏳ Pending Review', color: '#7c3aed', bg: 'rgba(124,58,237,0.04)' },
+    { key: 'review', label: '🔍 Under Review', color: '#0284c7', bg: 'rgba(2,132,199,0.04)' },
+    { key: 'completed', label: '✅ Completed', color: '#059669', bg: 'rgba(5,150,105,0.04)' },
+    { key: 'recovered', label: '💰 Revenue Recovered', color: '#f59e0b', bg: 'rgba(245,158,11,0.04)' },
+];
+
+function KanbanBoard({ drgOpt }) {
+    const [cards, setCards] = useState([]);
+    const [summary, setSummary] = useState({});
+    const [draggedAn, setDraggedAn] = useState(null);
+    const [syncing, setSyncing] = useState(false);
+
+    // Fetch kanban state
+    const fetchKanban = useCallback(async () => {
+        try {
+            const r = await fetch('/api/medrec/kanban', { credentials: 'include' });
+            if (r.ok) { const d = await r.json(); setCards(d.cards || []); setSummary(d.summary || {}); }
+        } catch (e) { /* silent */ }
+    }, []);
+
+    useEffect(() => { fetchKanban(); }, [fetchKanban]);
+
+    // Sync from DRG optimization
+    const syncFromAI = useCallback(async () => {
+        if (!drgOpt) return;
+        setSyncing(true);
+        const cases = [
+            ...(drgOpt.pdxOptimization || []).map(c => ({ ...c, category: 'pdx' })),
+            ...(drgOpt.mccMissing || []).map(c => ({ ...c, category: 'mcc' })),
+            ...(drgOpt.labAlerts || []).map(c => ({ ...c, category: 'lab' })),
+        ];
+        try {
+            await fetch('/api/medrec/kanban/sync', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cases }),
+            });
+            await fetchKanban();
+        } catch (e) { /* silent */ }
+        setSyncing(false);
+    }, [drgOpt, fetchKanban]);
+
+    // Move card to new status
+    const moveCard = useCallback(async (an, newStatus) => {
+        try {
+            await fetch(`/api/medrec/kanban/${an}`, {
+                method: 'PATCH', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus }),
+            });
+            setCards(prev => prev.map(c => c.an === an ? { ...c, status: newStatus } : c));
+            setSummary(prev => {
+                const next = { ...prev };
+                const card = cards.find(c => c.an === an);
+                if (card) { next[card.status] = Math.max(0, (next[card.status] || 0) - 1); next[newStatus] = (next[newStatus] || 0) + 1; }
+                return next;
+            });
+        } catch (e) { /* silent */ }
+    }, [cards]);
+
+    // Drag handlers
+    const onDragStart = useCallback((e, an) => { setDraggedAn(an); e.dataTransfer.effectAllowed = 'move'; }, []);
+    const onDragOver = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
+    const onDrop = useCallback((e, colKey) => { e.preventDefault(); if (draggedAn) { moveCard(draggedAn, colKey); setDraggedAn(null); } }, [draggedAn, moveCard]);
+
+    const totalCards = cards.length;
+    const totalRev = cards.filter(c => c.status === 'recovered').reduce((s, c) => s + (c.est_revenue || 0), 0);
+
+    return (
+        <Section color="#ec4899" icon="📋" title="DRG Optimization — Kanban Board" sub="ติดตาม AI Recommendations → Coder Action → Revenue Recovery" badge="Drag & Drop">
+            {/* Sync Button + Stats */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: C.muted }}>
+                    <span>📋 {totalCards} เคส</span>
+                    <span>⏳ {summary.pending || 0}</span>
+                    <span>🔍 {summary.review || 0}</span>
+                    <span>✅ {summary.completed || 0}</span>
+                    <span>💰 {summary.recovered || 0} (฿{totalRev.toLocaleString()})</span>
+                </div>
+                <button onClick={syncFromAI} disabled={syncing}
+                    style={{ padding: '6px 14px', borderRadius: '99px', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#fff', background: 'linear-gradient(135deg, #ec4899, #8b5cf6)', opacity: syncing ? 0.6 : 1 }}>
+                    {syncing ? '⏳ กำลัง Sync...' : '🔄 Sync จาก AI'}
+                </button>
+            </div>
+
+            {/* Kanban Columns */}
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${COLUMNS.length}, 1fr)`, gap: '10px', minHeight: '300px' }}>
+                {COLUMNS.map(col => {
+                    const colCards = cards.filter(c => c.status === col.key);
+                    return (
+                        <div key={col.key}
+                            onDragOver={onDragOver}
+                            onDrop={(e) => onDrop(e, col.key)}
+                            style={{
+                                background: col.bg, borderRadius: '14px', padding: '10px',
+                                border: `2px dashed ${col.color}25`, minHeight: '280px',
+                                transition: 'border-color 0.2s',
+                            }}
+                        >
+                            {/* Column Header */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', padding: '0 4px' }}>
+                                <span style={{ fontSize: '12px', fontWeight: 900, color: col.color }}>{col.label}</span>
+                                <span style={{ fontSize: '11px', fontWeight: 800, color: col.color, background: `${col.color}15`, padding: '2px 8px', borderRadius: '99px' }}>
+                                    {colCards.length}
+                                </span>
+                            </div>
+
+                            {/* Cards */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {colCards.slice(0, 15).map(card => (
+                                    <div key={card.an}
+                                        draggable
+                                        onDragStart={(e) => onDragStart(e, card.an)}
+                                        style={{
+                                            padding: '8px 10px', borderRadius: '10px',
+                                            background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(4px)',
+                                            border: `1px solid ${col.color}20`,
+                                            cursor: 'grab', fontSize: '10px',
+                                            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                                            transition: 'transform 0.15s, box-shadow 0.15s',
+                                        }}
+                                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = `0 4px 12px ${col.color}20`; }}
+                                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)'; }}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                                            <span style={{ fontWeight: 800, color: C.text, fontFamily: 'JetBrains Mono, monospace' }}>AN:{card.an}</span>
+                                            <span style={{ fontSize: '9px', fontWeight: 700, color: card.category === 'pdx' ? '#7c3aed' : card.category === 'mcc' ? '#f59e0b' : '#0ea5e9', background: `${card.category === 'pdx' ? '#7c3aed' : card.category === 'mcc' ? '#f59e0b' : '#0ea5e9'}12`, padding: '1px 5px', borderRadius: '99px' }}>
+                                                {card.category === 'pdx' ? 'PDx' : card.category === 'mcc' ? 'CC/MCC' : 'Lab'}
+                                            </span>
+                                        </div>
+                                        <p style={{ margin: 0, fontWeight: 600, color: C.sub, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {card.patient_name || '—'}
+                                        </p>
+                                        <p style={{ margin: '2px 0 0', color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '9px' }}>
+                                            {card.ward || '—'}
+                                        </p>
+                                        {card.est_revenue > 0 && (
+                                            <span style={{ fontSize: '9px', fontWeight: 800, color: '#059669' }}>+฿{card.est_revenue.toLocaleString()}</span>
+                                        )}
+                                    </div>
+                                ))}
+                                {colCards.length === 0 && (
+                                    <div style={{ padding: '20px', textAlign: 'center', color: `${col.color}60`, fontSize: '11px', fontWeight: 600, borderRadius: '8px', border: `1px dashed ${col.color}20` }}>
+                                        ลาก card มาวางที่นี่
+                                    </div>
+                                )}
+                                {colCards.length > 15 && (
+                                    <div style={{ textAlign: 'center', fontSize: '10px', color: C.muted, fontWeight: 600 }}>+{colCards.length - 15} เคส</div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </Section>
     );
 }
 

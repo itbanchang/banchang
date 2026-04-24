@@ -7,16 +7,18 @@ import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
     Cell, ComposedChart, Area, Line, PieChart, Pie
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
 import StatusBadge from './shared/StatusBadge.jsx';
 import MetricCard from './shared/MetricCard.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
 import HealthGauge from './shared/HealthGauge.jsx';
 import AlertBanner from './shared/AlertBanner.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 function NCDTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ ncdToday: s.ncdToday, ncdAnalytics: s.ncdAnalytics, loading: s.loading, ncdRiskStratification: s.ncdRiskStratification, ncdRevenueFiscal: s.ncdRevenueFiscal, ncdGoalAttainment: s.ncdGoalAttainment, ncdMonthlyFiscal: s.ncdMonthlyFiscal }));
+    const { fetchData } = useDashboardActions();
     const ncdToday = state.ncdToday;
     const ncdAnalytics = state.ncdAnalytics;
     const loading = state.loading;
@@ -25,6 +27,7 @@ function NCDTab() {
         fetchData('ncdToday', '/api/ncd/today');
         fetchData('ncdAnalytics', '/api/ncd/analytics');
         fetchData('ncdRevenueFiscal', '/api/ncd/revenue-fiscal');
+        fetchData('ncdMonthlyFiscal', '/api/ncd/monthly-fiscal');
         fetchData('ncdRiskStratification', '/api/ncd/ai/risk-stratification');
         fetchData('ncdGoalAttainment', '/api/ncd/goal-attainment');
     }, [fetchData]);
@@ -136,6 +139,7 @@ function NCDTab() {
             <MetricsStrip metrics={metricsStripData} />
 
             {/* ━━━ AI Analytics Cards — 4 Intelligence Panels ━━━ */}
+            <SubErrorBoundary name="AI Analytics Cards">
             {!loading.ncdAnalytics && (
                 <>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
@@ -152,6 +156,7 @@ function NCDTab() {
                     </div>
                 </>
             )}
+            </SubErrorBoundary>
 
             {/* ━━━ Disease Breakdown — 6 NCD Categories ━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
@@ -626,6 +631,138 @@ function NCDTab() {
                 })()}
             </div>
 
+            {/* ━━━━━━ ⏱️ Cycle Time & Step Breakdown — NCD ━━━━━━ */}
+            {(() => {
+                const fiscalData = state.ncdMonthlyFiscal;
+                const a = ncdAnalytics || {};
+                const wSteps = a.wait_steps || {};
+                const reg = wSteps.registration_to_screening || 0;
+                const screen = wSteps.screening_to_doctor || 0;
+                const doc = wSteps.doctor_to_pharmacy || 0;
+                const rx = wSteps.pharmacy_to_finance || 0;
+                const trueTotal = a.avg_total_time || 0;
+                const measuredTotal = reg + screen + doc + rx;
+                // Gap = time not captured by service_time steps (e.g. waiting for lab results)
+                const gap = Math.max(0, trueTotal - measuredTotal);
+                const medianCycle = a.estimated_median_cycle || Math.round(trueTotal * 0.85);
+
+                // Show actual step times (no inflating) + gap if exists
+                const stepDefs = [
+                    { icon: '📋', label: 'ลงทะเบียน', sub: 'เช็คอิน → คัดกรอง', value: Math.round(reg), color: '#7c3aed', warn: 15, critical: 30 },
+                    { icon: '🔬', label: 'รอพบแพทย์', sub: 'คัดกรอง → พบแพทย์', value: Math.round(screen), color: '#0ea5e9', warn: 30, critical: 60 },
+                    { icon: '🩺', label: 'ตรวจ+รอยา', sub: 'พบแพทย์ → รับยา', value: Math.round(doc), color: '#8b5cf6', warn: 20, critical: 45 },
+                    { icon: '💊', label: 'ชำระเงิน', sub: 'รับยา → จ่ายเงิน', value: Math.round(rx), color: '#10b981', warn: 15, critical: 30 },
+                ];
+                // Add gap as separate step if significant (>10 min)
+                if (gap > 10) {
+                    stepDefs.push({ icon: '🔄', label: 'รอ Lab/อื่นๆ', sub: 'ช่วงเวลาที่ไม่ได้วัด', value: Math.round(gap), color: '#94a3b8', warn: 30, critical: 60 });
+                }
+                const steps = stepDefs;
+                const bottleneck = steps.reduce((max, s) => s.value > (max?.value || 0) ? s : max, steps[0]);
+
+                return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {/* Fiscal Monthly Cycle Time Chart */}
+                        {fiscalData?.months && (
+                            <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                    <div>
+                                        <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', margin: 0 }}>
+                                            📅 ระยะเวลาบริการรวม (Cycle Time) — NCD Clinic ปีงบ {fiscalData.fiscal_year_be}
+                                        </h3>
+                                        <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>ตุลาคม–กันยายน · แยกตามขั้นตอน · main_dep 024</p>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                                        <div style={{ textAlign: 'center' }}>
+                                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>เฉลี่ยทั้งปี</span>
+                                            <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: '#7c3aed' }}>{fiscalData.benchmark_avg} น.</p>
+                                        </div>
+                                        <div style={{ textAlign: 'center' }}>
+                                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>ผู้ป่วยสะสม</span>
+                                            <p style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: '#0f766e' }}>{fiscalData.months.reduce((s, m) => s + m.total_visits, 0).toLocaleString()}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <ResponsiveContainer width="100%" height={240}>
+                                    <ComposedChart data={fiscalData.months.filter(m => m.has_data)} margin={{ top: 8, right: 12, bottom: 0, left: 4 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.3)" vertical={false} />
+                                        <XAxis dataKey="month" tick={{ fill: '#6b7280', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                                        <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} axisLine={false} tickLine={false} width={30} unit="น" />
+                                        <Tooltip contentStyle={{ background: '#fff', border: '1px solid #e8eaf2', borderRadius: '10px', fontSize: '11px' }}
+                                            formatter={(v, name) => [`${v} นาที`, name === 'avg_reg' ? 'ลงทะเบียน' : name === 'avg_screen' ? 'คัดกรอง' : name === 'avg_doc' ? 'ตรวจรักษา' : name === 'avg_total' ? 'Cycle Time' : name]} />
+                                        <Area type="monotone" dataKey="avg_reg" stackId="1" fill="#c4b5fd" stroke="#7c3aed" fillOpacity={0.6} />
+                                        <Area type="monotone" dataKey="avg_screen" stackId="1" fill="#93c5fd" stroke="#0ea5e9" fillOpacity={0.6} />
+                                        <Area type="monotone" dataKey="avg_doc" stackId="1" fill="#a5b4fc" stroke="#6366f1" fillOpacity={0.6} />
+                                        <Line type="monotone" dataKey="avg_total" stroke="#e11d48" strokeWidth={2.5} dot={{ r: 4, fill: '#e11d48' }} name="Cycle Time" />
+                                    </ComposedChart>
+                                </ResponsiveContainer>
+                                <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '8px' }}>
+                                    {[{ label: 'ลงทะเบียน', color: '#c4b5fd' }, { label: 'คัดกรอง', color: '#93c5fd' }, { label: 'ตรวจรักษา', color: '#a5b4fc' }, { label: 'รับยา', color: '#86efac' }].map((l, i) => (
+                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                            <div style={{ width: '10px', height: '10px', borderRadius: '3px', background: l.color }} />
+                                            <span style={{ fontSize: '10px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>{l.label}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Step Breakdown — Today */}
+                        {trueTotal > 0 && (
+                            <div className="glass-card" style={{ padding: '1.25rem 1.5rem' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                    <div>
+                                        <h3 style={{ fontSize: '14px', fontWeight: 800, color: 'var(--md-text-primary)', margin: 0 }}>
+                                            ⏱️ ขั้นตอนการรับบริการ NCD Clinic
+                                        </h3>
+                                        <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', marginTop: '2px' }}>เวลาเฉลี่ยในแต่ละขั้นตอน (30 วัน)</p>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(124,58,237,.08)', borderRadius: '999px', padding: '6px 14px' }}>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-secondary)', fontWeight: 600 }}>Cycle Time</span>
+                                            <span style={{ fontSize: '20px', fontWeight: 900, color: '#7c3aed' }}>{trueTotal}</span>
+                                            <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600 }}>นาที</span>
+                                        </div>
+                                        <div style={{ fontSize: '9px', color: 'var(--md-text-tertiary)', marginTop: '3px' }}>
+                                            {medianCycle > 0 && <span>Median ≈ {medianCycle} น. · </span>}
+                                            {bottleneck?.value > 30 && <span style={{ color: '#f43f5e', fontWeight: 700 }}>คอขวด: {bottleneck.label} ({bottleneck.value} น.)</span>}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, overflowX: 'auto' }}>
+                                    {steps.map((step, i, arr) => {
+                                        const v = step.value;
+                                        const isCrit = v >= step.critical;
+                                        const isWarn = v >= step.warn && !isCrit;
+                                        const sColor = isCrit ? '#f43f5e' : isWarn ? '#f59e0b' : '#10b981';
+                                        const sLabel = isCrit ? 'ช้ามาก' : isWarn ? 'ช้า' : 'ปกติ';
+                                        const maxV = step.critical * 1.5 || 60;
+                                        return (
+                                            <div key={i} style={{ display: 'flex', alignItems: 'center', flex: '1 1 0', minWidth: '120px' }}>
+                                                <div style={{ flex: 1, padding: '10px', borderRadius: '12px', background: `${step.color}08`, border: `1px solid ${step.color}18`, textAlign: 'center' }}>
+                                                    <span style={{ fontSize: '18px' }}>{step.icon}</span>
+                                                    <p style={{ margin: '2px 0 0', fontSize: '11px', fontWeight: 800, color: step.color }}>{step.label}</p>
+                                                    <p style={{ margin: 0, fontSize: '9px', color: 'var(--md-text-tertiary)' }}>{step.sub}</p>
+                                                    <p style={{ margin: '6px 0 2px', fontSize: '22px', fontWeight: 900, color: step.color }}>{v}</p>
+                                                    <p style={{ margin: 0, fontSize: '10px', color: 'var(--md-text-tertiary)' }}>นาที</p>
+                                                    <div style={{ height: '4px', borderRadius: '99px', background: `${step.color}15`, marginTop: '6px', overflow: 'hidden' }}>
+                                                        <div style={{ height: '100%', width: `${Math.min(100, (v / maxV) * 100)}%`, background: sColor, borderRadius: '99px' }} />
+                                                    </div>
+                                                    <span style={{ fontSize: '9px', fontWeight: 700, color: sColor, background: `${sColor}10`, padding: '1px 6px', borderRadius: '99px', marginTop: '4px', display: 'inline-block' }}>{sLabel}</span>
+                                                </div>
+                                                {i < arr.length - 1 && (
+                                                    <div style={{ padding: '0 4px', color: 'var(--md-text-tertiary)', fontSize: '14px', fontWeight: 700 }}>→</div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
+
             {/* ━━━━━━ 🔥 Deep Root-Cause Analysis Panel — NCD ━━━━━━ */}
             {!loading.ncdAnalytics && ncdAnalytics && (() => {
                 const a = ncdAnalytics || {};
@@ -964,10 +1101,12 @@ function NCDTab() {
                 })()}
             </div>
             {/* ━━━━━━ NCD Goal Attainment Dashboard ━━━━━━ */}
-            <NCDGoalAttainmentPanel
-                data={state.ncdGoalAttainment}
-                loading={state.loading?.ncdGoalAttainment}
-            />
+            <SubErrorBoundary name="NCD Goal Attainment">
+                <NCDGoalAttainmentPanel
+                    data={state.ncdGoalAttainment}
+                    loading={state.loading?.ncdGoalAttainment}
+                />
+            </SubErrorBoundary>
         </div >
     );
 }

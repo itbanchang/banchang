@@ -7,16 +7,19 @@ import {
     ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
     Cell, ComposedChart, Area, Line, PieChart, Pie
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
+import AIServerInsights from './shared/AIServerInsights.jsx';
 import StatusBadge from './shared/StatusBadge.jsx';
 import MetricCard from './shared/MetricCard.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
 import HealthGauge from './shared/HealthGauge.jsx';
 import AlertBanner from './shared/AlertBanner.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 function ThaiMedTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ ttmToday: s.ttmToday, ttmAnalytics: s.ttmAnalytics, loading: s.loading, ttmRevenueFiscal: s.ttmRevenueFiscal, thaimedAI: s.thaimedAI }));
+    const { fetchData } = useDashboardActions();
     const ttmToday = state.ttmToday;
     const ttmAnalytics = state.ttmAnalytics;
     const loading = state.loading;
@@ -25,6 +28,8 @@ function ThaiMedTab() {
         fetchData('ttmToday', '/api/thaimedicine/today');
         fetchData('ttmAnalytics', '/api/thaimedicine/analytics');
         fetchData('ttmRevenueFiscal', '/api/thaimedicine/revenue-fiscal');
+        const tAI = setTimeout(() => fetchData('thaimedAI', '/api/ai/thaimed/optimization'), 300);
+        return () => clearTimeout(tAI);
     }, [fetchData]);
 
     const today = ttmToday || {};
@@ -55,12 +60,15 @@ function ThaiMedTab() {
         let staffingRec = 'กำลังพลเพียงพอต่อโหลดปัจจุบัน';
         let staffingColor = '#10b981';
 
+        // Thai medicine: avg 25 visits/day, session ~60min, typical 3-4 therapists
+        // Overstrained = waiting > avg_daily (backlog exceeds normal daily capacity)
+        const avgDaily = ttmAnalytics?.avg_daily_visits || 25;
         const currentLoad = ttmToday.waiting || 0;
-        if (currentLoad > 10 || nextHourPeak > 5) {
+        if (currentLoad > avgDaily * 0.8 || nextHourPeak > 15) {
             staffingStatus = 'Overstrained';
-            staffingRec = `🚨 ต้องการทีมนวด/ประคบเพิ่ม ${Math.ceil((nextHourPeak + currentLoad) / 3)} ท่าน เพื่อรองรับโหลดในชั่วโมงถัดไป`;
+            staffingRec = `🚨 ต้องการทีมนวด/ประคบเพิ่ม ${Math.ceil(currentLoad / 4)} ท่าน เพื่อรองรับโหลดในชั่วโมงถัดไป`;
             staffingColor = '#f43f5e';
-        } else if (currentLoad > 5) {
+        } else if (currentLoad > avgDaily * 0.4 || nextHourPeak > 8) {
             staffingStatus = 'Tight';
             staffingRec = '⚠️ ควรเฝ้าระวังและเตรียมพร้อมรับเคส Walk-in ใน 30 นาทีถัดไป';
             staffingColor = '#f59e0b';
@@ -86,6 +94,7 @@ function ThaiMedTab() {
     return (
         <div className="space-y-4 animate-fade-in pb-8">
             {/* ━━━━━━ 🧠 Revenue Intelligence Hub ━━━━━━ */}
+            <SubErrorBoundary name="Revenue Intelligence Hub">
             {!loading.ttmRevenueFiscal && state.ttmRevenueFiscal && (() => {
                 const fd = state.ttmRevenueFiscal;
                 const years = fd?.fiscal_years || [];
@@ -208,6 +217,7 @@ function ThaiMedTab() {
                     </div>
                 );
             })()}
+            </SubErrorBoundary>
 
             {/* ━━━ Premium MetricsStrip — 8 KPIs ━━━ */}
             {!loading.ttmToday && ttmToday && (() => {
@@ -234,6 +244,7 @@ function ThaiMedTab() {
             })()}
 
             {/* ━━━ AI Analytics Section — 4 AIInsightCards ━━━ */}
+            <SubErrorBoundary name="AI Analytics Cards">
             {!loading.ttmToday && !loading.ttmAnalytics && (() => {
                 const t = ttmToday || {};
                 const a = ttmAnalytics || {};
@@ -326,6 +337,7 @@ function ThaiMedTab() {
                     </>
                 );
             })()}
+            </SubErrorBoundary>
 
             {/* ━━━ Top Diagnoses (Today) ━━━ */}
             {!loading.ttmToday && ttmToday?.top_diagnoses && ttmToday.top_diagnoses.length > 0 && (
@@ -1093,6 +1105,11 @@ function ThaiMedTab() {
 
             {/* ━━━━━━ TTM Procedure Breakdown ━━━━━━ */}
             <TTMProcedurePanel data={state.ttmAnalytics?.procedure_breakdown} loading={state.loading?.ttmAnalytics} />
+
+            {/* ━━ AI Server Insights ━━ */}
+            <SubErrorBoundary name="AI Server Insights">
+                <AIServerInsights data={state.thaimedAI} theme="thaimed" title="AI Thai Med Intelligence" />
+            </SubErrorBoundary>
         </div>
     );
 }

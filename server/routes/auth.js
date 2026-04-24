@@ -101,12 +101,18 @@ router.post('/refresh', refreshLimiter, (req, res) => {
       return res.status(401).json({ error: 'Invalid token type' });
     }
 
-    // Verify user still exists and is active
-    const user = findById(decoded.id);
-    if (!user) {
-      res.clearCookie('accessToken',  COOKIE_BASE);
-      res.clearCookie('refreshToken', COOKIE_BASE);
-      return res.status(401).json({ error: 'User not found. Please login again.' });
+    // Handle auto-session (dashboard-viewer) users
+    let user;
+    if (decoded.id === 'dashboard-viewer') {
+      user = { id: 'dashboard-viewer', username: 'admin', role: 'admin', full_name: 'Dashboard Viewer' };
+    } else {
+      // Verify user still exists and is active
+      user = findById(decoded.id);
+      if (!user) {
+        res.clearCookie('accessToken',  COOKIE_BASE);
+        res.clearCookie('refreshToken', COOKIE_BASE);
+        return res.status(401).json({ error: 'User not found. Please login again.' });
+      }
     }
 
     // Issue new access token and rotate it into cookie
@@ -122,6 +128,33 @@ router.post('/refresh', refreshLimiter, (req, res) => {
     logger.warn('Token refresh failed', { error: error.message });
     return res.status(401).json({ error: 'Session expired. Please login again.' });
   }
+});
+
+// ── POST /api/auth/auto-session — Issue dashboard-viewer cookies without password ──
+// Used when frontend bypassAuth is enabled (kiosk / wall display mode)
+router.post('/auto-session', (req, res) => {
+  const dashboardUser = {
+    id: 'dashboard-viewer',
+    username: 'admin',
+    role: 'admin',
+    full_name: 'Dashboard Viewer',
+  };
+
+  const accessToken  = generateToken(dashboardUser, false);  // 30 min
+  const refreshToken = generateToken(dashboardUser, true);   // 24 h
+
+  res.cookie('accessToken',  accessToken,  { ...COOKIE_BASE, maxAge: 30 * 60 * 1000        });
+  res.cookie('refreshToken', refreshToken, { ...COOKIE_BASE, maxAge: 24 * 60 * 60 * 1000   });
+
+  logger.info('Auto-session issued for dashboard viewer');
+  res.json({
+    user: {
+      id:         dashboardUser.id,
+      username:   dashboardUser.username,
+      full_name:  dashboardUser.full_name,
+      role:       dashboardUser.role,
+    }
+  });
 });
 
 // ── POST /api/auth/logout ──

@@ -4,6 +4,59 @@ import { dbQuery, dbQueryOne } from '../db/mysql.js';
 
 const router = Router();
 
+// ── Critical Value Thresholds (WHO Critical Value Notification Protocol) ──
+// DANGER = immediate life threat, WARNING = clinically significant abnormal
+const CRIT_THRESHOLDS = {
+  potassium:   { danger_lo: 2.5, danger_hi: 6.5, warn_lo: 3.0, warn_hi: 5.5 },
+  sodium:      { danger_lo: 120, danger_hi: 160, warn_lo: 128, warn_hi: 150 },
+  glucose:     { danger_lo: 40,  danger_hi: 500, warn_lo: 54,  warn_hi: 400 },
+  hemoglobin:  { danger_lo: 5.0, danger_hi: 99,  warn_lo: 7.0, warn_hi: 20 },
+  platelet:    { danger_lo: 20000, danger_hi: 999999, warn_lo: 50000, warn_hi: 999999 },
+  creatinine:  { danger_lo: -1, danger_hi: 10,  warn_lo: -1,  warn_hi: 5.0 },
+  troponin:    { danger_lo: -1, danger_hi: 0.3, warn_lo: -1,  warn_hi: 0.04 },
+  lactate:     { danger_lo: -1, danger_hi: 6.0, warn_lo: -1,  warn_hi: 4.0 },
+  wbc:         { danger_lo: 1.0, danger_hi: 50, warn_lo: 2.0, warn_hi: 30 },
+};
+
+function classifyCriticalValues(rows) {
+  const results = [];
+  for (const c of rows) {
+    const val = parseFloat(c.result);
+    if (isNaN(val)) continue;
+    const ln = (c.test_name || '').toLowerCase();
+
+    let threshKey = null;
+    if (ln.includes('potassium')) threshKey = 'potassium';
+    else if (ln.includes('sodium')) threshKey = 'sodium';
+    else if (ln.includes('glucose') || ln.includes('fasting')) threshKey = 'glucose';
+    else if (ln.includes('hemoglobin') && !ln.includes('a1c')) threshKey = 'hemoglobin';
+    else if (ln.includes('platelet')) threshKey = 'platelet';
+    else if (ln.includes('creatinine')) threshKey = 'creatinine';
+    else if (ln.includes('troponin')) threshKey = 'troponin';
+    else if (ln.includes('lactate')) threshKey = 'lactate';
+    else if (ln.includes('wbc count')) threshKey = 'wbc';
+
+    let severity = 'NORMAL';
+    if (threshKey) {
+      const t = CRIT_THRESHOLDS[threshKey];
+      if (val <= t.danger_lo || val >= t.danger_hi) severity = 'DANGER';
+      else if (val <= t.warn_lo || val >= t.warn_hi) severity = 'WARNING';
+    } else if (ln.includes('hba1c')) {
+      if (val >= 10) severity = 'WARNING';
+      else if (val >= 7) severity = 'WARNING';
+    } else {
+      severity = 'WARNING';
+    }
+
+    if (severity !== 'NORMAL') {
+      results.push({ test: c.test_name, result: c.result, normal: c.normal_range, hn: c.hn, severity });
+    }
+  }
+  // Sort DANGER first, then WARNING
+  results.sort((a, b) => (a.severity === 'DANGER' ? 0 : 1) - (b.severity === 'DANGER' ? 0 : 1));
+  return results.slice(0, 20);
+}
+
 // ============================================================
 // 🔬 Laboratory Analytics — HOSxP XE
 // ---- SCHEMA NOTES (verified) --------------------------------
@@ -32,16 +85,19 @@ const router = Router();
 router.get('/today', cached('labToday_v1', 30000, async () => {
   const [summary, hourly, topTests, abnormalSummary, criticalValues, onDutyStaff] = await Promise.all([
 
-    // 1. Today Lab Summary
+    // 1. Today Lab Summary — count at ORDER level (not item/row level)
     dbQueryOne(`
       SELECT
         COUNT(DISTINCT lh.lab_order_number) as total_orders,
         COUNT(DISTINCT lh.hn) as unique_patients,
-        SUM(CASE WHEN lh.report_date IS NOT NULL THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN lh.report_date IS NULL THEN 1 ELSE 0 END) as pending,
-        COUNT(DISTINCT lo.lab_order_number) as total_items,
+        COUNT(DISTINCT CASE WHEN lh.report_date IS NOT NULL THEN lh.lab_order_number END) as completed_orders,
+        COUNT(DISTINCT CASE WHEN lh.report_date IS NULL THEN lh.lab_order_number END) as pending_orders,
+        COUNT(lo.lab_order_number) as total_items,
+        SUM(CASE WHEN lo.lab_order_result IS NOT NULL AND lo.lab_order_result != '' THEN 1 ELSE 0 END) as completed_items,
         ROUND(AVG(CASE
           WHEN lh.report_date IS NOT NULL AND lh.order_time IS NOT NULL AND lh.report_time IS NOT NULL
+               AND TIMESTAMPDIFF(MINUTE, CONCAT(lh.order_date, ' ', lh.order_time), CONCAT(lh.report_date, ' ', lh.report_time)) > 0
+               AND TIMESTAMPDIFF(MINUTE, CONCAT(lh.order_date, ' ', lh.order_time), CONCAT(lh.report_date, ' ', lh.report_time)) < 1440
           THEN TIMESTAMPDIFF(MINUTE,
             CONCAT(lh.order_date, ' ', lh.order_time),
             CONCAT(lh.report_date, ' ', lh.report_time))
@@ -85,7 +141,7 @@ router.get('/today', cached('labToday_v1', 30000, async () => {
       WHERE lh.order_date = CURDATE()
     `).catch(() => null),
 
-    // 5. Critical Values Today (known critical lab tests)
+    // 5. Critical Values Today — get all abnormal critical tests with numeric result for threshold check
     dbQuery(`
       SELECT lo.lab_items_name_ref as test_name,
         lo.lab_order_result as result,
@@ -95,32 +151,46 @@ router.get('/today', cached('labToday_v1', 30000, async () => {
       INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
       WHERE lh.order_date = CURDATE()
         AND lo.abnormal_result = 'Y'
+        AND lo.lab_order_result REGEXP '^[0-9]'
         AND (
           lo.lab_items_name_ref LIKE '%Potassium%' OR lo.lab_items_name_ref LIKE '%Sodium%'
-          OR lo.lab_items_name_ref LIKE '%Glucose%' OR lo.lab_items_name_ref LIKE '%Hb%'
+          OR lo.lab_items_name_ref LIKE '%Glucose%' OR lo.lab_items_name_ref LIKE '%Hemoglobin%'
           OR lo.lab_items_name_ref LIKE '%Troponin%' OR lo.lab_items_name_ref LIKE '%Lactate%'
-          OR lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%PLT%'
-          OR lo.lab_items_name_ref LIKE '%Creatinine%' OR lo.lab_items_name_ref LIKE '%pH%'
+          OR lo.lab_items_name_ref LIKE '%WBC count%' OR lo.lab_items_name_ref LIKE '%Platelet%'
+          OR lo.lab_items_name_ref LIKE '%Creatinine%'
+          OR lo.lab_items_name_ref LIKE '%HbA1c%' OR lo.lab_items_name_ref LIKE '%Fasting%'
         )
       ORDER BY lh.order_date DESC
-      LIMIT 20
+      LIMIT 50
     `).catch(() => []),
 
-    // 6. On-Duty Lab Staff Today
+    // 6. On-Duty Lab Staff Today — combine reporter + receive staff for coverage
     dbQuery(`
-      SELECT reporter_staff as username, COUNT(*) as total_reported
-      FROM lab_head
-      WHERE order_date = CURDATE()
-        AND reporter_staff IS NOT NULL AND reporter_staff != ''
-      GROUP BY reporter_staff
+      SELECT staff_name as username, SUM(cnt) as total_reported FROM (
+        SELECT reporter_staff as staff_name, COUNT(*) as cnt
+        FROM lab_head
+        WHERE order_date = CURDATE()
+          AND reporter_staff IS NOT NULL AND reporter_staff != ''
+        GROUP BY reporter_staff
+        UNION ALL
+        SELECT receive_staff as staff_name, COUNT(*) as cnt
+        FROM lab_head
+        WHERE order_date = CURDATE()
+          AND receive_staff IS NOT NULL AND receive_staff != ''
+          AND (reporter_staff IS NULL OR reporter_staff = '')
+        GROUP BY receive_staff
+      ) combined
+      GROUP BY staff_name
       ORDER BY total_reported DESC
       LIMIT 15
     `).catch(() => []),
   ]);
 
   const totalOrders = Number(summary?.total_orders || 0);
-  const completed = Number(summary?.completed || 0);
+  const completedOrders = Number(summary?.completed_orders || 0);
+  const pendingOrders = Number(summary?.pending_orders || 0);
   const totalItems = Number(abnormalSummary?.total_items || 0);
+  const completedItems = Number(summary?.completed_items || 0);
   const abnormalCount = Number(abnormalSummary?.abnormal_count || 0);
   const abnormalRate = totalItems > 0 ? Math.round((abnormalCount / totalItems) * 100 * 10) / 10 : 0;
 
@@ -132,8 +202,11 @@ router.get('/today', cached('labToday_v1', 30000, async () => {
   return {
     data_source: 'HOSxP XE',
     total_orders: totalOrders,
-    completed,
-    pending: Number(summary?.pending || 0),
+    completed: completedOrders,
+    completed_orders: completedOrders,
+    completed_items: completedItems,
+    pending: pendingOrders,
+    pending_orders: pendingOrders,
     unique_patients: Number(summary?.unique_patients || 0),
     avg_tat_min: Number(summary?.avg_tat_min || 0),
     male: Number(summary?.male || 0),
@@ -141,13 +214,14 @@ router.get('/today', cached('labToday_v1', 30000, async () => {
     total_items: totalItems,
     abnormal_count: abnormalCount,
     abnormal_rate: abnormalRate,
-    critical_values: (criticalValues || []).slice(0, 10).map(c => ({
-      test: c.test_name, result: c.result, normal: c.normal_range, hn: c.hn,
-    })),
+    critical_values: classifyCriticalValues(criticalValues || []),
     top_tests: (topTests || []).map(t => ({
       name: t.name, count: Number(t.cnt || 0), abnormal: Number(t.abnormal_cnt || 0),
     })),
     on_duty_staff: (onDutyStaff || []).map(s => ({
+      username: s.username, total: Number(s.total_reported || 0),
+    })),
+    on_duty: (onDutyStaff || []).map(s => ({
       username: s.username, total: Number(s.total_reported || 0),
     })),
     hourly: hourlyArr,
@@ -160,7 +234,7 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
   const [
     volumeSummary, tatSummary, abnormalSummary, completionData,
     monthlyTrend, topTestsByVolume, topTestsByAbnormal,
-    deptPattern, labTypeDistRaw, onDutyStaff, tatDistRaw
+    deptPattern, labTypeDistRaw, onDutyStaff, tatDistRaw, p90Row
   ] = await Promise.all([
 
     // 1. Volume Summary (30D)
@@ -214,12 +288,12 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
       WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
 
-    // 4. Completion Rate (30D)
+    // 4. Completion Rate (30D) — order level
     dbQueryOne(`
       SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN report_date IS NOT NULL THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN report_date IS NULL AND order_date < CURDATE() THEN 1 ELSE 0 END) as overdue
+        COUNT(DISTINCT lab_order_number) as total,
+        COUNT(DISTINCT CASE WHEN report_date IS NOT NULL THEN lab_order_number END) as completed,
+        COUNT(DISTINCT CASE WHEN report_date IS NULL AND order_date < CURDATE() THEN lab_order_number END) as overdue
       FROM lab_head
       WHERE order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
     `).catch(() => null),
@@ -238,16 +312,34 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
       ORDER BY month
     `).catch(() => []),
 
-    // 6. Top Tests by Volume (30D)
+    // 6. Top Tests by Volume (30D) — group CBC/Heme morphology sub-items
     dbQuery(`
-      SELECT lo.lab_items_name_ref as name,
-        COUNT(*) as total_count,
-        SUM(CASE WHEN lo.abnormal_result = 'Y' THEN 1 ELSE 0 END) as abnormal_count
-      FROM lab_head lh
-      INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
-      WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-        AND lo.lab_items_name_ref IS NOT NULL AND lo.lab_items_name_ref != ''
-      GROUP BY lo.lab_items_name_ref
+      SELECT test_group as name,
+        SUM(cnt) as total_count,
+        SUM(abn) as abnormal_count
+      FROM (
+        SELECT
+          CASE
+            WHEN lo.lab_items_name_ref IN ('WBC count','RBC count','Hemoglobin','Hematocrit','Platelet count',
+              'MCV','MCH','MCHC','RDW','MPV','PDW','Neutrophil','Lymphocyte','Monocyte','Eosinophil','Basophil',
+              'NRBC','Reticulocyte','Band','Atypical Lymph','Metamyelocyte','Myelocyte','Blast',
+              'Spherocyte','Acanthocyte','Keratocyte','Echinocyte','Microcyte','Macrocyte',
+              'Anisicytosis','Poikilocytosis','Target cell','Schistocyte','Stomatocyte','Ovalocyte')
+            THEN 'CBC (Complete Blood Count)'
+            WHEN lo.lab_items_name_ref LIKE '%Urine%' OR lo.lab_items_name_ref LIKE 'Specific gravity%'
+              OR lo.lab_items_name_ref IN ('WBC','RBC','Epithelial cell','Bacteria','Cast','Crystal','Color','Appearance','Protein in Urine','Glucose in Urine','Ketone','Bilirubin (urine)','Urobilinogen','Nitrite','Leukocyte esterase')
+            THEN 'Urinalysis'
+            ELSE lo.lab_items_name_ref
+          END as test_group,
+          COUNT(*) as cnt,
+          SUM(CASE WHEN lo.abnormal_result = 'Y' THEN 1 ELSE 0 END) as abn
+        FROM lab_head lh
+        INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
+        WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND lo.lab_items_name_ref IS NOT NULL AND lo.lab_items_name_ref != ''
+        GROUP BY test_group
+      ) grouped
+      GROUP BY test_group
       ORDER BY total_count DESC
       LIMIT 15
     `).catch(() => []),
@@ -340,6 +432,24 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
       GROUP BY bucket
       ORDER BY FIELD(bucket, '< 30min','30-60min','1-2hr','2-4hr','> 4hr')
     `).catch(() => []),
+
+    // 12. P90 TAT — actual 90th percentile via ORDER BY + OFFSET
+    dbQueryOne(`
+      SELECT tat_min as p90_tat FROM (
+        SELECT TIMESTAMPDIFF(MINUTE,
+          CONCAT(lh.order_date,' ',lh.order_time),
+          CONCAT(lh.report_date,' ',lh.report_time)) as tat_min
+        FROM lab_head lh
+        WHERE lh.order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND lh.order_time IS NOT NULL AND lh.report_time IS NOT NULL
+          AND lh.report_date IS NOT NULL
+        HAVING tat_min > 0 AND tat_min < 1440
+        ORDER BY tat_min ASC
+      ) t
+      LIMIT 1 OFFSET FLOOR((SELECT COUNT(*) FROM lab_head
+        WHERE order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND order_time IS NOT NULL AND report_time IS NOT NULL AND report_date IS NOT NULL) * 0.9)
+    `).catch(() => null),
   ]);
 
   // ── Derived Metrics ──
@@ -357,18 +467,18 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
   const sdTat = Number(tatSummary?.sd_tat || 0);
   const tatUnder60 = Number(tatSummary?.tat_under_60m || 0);
   const tatOver120 = Number(tatSummary?.tat_over_120m || 0);
-  const p90Tat = avgTat > 0 ? Math.round(avgTat + sdTat * 1.28) : 0;
+  const p90Tat = Number(p90Row?.p90_tat || 0) || (avgTat > 0 ? Math.round(avgTat + sdTat * 1.28) : 0);
   const tatSlaPct = completionCompleted > 0 ? Math.round((tatUnder60 / completionCompleted) * 100) : 0;
 
   // ── LPI: Lab Performance Index (0–100) ──
-  // 1. TAT Score: < 60min = 100, each 30min over reduces by 15 — weight 40%
+  // 1. TAT Score (45%): < 60min = 100, each 30min over = -15 pts
   const tatScore = avgTat > 0 ? Math.max(0, Math.min(100, Math.round(100 - Math.max(0, (avgTat - 60) / 30) * 15))) : 50;
-  // 2. Completion Rate Score — weight 35%
+  // 2. Completion Rate Score (35%): direct %
   const completionScore = Math.round(Math.min(100, completionRate));
-  // 3. Volume Score (≥ 50 orders/day = 100) — weight 25%
-  const volumeScore = Math.min(100, Math.round((avgDailyOrders / 50) * 100));
+  // 3. SLA Score (20%): % of orders completed within 60 min (target ≥70%)
+  const slaScore = Math.min(100, Math.round((tatSlaPct / 70) * 100));
 
-  const lpi = Math.round(tatScore * 0.40 + completionScore * 0.35 + volumeScore * 0.25);
+  const lpi = Math.round(tatScore * 0.45 + completionScore * 0.35 + slaScore * 0.20);
 
   // ── Monthly Trend ──
   const MTH = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -383,7 +493,7 @@ router.get('/analytics', cached('labAnalytics_v1', 300000, async () => {
   return {
     data_source: 'HOSxP XE',
     lpi,
-    lpi_components: { tat: tatScore, completion: completionScore, volume: volumeScore },
+    lpi_components: { tat: tatScore, completion: completionScore, sla: slaScore },
     total_orders: totalOrders,
     avg_daily_orders: avgDailyOrders,
     total_items: totalItems,

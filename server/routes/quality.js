@@ -22,17 +22,18 @@ const router = Router();
 // ============================================================
 
 // ── Helper: build QPI score ──────────────────────────────────
-function calcQPI({ readmitRate, mortalityRate, amaRate, haiRate, beforeNoonPct }) {
+function calcQPI({ readmitRate, mortalityRate, amaRate, haiRate, dchPlanPct }) {
   // Calibrated against HA Thailand benchmarks:
   //   Readmit  HA<5%  : ×5  → 0%=100, 5%=75, 10%=50, 20%=0
   //   Mortality HA<2% : ×15 → 0%=100, 2%=70, 5%=25, 6.7%=0
   //   AMA      HA<3%  : ×10 → 0%=100, 3%=70, 10%=0
   //   HAI      HA<1%  : ×35 → 0%=100, 1%=65, 2.9%=0
+  //   DchPlan  HA>95% : direct % → 95%=95, 80%=80
   const readmitScore   = Math.max(0, Math.min(100, Math.round(100 - readmitRate * 5)));
   const mortalityScore = Math.max(0, Math.min(100, Math.round(100 - mortalityRate * 15)));
   const amaScore       = Math.max(0, Math.min(100, Math.round(100 - amaRate * 10)));
   const haiScore       = Math.max(0, Math.min(100, Math.round(100 - haiRate * 35)));
-  const dchPlanScore   = Math.min(100, Math.round(beforeNoonPct));
+  const dchPlanScore   = Math.min(100, Math.round(dchPlanPct));
   const qpi = Math.round(
     readmitScore * 0.28 + mortalityScore * 0.28 + amaScore * 0.16 + haiScore * 0.16 + dchPlanScore * 0.12
   );
@@ -91,13 +92,13 @@ router.get('/today', cached('qualityToday_v1', 60000, async () => {
         )
     `).catch(() => null),
 
-    // 5. Readmission flags today (patients admitted today who were discharged in last 30D)
+    // 5. Readmission flags today (patients admitted today who were discharged in last 28D)
     dbQueryOne(`
       SELECT COUNT(DISTINCT i2.an) as readmit_today
       FROM ipt i2
       INNER JOIN ipt i1
         ON i1.hn = i2.hn AND i1.an != i2.an
-        AND i1.dchdate BETWEEN DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        AND i1.dchdate BETWEEN DATE_SUB(CURDATE(), INTERVAL 28 DAY) AND DATE_SUB(CURDATE(), INTERVAL 1 DAY)
       WHERE DATE(i2.regdate) = CURDATE()
         AND i2.ward != '06'
     `).catch(() => null),
@@ -141,8 +142,9 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
     topReadmitDx,
   ] = await Promise.all([
 
-    // ── PCT 1: 30-Day Readmission Rate (90D window → 30D readmits)
-    dbQueryOneHeavy('qualReadmit30d', 120, `
+    // ── PCT 1: 28-Day Readmission Rate (HA Thailand standard)
+    // Observation window: discharges from 28-90 days ago (ensures every case has full 28d to be readmitted)
+    dbQueryOneHeavy('qualReadmit28d_v2', 120, `
       SELECT
         COUNT(DISTINCT i1.an) as total_discharges,
         COUNT(DISTINCT i2.an) as readmit_count,
@@ -150,8 +152,9 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
       FROM ipt i1
       LEFT JOIN ipt i2
         ON i1.hn = i2.hn AND i2.an != i1.an
-        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
+        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 28 DAY)
       WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        AND i1.dchdate <= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
         AND i1.dchdate IS NOT NULL AND i1.ward != '06'
     `).catch(() => null),
 
@@ -196,19 +199,23 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         AND i.dchdate IS NOT NULL AND a.rw > 0
     `).catch(() => null),
 
-    // ── ENV 1: Discharge Planning (% before noon)
+    // ── ENV 1: Discharge Planning (% with dchtime recorded = has discharge plan)
+    //    + Before-noon efficiency as separate metric
     dbQueryOne(`
       SELECT
         COUNT(*) as total_dch,
-        SUM(CASE WHEN HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END) as before_noon,
-        SUM(CASE WHEN HOUR(i.dchtime) >= 12 AND HOUR(i.dchtime) < 16 THEN 1 ELSE 0 END) as afternoon,
-        SUM(CASE WHEN HOUR(i.dchtime) >= 16 THEN 1 ELSE 0 END) as evening,
-        ROUND(100.0 * SUM(CASE WHEN HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END)
-          / NULLIF(COUNT(*), 0), 1) as before_noon_pct,
-        ROUND(AVG(HOUR(i.dchtime) + MINUTE(i.dchtime)/60.0), 1) as avg_dch_hour
+        SUM(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '' AND i.dchtime != '00:00:00' THEN 1 ELSE 0 END) as has_dch_plan,
+        ROUND(100.0 * SUM(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '' AND i.dchtime != '00:00:00' THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*), 0), 1) as dch_plan_pct,
+        SUM(CASE WHEN i.dchtime IS NOT NULL AND HOUR(i.dchtime) > 0 AND HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END) as before_noon,
+        SUM(CASE WHEN i.dchtime IS NOT NULL AND HOUR(i.dchtime) >= 12 AND HOUR(i.dchtime) < 16 THEN 1 ELSE 0 END) as afternoon,
+        SUM(CASE WHEN i.dchtime IS NOT NULL AND HOUR(i.dchtime) >= 16 THEN 1 ELSE 0 END) as evening,
+        ROUND(100.0 * SUM(CASE WHEN i.dchtime IS NOT NULL AND HOUR(i.dchtime) > 0 AND HOUR(i.dchtime) < 12 THEN 1 ELSE 0 END)
+          / NULLIF(SUM(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '' AND i.dchtime != '00:00:00' THEN 1 ELSE 0 END), 0), 1) as before_noon_pct,
+        ROUND(AVG(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '00:00:00' THEN HOUR(i.dchtime) + MINUTE(i.dchtime)/60.0 END), 1) as avg_dch_hour
       FROM ipt i
       WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-        AND i.dchdate IS NOT NULL AND i.dchtime IS NOT NULL AND i.ward != '06'
+        AND i.dchdate IS NOT NULL AND i.ward != '06'
     `).catch(() => null),
 
     // ── ENV 2: AMA Rate (Against Medical Advice — dchtype '6','06','8','08')
@@ -223,8 +230,15 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         AND i.dchdate IS NOT NULL AND i.ward != '06'
     `).catch(() => null),
 
-    // ── IC 1: HAI Rate — secondary infection dx in patients LOS > 2 days
-    dbQueryOneHeavy('qualHAI30d', 120, `
+    // ── IC 1: HAI Rate — true infection codes only, LOS > 2 days
+    // ICD-10 scoped to actual HAI:
+    //   BSI: A40-A41 (sepsis/bacteremia)
+    //   SSI: T81.4 (surgical site infection)
+    //   VAP: J95.85 (ventilator-associated pneumonia), J15-J18 (hospital pneumonia, LOS>2)
+    //   CAUTI: N39.0 (UTI — catheter-associated)
+    //   CLABSI: T80.2 (infection from infusion/transfusion/injection)
+    //   Pressure Ulcer: L89 (decubitus)
+    dbQueryOneHeavy('qualHAI30d_v2', 120, `
       SELECT
         COUNT(DISTINCT base.an) as total_admissions,
         COUNT(DISTINCT hai.an) as hai_cases,
@@ -236,11 +250,13 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         INNER JOIN ipt i2 ON id2.an = i2.an
         WHERE id2.diagtype != '1'
           AND (
-            id2.icd10 BETWEEN 'T80' AND 'T889'
-            OR id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%'
-            OR id2.icd10 BETWEEN 'J150' AND 'J189'
+            id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%'
+            OR id2.icd10 LIKE 'T81.4%'
+            OR id2.icd10 LIKE 'T80.2%'
+            OR id2.icd10 LIKE 'J95.85%'
+            OR id2.icd10 BETWEEN 'J15' AND 'J189'
+            OR id2.icd10 LIKE 'N39.0%'
             OR id2.icd10 LIKE 'L89%'
-            OR id2.icd10 LIKE 'N390%'
           )
           AND DATEDIFF(IFNULL(i2.dchdate, CURDATE()), i2.regdate) > 2
           AND i2.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
@@ -249,26 +265,30 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         AND base.dchdate IS NOT NULL AND base.ward != '06'
     `).catch(() => null),
 
-    // ── IC 2: HAI by Type
+    // ── IC 2: HAI by Type (mapped to standard HAI categories)
     dbQuery(`
       SELECT
         CASE
-          WHEN id2.icd10 BETWEEN 'T80' AND 'T889' THEN 'Procedure-related'
-          WHEN id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%' THEN 'Sepsis/Bacteremia'
-          WHEN id2.icd10 BETWEEN 'J150' AND 'J189' THEN 'Hospital Pneumonia'
+          WHEN id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%' THEN 'BSI'
+          WHEN id2.icd10 LIKE 'T80.2%' THEN 'CLABSI'
+          WHEN id2.icd10 LIKE 'T81.4%' THEN 'SSI'
+          WHEN id2.icd10 LIKE 'J95.85%' OR id2.icd10 BETWEEN 'J15' AND 'J189' THEN 'VAP'
+          WHEN id2.icd10 LIKE 'N39.0%' THEN 'CAUTI'
           WHEN id2.icd10 LIKE 'L89%' THEN 'Pressure Ulcer'
-          WHEN id2.icd10 LIKE 'N390%' THEN 'UTI (HAI)'
-          ELSE 'Other'
+          ELSE 'Other HAI'
         END as hai_type,
         COUNT(DISTINCT id2.an) as case_count
       FROM iptdiag id2
       INNER JOIN ipt i2 ON id2.an = i2.an
       WHERE id2.diagtype != '1'
         AND (
-          id2.icd10 BETWEEN 'T80' AND 'T889'
-          OR id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%'
-          OR id2.icd10 BETWEEN 'J150' AND 'J189'
-          OR id2.icd10 LIKE 'L89%' OR id2.icd10 LIKE 'N390%'
+          id2.icd10 LIKE 'A40%' OR id2.icd10 LIKE 'A41%'
+          OR id2.icd10 LIKE 'T81.4%'
+          OR id2.icd10 LIKE 'T80.2%'
+          OR id2.icd10 LIKE 'J95.85%'
+          OR id2.icd10 BETWEEN 'J15' AND 'J189'
+          OR id2.icd10 LIKE 'N39.0%'
+          OR id2.icd10 LIKE 'L89%'
         )
         AND DATEDIFF(IFNULL(i2.dchdate, CURDATE()), i2.regdate) > 2
         AND i2.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
@@ -277,15 +297,21 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
     `).catch(() => []),
 
     // ── MED 1: ADR Rate — T36-T50 as secondary dx in OPD (30D)
+    // Denominator: total OPD visits (counted separately to avoid JOIN inflation)
     dbQueryOne(`
       SELECT
-        COUNT(DISTINCT o.vn) as total_opd,
-        COUNT(DISTINCT CASE WHEN od.icd10 BETWEEN 'T36' AND 'T509' AND od.diagtype != '1' THEN o.vn END) as adr_count,
-        ROUND(100.0 * COUNT(DISTINCT CASE WHEN od.icd10 BETWEEN 'T36' AND 'T509' AND od.diagtype != '1' THEN o.vn END)
-          / NULLIF(COUNT(DISTINCT o.vn), 0), 3) as adr_rate
-      FROM ovst o
-      LEFT JOIN ovstdiag od ON o.vn = od.vn
-      WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        total.cnt as total_opd,
+        IFNULL(adr.cnt, 0) as adr_count,
+        ROUND(100.0 * IFNULL(adr.cnt, 0) / NULLIF(total.cnt, 0), 3) as adr_rate
+      FROM (SELECT COUNT(*) as cnt FROM ovst WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) total
+      LEFT JOIN (
+        SELECT COUNT(DISTINCT o.vn) as cnt
+        FROM ovst o
+        INNER JOIN ovstdiag od ON o.vn = od.vn
+        WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND od.diagtype != '1'
+          AND od.icd10 BETWEEN 'T36' AND 'T509'
+      ) adr ON 1=1
     `).catch(() => null),
 
     // ── MED 2: ADR by Drug Category
@@ -309,14 +335,20 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
     `).catch(() => []),
 
     // ── IM 1: Documentation Completeness (IPD discharge summaries)
+    //   pdx_completeness = % with primary diagnosis recorded
+    //   diag_coded_rate  = % with ANY diagnosis (primary or secondary) coded
+    //   dchtime_completeness = % with discharge time recorded
     dbQueryOne(`
       SELECT
         COUNT(DISTINCT i.an) as total_dch,
         SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an AND d.diagtype = '1') THEN 1 ELSE 0 END) as has_pdx,
-        SUM(CASE WHEN i.dchtime IS NOT NULL THEN 1 ELSE 0 END) as has_dchtime,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as has_any_diag,
+        SUM(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '' AND i.dchtime != '00:00:00' THEN 1 ELSE 0 END) as has_dchtime,
         ROUND(100.0 * SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an AND d.diagtype = '1') THEN 1 ELSE 0 END)
           / NULLIF(COUNT(DISTINCT i.an), 0), 1) as pdx_completeness,
-        ROUND(100.0 * SUM(CASE WHEN i.dchtime IS NOT NULL THEN 1 ELSE 0 END)
+        ROUND(100.0 * SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(DISTINCT i.an), 0), 1) as diag_coded_rate,
+        ROUND(100.0 * SUM(CASE WHEN i.dchtime IS NOT NULL AND i.dchtime != '' AND i.dchtime != '00:00:00' THEN 1 ELSE 0 END)
           / NULLIF(COUNT(DISTINCT i.an), 0), 1) as dchtime_completeness
       FROM ipt i
       WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
@@ -340,7 +372,7 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
       ORDER BY month
     `).catch(() => []),
 
-    // ── Ward: Readmission + ALOS by Ward
+    // ── Ward: Readmission + ALOS by Ward (28-day, with observation window)
     dbQuery(`
       SELECT w.name as ward_name, i1.ward,
         COUNT(DISTINCT i1.an) as total_dch,
@@ -349,9 +381,10 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
         ROUND(AVG(DATEDIFF(i1.dchdate, i1.regdate)), 1) as avg_los
       FROM ipt i1
       LEFT JOIN ipt i2 ON i1.hn = i2.hn AND i2.an != i1.an
-        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
+        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 28 DAY)
       LEFT JOIN ward w ON i1.ward = w.ward
       WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        AND i1.dchdate <= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
         AND i1.dchdate IS NOT NULL AND i1.ward != '06'
       GROUP BY i1.ward, w.name
       HAVING COUNT(DISTINCT i1.an) >= 5
@@ -374,22 +407,23 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
       ORDER BY mortality_rate DESC LIMIT 10
     `).catch(() => []),
 
-    // ── Top Diagnoses with High Readmission (30D)
+    // ── Top Diagnoses with High Readmission (28D, with observation window)
     dbQuery(`
-      SELECT a.pdx, d.icd10_name as dx_name,
+      SELECT a.pdx, d.name as dx_name,
         COUNT(DISTINCT i1.an) as total_cases,
         COUNT(DISTINCT i2.an) as readmit_cases,
         ROUND(100.0 * COUNT(DISTINCT i2.an) / NULLIF(COUNT(DISTINCT i1.an), 0), 1) as readmit_rate,
         ROUND(AVG(DATEDIFF(i1.dchdate, i1.regdate)), 1) as avg_los
       FROM ipt i1
       INNER JOIN an_stat a ON i1.an = a.an
-      LEFT JOIN icd101 d ON a.pdx = d.icd10
+      LEFT JOIN icd101 d ON a.pdx = d.code
       LEFT JOIN ipt i2 ON i1.hn = i2.hn AND i2.an != i1.an
-        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
+        AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 28 DAY)
       WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+        AND i1.dchdate <= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
         AND i1.dchdate IS NOT NULL AND i1.ward != '06'
         AND a.pdx IS NOT NULL AND a.pdx != ''
-      GROUP BY a.pdx, d.icd10_name
+      GROUP BY a.pdx, d.name
       HAVING COUNT(DISTINCT i1.an) >= 5
       ORDER BY readmit_rate DESC LIMIT 10
     `).catch(() => []),
@@ -400,16 +434,18 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
   const mortalityRate  = Number(mortalityData?.mortality_rate || 0);
   const amaRate        = Number(amaData?.ama_rate || 0);
   const haiRate        = Number(haiData?.hai_rate || 0);
+  const dchPlanPct     = Number(dchPlanData?.dch_plan_pct || 0);
   const beforeNoonPct  = Number(dchPlanData?.before_noon_pct || 0);
   const actualALOS     = Number(alosData?.actual_alos || 0);
   const cmi            = Number(cmiData?.cmi || 0);
   const adrRate        = Number(adrData?.adr_rate || 0);
   const pdxComplete    = Number(docCompletion?.pdx_completeness || 0);
+  const diagCodedRate  = Number(docCompletion?.diag_coded_rate || 0);
   const dchtimeComplete = Number(docCompletion?.dchtime_completeness || 0);
 
-  // QPI Composite
+  // QPI Composite — dchPlanPct = % with discharge plan (dchtime recorded), NOT before-noon
   const { qpi, readmitScore, mortalityScore, amaScore, haiScore, dchPlanScore } = calcQPI({
-    readmitRate, mortalityRate, amaRate, haiRate, beforeNoonPct
+    readmitRate, mortalityRate, amaRate, haiRate, dchPlanPct
   });
 
   // Monthly trend
@@ -435,11 +471,13 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
 
   // ── HAI Types (structured for QualityTab) ────────────────────
   const haiTypesArr = (haiByType || []).map(h => ({ type: h.hai_type, count: Number(h.case_count || 0) }));
+  const haiLookup = (key) => haiTypesArr.find(h => h.type === key)?.count ?? 0;
   const haiTypes = {
-    bsi: haiTypesArr.find(h => /BSI|bloodstream/i.test(h.type))?.count ?? 0,
-    ssi: haiTypesArr.find(h => /SSI|surgical/i.test(h.type))?.count ?? 0,
-    pna: haiTypesArr.find(h => /pneumonia|VAP|PNA/i.test(h.type))?.count ?? 0,
-    uti: haiTypesArr.find(h => /UTI|urinary/i.test(h.type))?.count ?? 0,
+    bsi:   haiLookup('BSI') + haiLookup('CLABSI'),
+    ssi:   haiLookup('SSI'),
+    vap:   haiLookup('VAP'),
+    cauti: haiLookup('CAUTI'),
+    pressure_ulcer: haiLookup('Pressure Ulcer'),
   };
 
   // ── Ward Breakdown (merged readmit + mortality per ward) ──────
@@ -483,7 +521,8 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
     // ENV indicators
     ama_rate: amaRate,
     ama_count: Number(amaData?.ama_count || 0),
-    dch_plan_rate: beforeNoonPct,
+    dch_plan_rate: dchPlanPct,
+    dch_plan_pct: dchPlanPct,
     before_noon_pct: beforeNoonPct,
     avg_dch_hour: Number(dchPlanData?.avg_dch_hour || 0),
     // IC indicators
@@ -498,7 +537,7 @@ router.get('/analytics', cached('qualityAnalytics_v2', 300000, async () => {
     // IM indicators
     doc_completeness: pdxComplete,
     pdx_completeness: pdxComplete,
-    diag_coded_rate: pdxComplete,
+    diag_coded_rate: diagCodedRate,
     dchtime_completeness: dchtimeComplete,
     // Trends
     monthly_trend: monthData,

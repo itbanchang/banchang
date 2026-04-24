@@ -2,7 +2,31 @@ import { Router } from 'express';
 import { cached } from '../cache/staleCache.js';
 import { dbQuery, dbQueryOne, dbQueryHeavy, dbQueryOneHeavy } from '../db/mysql.js';
 import { getRevenueFiscal } from '../helpers/fiscal.js';
+import getDb from '../db/connection.js';
 import logger from '../logger.js';
+
+// ── DRG Kanban SQLite schema (auto-create) ──
+try {
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drg_kanban (
+      an TEXT PRIMARY KEY,
+      hn TEXT,
+      patient_name TEXT,
+      ward TEXT,
+      category TEXT DEFAULT 'pdx',
+      issue TEXT,
+      ai_suggest TEXT,
+      est_revenue INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      assigned_to TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_status ON drg_kanban(status);
+  `);
+} catch (e) { /* table may already exist */ }
 
 const router = Router();
 const fiscalYearStart = "CONCAT(IF(MONTH(CURDATE()) >= 10, YEAR(CURDATE()), YEAR(CURDATE()) - 1), '-10-01')";
@@ -48,12 +72,17 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
       FROM ovst WHERE vstdate = CURDATE() AND vsttime IS NOT NULL
       GROUP BY HOUR(vsttime) ORDER BY hour
     `).catch(() => []),
+    // OPD Coding audit: only count visits with doctor encounter (has spclty = clinical dept)
+    // Exclude lab-only, pharmacy refill, non-clinical visits
     dbQueryOne(`
-      SELECT 
+      SELECT
         COUNT(o.vn) as audit_total,
         SUM(CASE WHEN EXISTS (SELECT 1 FROM ovstdiag d WHERE d.vn = o.vn) THEN 1 ELSE 0 END) as audit_coded
       FROM ovst o
+      INNER JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate = CURDATE()
+        AND v.income > 0
+        AND o.main_dep IS NOT NULL AND o.main_dep != ''
     `).catch(() => null),
     dbQuery(`
       SELECT 
@@ -89,11 +118,14 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
       GROUP BY c.clinic, c.name
       ORDER BY avg_wait DESC LIMIT 5
     `).catch(() => []),
+    // IPD coding rate: exclude last 3 days (grace period) for coding rate denominator
+    // but include all 30 days for RW/CMI metrics
     dbQueryOne(`
       SELECT
         COUNT(i.an) as ipd_dch_30d,
-        SUM(CASE WHEN EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
-        COUNT(CASE WHEN i.adjrw IS NOT NULL THEN i.an END) as ipd_drg_calculated_30d,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) THEN 1 ELSE 0 END) as ipd_dch_eligible,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) AND EXISTS (SELECT 1 FROM iptdiag d WHERE d.an = i.an) THEN 1 ELSE 0 END) as ipd_coded_30d,
+        SUM(CASE WHEN i.dchdate <= DATE_SUB(CURDATE(), INTERVAL 3 DAY) AND i.adjrw IS NOT NULL THEN 1 ELSE 0 END) as ipd_drg_calculated_30d,
         ROUND(SUM(i.adjrw), 2) as total_rw_30d,
         ROUND(AVG(i.adjrw), 2) as avg_rw_30d,
         ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 4) as cmi,
@@ -137,7 +169,7 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
         COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH) ,'%Y-%m-01') 
                              AND d.modify_datetime < DATE_FORMAT(CURDATE() ,'%Y-%m-01') 
                              AND DAY(d.modify_datetime) <= DAY(CURDATE()) THEN d.an END) as prev_month_total,
-        ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype IN ('2','3') THEN 1 ELSE 0 END) / 
+        ROUND(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') AND d.diagtype IN ('2','3') THEN d.an END) /
               NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as cc_rate,
         ROUND(SUM(CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN 1 ELSE 0 END) / 
               NULLIF(COUNT(DISTINCT CASE WHEN d.modify_datetime >= DATE_FORMAT(CURDATE() ,'%Y-%m-01') THEN d.an END), 0), 2) as diag_per_case,
@@ -184,10 +216,12 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
   const qualityScore = auditTotal > 0 ? Math.round((auditCoded / auditTotal) * 100) : 100;
 
   const ipdAuditTotal = Number(ipdSummary?.ipd_dch_30d || 0);
+  const ipdEligible = Number(ipdSummary?.ipd_dch_eligible || 0);
   const ipdAuditCoded = Number(ipdSummary?.ipd_coded_30d || 0);
   const ipdDrgCalculated = Number(ipdSummary?.ipd_drg_calculated_30d || 0);
-  const ipdQualityScore = ipdAuditTotal > 0 ? Math.round((ipdAuditCoded / ipdAuditTotal) * 100) : 100;
-  const ipdDrgScore = ipdAuditTotal > 0 ? Math.round((ipdDrgCalculated / ipdAuditTotal) * 100) : 100;
+  // Use eligible (excluding 3-day grace period) for coding rate
+  const ipdQualityScore = ipdEligible > 0 ? Math.round((ipdAuditCoded / ipdEligible) * 100) : 100;
+  const ipdDrgScore = ipdEligible > 0 ? Math.round((ipdDrgCalculated / ipdEligible) * 100) : 100;
 
   return {
     ...(summary || {}),
@@ -206,9 +240,9 @@ router.get('/today', cached('mrToday_v12', 60000, async () => {
     coders: (coders || []).map(c => ({ name: c.coder_name || 'ไม่ระบุ', count: Number(c.coded_count || 0) })),
 
     // IPD Data
-    ipd_audit_total: ipdAuditTotal,
+    ipd_audit_total: ipdEligible,
     ipd_audit_coded: ipdAuditCoded,
-    ipd_pending_codes: Math.max(0, ipdAuditTotal - ipdAuditCoded),
+    ipd_pending_codes: Math.max(0, ipdEligible - ipdAuditCoded),
     ipd_drg_calculated: ipdDrgCalculated,
     ipd_quality_score: ipdQualityScore,
     ipd_drg_score: ipdDrgScore,
@@ -624,17 +658,20 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
             AND lo.abnormal_result = 'Y' 
             AND (lo.lab_items_name_ref LIKE '%Creatinine%' OR lo.lab_items_name_ref LIKE '%Lactate%' OR lo.lab_items_name_ref LIKE '%BUN%' OR lo.lab_items_name_ref LIKE '%WBC%' OR lo.lab_items_name_ref LIKE '%Hemo%')
           WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-            AND a.income > 30000 
-            AND a.rw < 1.0
+            AND a.income > 30000
+            AND a.rw > 0 AND a.rw < 1.0
+            AND EXISTS (SELECT 1 FROM iptdiag dx WHERE dx.an = i.an AND dx.diagtype = '1')
           GROUP BY p.hn, i.an, name, ward, a.income, a.rw
           ORDER BY i.dchdate DESC
           LIMIT 30
       `).catch(err => { logger.error('MCC query error', { error: err.message }); return []; });
 
     // 4. Abnormal Labs Alerts (Detect potential CC/MCC from Lab)
-    const labCases = await dbQueryHeavy('mrAbnormalLabs', 120, `
+    //    Include existing diagnoses to avoid recommending codes already present
+    const labCases = await dbQueryHeavy('mrAbnormalLabs_v2', 120, `
           SELECT p.hn, i.an, REPLACE(CONCAT(p.pname, p.fname, ' ', p.lname), '  ', ' ') as name, w.name as ward,
-                 lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw
+                 lo.lab_items_name_ref as lab_name, lo.lab_order_result as lab_result, lo.lab_items_normal_value_ref as lab_normal, a.income, a.rw,
+                 (SELECT GROUP_CONCAT(dx.icd10 SEPARATOR ',') FROM iptdiag dx WHERE dx.an = i.an) as existing_dx
           FROM ipt i
           INNER JOIN patient p ON i.hn = p.hn
           INNER JOIN ward w ON i.ward = w.ward
@@ -657,7 +694,7 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
       else if (c.original_pdx === 'I64') { baseSuggest = 'เปลี่ยนเป็น I63.4 (+ RW 1.0)'; estRevenue = 10000; }
       else if (c.original_pdx === 'N201') { baseSuggest = 'เปลี่ยนเป็น N13.2 (+ RW 0.4)'; estRevenue = 4200; }
       else if (c.original_pdx === 'A099') { baseSuggest = 'เจาะจงเชื้อโรค A09.0 (+ RW 0.5)'; estRevenue = 3000; }
-      else if (c.original_pdx === 'N390') { baseSuggest = 'ระบุเชื้อ N39.0 (+ RW 0.3)'; estRevenue = 3500; }
+      else if (c.original_pdx === 'N390') { baseSuggest = 'ระบุเชื้อก่อโรค เช่น B96.2 (E.coli) หรือ B96.0 (Mycoplasma) เป็น secondary dx (+CC/MCC)'; estRevenue = 3500; }
 
       let issue = `PDx เดิม: ${c.original_pdx} (RW ${c.rw || 0}) Unspecified`;
       let aiSuggest = baseSuggest;
@@ -721,36 +758,53 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
 
     const labMapped = [];
     const seenLabAn = new Set();
+    // Map suggested ICD-10 to check if already coded
+    const suggestedIcdMap = {
+      hypokalemia: 'E876', hyperkalemia: 'E875',
+      hyponatremia: 'E871', hypernatremia: 'E870',
+      aki: 'N179', sepsis: 'A419', malnutrition: 'E43',
+      nstemi: 'I21', acidosis: 'E872',
+    };
     (labCases || []).forEach(c => {
       const key = c.an + '-' + c.lab_name;
       if (seenLabAn.has(key)) return;
       seenLabAn.add(key);
 
+      const existingDx = (c.existing_dx || '').replace(/\./g, '');
+
       let issue = `ค่ารักษา ฿${Number(c.income || 0).toLocaleString()} บ. (RW ${c.rw || 0}) ── 🩸 วิกฤต: ${c.lab_name} [${c.lab_result}] (ปกติ: ${c.lab_normal})`;
       let aiSuggest = 'AI เสนอ: ตรวจสอบการลงรหัส CC/MCC เพิ่มเติม';
       let estRevenue = 4500;
       let isCritical = false;
+      let suggestedKey = null;
 
       const ln = (c.lab_name || '').toLowerCase();
       const res = parseFloat(c.lab_result);
       if (!isNaN(res)) {
         if (ln.includes('potassium') || ln === 'k') {
-          if (res < 3.0) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypokalemia (E87.6) (+RW)'; estRevenue = 6000; isCritical = true; }
-          else if (res > 5.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyperkalemia (E87.5) (+RW)'; estRevenue = 7000; isCritical = true; }
+          if (res < 3.0) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypokalemia (E87.6) (+RW)'; estRevenue = 6000; isCritical = true; suggestedKey = 'hypokalemia'; }
+          else if (res > 5.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyperkalemia (E87.5) (+RW)'; estRevenue = 7000; isCritical = true; suggestedKey = 'hyperkalemia'; }
         } else if (ln.includes('sodium') || ln === 'na') {
-          if (res < 130) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyponatremia (E87.1) (+RW)'; estRevenue = 7500; isCritical = true; }
-          else if (res > 150) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypernatremia (E87.0) (+RW)'; estRevenue = 7500; isCritical = true; }
+          if (res < 130) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hyponatremia (E87.1) (+RW)'; estRevenue = 7500; isCritical = true; suggestedKey = 'hyponatremia'; }
+          else if (res > 150) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Hypernatremia (E87.0) (+RW)'; estRevenue = 7500; isCritical = true; suggestedKey = 'hypernatremia'; }
         } else if (ln.includes('creatinine') || ln === 'cr') {
-          if (res > 1.5) { aiSuggest = 'AI เสนอ: ตรวจสอบ Acute Kidney Injury (N17.9) (+RW)'; estRevenue = 15000; isCritical = true; }
+          if (res > 1.5) { aiSuggest = 'AI เสนอ: ตรวจสอบ Acute Kidney Injury (N17.9) (+RW)'; estRevenue = 15000; isCritical = true; suggestedKey = 'aki'; }
         } else if (ln.includes('lactate')) {
-          if (res > 2.0) { aiSuggest = 'AI เสนอ: พิจารณาสัญญาณ Sepsis/Septic Shock (A41.9) (+RW)'; estRevenue = 20000; isCritical = true; }
+          if (res > 2.0) { aiSuggest = 'AI เสนอ: พิจารณาสัญญาณ Sepsis/Septic Shock (A41.9) (+RW)'; estRevenue = 20000; isCritical = true; suggestedKey = 'sepsis'; }
         } else if (ln.includes('albumin')) {
-          if (res < 2.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Severe Malnutrition (E43) (+RW)'; estRevenue = 12000; isCritical = true; }
+          if (res < 2.5) { aiSuggest = 'AI เสนอ: พิจารณาลงรหัส Severe Malnutrition (E43) (+RW)'; estRevenue = 12000; isCritical = true; suggestedKey = 'malnutrition'; }
         } else if (ln.includes('trop') || ln.includes('troponin')) {
-          aiSuggest = 'AI เสนอ: ตรวจสอบประวัติเจ็บหน้าอก พิจารณา NSTEMI/STEMI (I21.-) (+RW)'; estRevenue = 25000; isCritical = true;
-        } else if (ln.includes('ph')) {
-          if (res < 7.35) { aiSuggest = 'AI เสนอ: ภาวะ Acidosis (E87.2) ส่งผลต่อความรุนแรง (+RW) ควรแจ้งแพทย์'; estRevenue = 8000; isCritical = true; }
+          aiSuggest = 'AI เสนอ: ตรวจสอบประวัติเจ็บหน้าอก พิจารณา NSTEMI/STEMI (I21.-) (+RW)'; estRevenue = 25000; isCritical = true; suggestedKey = 'nstemi';
+        } else if (ln === 'ph' || ln === 'blood ph' || ln === 'arterial ph' || ln.includes('ph (blood')) {
+          if (res < 7.35) { aiSuggest = 'AI เสนอ: ภาวะ Acidosis (E87.2) ส่งผลต่อความรุนแรง (+RW) ควรแจ้งแพทย์'; estRevenue = 8000; isCritical = true; suggestedKey = 'acidosis'; }
+        } else if (ln.includes('neutrophil') && res > 80) {
+          aiSuggest = 'AI เสนอ: พิจารณา Neutrophilia สัมพันธ์กับ Infection/Sepsis — ตรวจสอบ CC/MCC'; estRevenue = 6000; isCritical = true; suggestedKey = 'sepsis';
         }
+      }
+
+      // Skip if the suggested ICD-10 is already coded
+      if (isCritical && suggestedKey && suggestedIcdMap[suggestedKey]) {
+        if (existingDx.includes(suggestedIcdMap[suggestedKey])) return;
       }
 
       if (isCritical) {
@@ -773,5 +827,375 @@ router.get('/drg-optimization', cached('drgOptimization_v13', 360000, async () =
     return { error: error.message };
   }
 }));
+
+// ━━━━━━ Revenue Recovery Tracker — AI Recommendation Follow-up ━━━━━━
+router.get('/revenue-recovery', cached('mrRevenueRecovery', 600000, async () => {
+  try {
+    // 1. PDx cases with unspecified codes → check if PDx was changed (improved)
+    const pdxRecovery = await dbQueryHeavy('mrPdxRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_flagged,
+        SUM(CASE WHEN d_now.icd10 != d_orig.icd10 THEN 1 ELSE 0 END) as pdx_changed,
+        SUM(CASE WHEN d_now.icd10 != d_orig.icd10 THEN COALESCE(a.rw, 0) * 8350 ELSE 0 END) as est_recovered
+      FROM ipt i
+      INNER JOIN an_stat a ON i.an = a.an
+      INNER JOIN iptdiag d_orig ON i.an = d_orig.an AND d_orig.diagtype = '1'
+      INNER JOIN iptdiag d_now ON i.an = d_now.an AND d_now.diagtype = '1'
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND d_orig.icd10 IN ('J189', 'K358', 'A419', 'I64', 'N201', 'A099', 'N390')
+    `).catch(() => ({}));
+
+    // 2. Cases that had no CC/MCC → check if secondary dx was added
+    const ccRecovery = await dbQueryHeavy('mrCCRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT base.an) as total_flagged,
+        SUM(CASE WHEN has_cc.an IS NOT NULL THEN 1 ELSE 0 END) as cc_added,
+        SUM(CASE WHEN has_cc.an IS NOT NULL THEN COALESCE(a.rw, 0) * 2000 ELSE 0 END) as est_recovered
+      FROM (
+        SELECT DISTINCT i.an
+        FROM ipt i
+        INNER JOIN an_stat a ON i.an = a.an
+        WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          AND a.income > 30000 AND a.rw > 0 AND a.rw < 1.0
+          AND EXISTS (SELECT 1 FROM iptdiag dx WHERE dx.an = i.an AND dx.diagtype = '1')
+      ) base
+      INNER JOIN an_stat a ON base.an = a.an
+      LEFT JOIN (
+        SELECT DISTINCT an FROM iptdiag WHERE diagtype IN ('2','3')
+      ) has_cc ON base.an = has_cc.an
+    `).catch(() => ({}));
+
+    // 3. Lab→Dx: cases with critical labs → check if suggested ICD was coded
+    const labRecovery = await dbQueryHeavy('mrLabRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_flagged,
+        SUM(CASE WHEN dx_added.an IS NOT NULL THEN 1 ELSE 0 END) as dx_added,
+        SUM(CASE WHEN dx_added.an IS NOT NULL THEN 8350 ELSE 0 END) as est_recovered
+      FROM ipt i
+      INNER JOIN lab_head lh ON lh.hn = i.hn AND lh.order_date BETWEEN i.regdate AND i.dchdate
+      INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
+      LEFT JOIN (
+        SELECT DISTINCT d.an FROM iptdiag d WHERE d.diagtype != '1'
+          AND (d.icd10 LIKE 'E87%' OR d.icd10 LIKE 'N17%' OR d.icd10 LIKE 'A41%' OR d.icd10 LIKE 'E43%' OR d.icd10 LIKE 'I21%')
+      ) dx_added ON i.an = dx_added.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND lo.abnormal_result = 'Y'
+        AND (lo.lab_items_name_ref LIKE '%Potassium%' OR lo.lab_items_name_ref LIKE '%Creatinine%'
+          OR lo.lab_items_name_ref LIKE '%Troponin%' OR lo.lab_items_name_ref LIKE '%Lactate%'
+          OR lo.lab_items_name_ref LIKE '%Albumin%')
+    `).catch(() => ({}));
+
+    // 4. Overall DRG optimization: RW changes after coding review
+    const rwRecovery = await dbQueryHeavy('mrRWRecovery', 120, `
+      SELECT
+        COUNT(DISTINCT i.an) as total_cases,
+        SUM(CASE WHEN i.adjrw > a.rw THEN 1 ELSE 0 END) as rw_increased,
+        ROUND(SUM(CASE WHEN i.adjrw > a.rw THEN (i.adjrw - a.rw) * 8350 ELSE 0 END)) as rw_gain_revenue,
+        SUM(CASE WHEN i.adjrw < a.rw THEN 1 ELSE 0 END) as rw_decreased,
+        ROUND(SUM(CASE WHEN i.adjrw < a.rw THEN (a.rw - i.adjrw) * 8350 ELSE 0 END)) as rw_loss_revenue
+      FROM ipt i
+      INNER JOIN an_stat a ON i.an = a.an
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND a.rw > 0 AND i.adjrw IS NOT NULL
+    `).catch(() => ({}));
+
+    const pdxFlagged = Number(pdxRecovery?.total_flagged || 0);
+    const pdxChanged = Number(pdxRecovery?.pdx_changed || 0);
+    const ccFlagged = Number(ccRecovery?.total_flagged || 0);
+    const ccAdded = Number(ccRecovery?.cc_added || 0);
+    const labFlagged = Number(labRecovery?.total_flagged || 0);
+    const labDxAdded = Number(labRecovery?.dx_added || 0);
+
+    const totalFlagged = pdxFlagged + ccFlagged + labFlagged;
+    const totalActioned = pdxChanged + ccAdded + labDxAdded;
+    const conversionRate = totalFlagged > 0 ? Math.round((totalActioned / totalFlagged) * 100) : 0;
+
+    const totalPotential = Number(pdxRecovery?.est_recovered || 0) + Number(ccRecovery?.est_recovered || 0) + Number(labRecovery?.est_recovered || 0);
+    const totalRecovered = totalPotential; // Approximate: if dx was added, assume full recovery
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + an_stat + lab_order',
+      summary: {
+        total_flagged: totalFlagged,
+        total_actioned: totalActioned,
+        conversion_rate: conversionRate,
+        potential_revenue: totalPotential,
+        recovered_revenue: totalRecovered,
+      },
+      categories: [
+        { type: 'PDx Optimization', icon: '🎯', flagged: pdxFlagged, actioned: pdxChanged, rate: pdxFlagged > 0 ? Math.round((pdxChanged / pdxFlagged) * 100) : 0, revenue: Number(pdxRecovery?.est_recovered || 0) },
+        { type: 'CC/MCC Missing', icon: '📋', flagged: ccFlagged, actioned: ccAdded, rate: ccFlagged > 0 ? Math.round((ccAdded / ccFlagged) * 100) : 0, revenue: Number(ccRecovery?.est_recovered || 0) },
+        { type: 'Lab → Diagnosis', icon: '🩸', flagged: labFlagged, actioned: labDxAdded, rate: labFlagged > 0 ? Math.round((labDxAdded / labFlagged) * 100) : 0, revenue: Number(labRecovery?.est_recovered || 0) },
+      ],
+      rw_impact: {
+        total_cases: Number(rwRecovery?.total_cases || 0),
+        rw_increased: Number(rwRecovery?.rw_increased || 0),
+        rw_gain: Number(rwRecovery?.rw_gain_revenue || 0),
+        rw_decreased: Number(rwRecovery?.rw_decreased || 0),
+        rw_loss: Number(rwRecovery?.rw_loss_revenue || 0),
+      },
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Revenue recovery error', { error: err.message });
+    return { summary: {}, categories: [], rw_impact: {} };
+  }
+}));
+
+// ━━━━━━ Coding Quality Heatmap — Coder × Ward ━━━━━━
+router.get('/coding-heatmap', cached('mrCodingHeatmap', 1800000, async () => {
+  try {
+    // Query: per coder × ward → diagnosis depth, CC rate, case count (30 days)
+    const rows = await dbQueryHeavy('mrHeatmap_v1', 60, `
+      SELECT
+        COALESCE(u.name, d.staff) as coder_name,
+        w.name as ward_name,
+        COUNT(DISTINCT d.an) as case_count,
+        -- CC/MCC rate: % of cases with at least one secondary dx (diagtype 2 or 3)
+        ROUND(100.0 * COUNT(DISTINCT CASE WHEN d.diagtype IN ('2','3') THEN d.an END)
+          / NULLIF(COUNT(DISTINCT d.an), 0), 0) as cc_rate,
+        -- Avg diagnoses per case
+        ROUND(COUNT(*) / NULLIF(COUNT(DISTINCT d.an), 0), 1) as diag_per_case,
+        -- Diagnosis depth breakdown
+        ROUND(SUM(CASE WHEN d.diagtype = '1' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as pdx_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype = '2' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as cc_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype = '3' THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as mcc_per_case,
+        ROUND(SUM(CASE WHEN d.diagtype IN ('4','5') THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT d.an), 0), 2) as proc_per_case
+      FROM iptdiag d
+      INNER JOIN ipt i ON d.an = i.an
+      INNER JOIN ward w ON i.ward = w.ward
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND d.staff IS NOT NULL AND d.staff != ''
+        AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%'
+      GROUP BY d.staff, u.name, i.ward, w.name
+      HAVING COUNT(DISTINCT d.an) >= 3
+      ORDER BY coder_name, case_count DESC
+    `).catch(() => []);
+
+    // Build matrix structure
+    const coders = new Map();
+    const wards = new Set();
+    for (const r of (rows || [])) {
+      wards.add(r.ward_name);
+      if (!coders.has(r.coder_name)) coders.set(r.coder_name, { name: r.coder_name, total_cases: 0, avg_cc: 0, wards: {} });
+      const c = coders.get(r.coder_name);
+      c.total_cases += Number(r.case_count);
+      c.wards[r.ward_name] = {
+        cases: Number(r.case_count),
+        cc_rate: Number(r.cc_rate),
+        diag_per_case: Number(r.diag_per_case),
+        pdx: Number(r.pdx_per_case),
+        cc: Number(r.cc_per_case),
+        mcc: Number(r.mcc_per_case),
+        proc: Number(r.proc_per_case),
+      };
+    }
+
+    // Calculate avg CC rate per coder
+    for (const c of coders.values()) {
+      const wardEntries = Object.values(c.wards);
+      const totalCases = wardEntries.reduce((s, w) => s + w.cases, 0);
+      c.avg_cc = totalCases > 0
+        ? Math.round(wardEntries.reduce((s, w) => s + w.cc_rate * w.cases, 0) / totalCases)
+        : 0;
+    }
+
+    // Find weak spots (coder × ward with low CC rate)
+    const weakSpots = [];
+    for (const c of coders.values()) {
+      for (const [ward, data] of Object.entries(c.wards)) {
+        if (data.cc_rate < 50 && data.cases >= 5) {
+          weakSpots.push({
+            coder: c.name, ward, cases: data.cases, cc_rate: data.cc_rate,
+            diag_per_case: data.diag_per_case,
+            recommendation: data.cc_rate === 0
+              ? `${c.name} ไม่มี CC/MCC เลยใน ${ward} (${data.cases} เคส) — ต้องอบรมเร่งด่วน`
+              : `${c.name} CC Rate ต่ำ ${data.cc_rate}% ใน ${ward} — ควร peer review`,
+          });
+        }
+      }
+    }
+    weakSpots.sort((a, b) => a.cc_rate - b.cc_rate);
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + ward + opduser',
+      coders: Array.from(coders.values()).sort((a, b) => b.total_cases - a.total_cases),
+      wards: Array.from(wards).sort(),
+      weak_spots: weakSpots.slice(0, 10),
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Coding heatmap error', { error: err.message });
+    return { coders: [], wards: [], weak_spots: [] };
+  }
+}));
+
+// ━━━━━━ Coding Turnaround Trend — Weekly × Coder (12 weeks) ━━━━━━
+router.get('/turnaround-trend', cached('mrTurnaroundTrend', 1800000, async () => {
+  try {
+    const rows = await dbQueryHeavy('mrTATrend_v1', 60, `
+      SELECT
+        YEARWEEK(i.dchdate, 1) as yw,
+        MIN(i.dchdate) as week_start,
+        COALESCE(u.name, d.staff) as coder_name,
+        COUNT(DISTINCT d.an) as cases,
+        ROUND(AVG(DATEDIFF(MIN_DT.first_code, i.dchdate)), 1) as avg_days
+      FROM ipt i
+      INNER JOIN (
+        SELECT an, MIN(modify_datetime) as first_code, staff
+        FROM iptdiag
+        WHERE modify_datetime >= DATE_SUB(CURDATE(), INTERVAL 84 DAY)
+          AND staff IS NOT NULL AND staff != ''
+        GROUP BY an, staff
+      ) MIN_DT ON i.an = MIN_DT.an
+      INNER JOIN iptdiag d ON d.an = i.an AND d.staff = MIN_DT.staff
+      LEFT JOIN opduser u ON d.staff = u.loginname
+      WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 84 DAY)
+        AND i.dchdate IS NOT NULL
+        AND COALESCE(u.name, d.staff) NOT LIKE 'นพ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'พญ.%'
+        AND COALESCE(u.name, d.staff) NOT LIKE 'ทพญ.%' AND COALESCE(u.name, d.staff) NOT LIKE 'ทพ.%'
+      GROUP BY YEARWEEK(i.dchdate, 1), MIN(i.dchdate), d.staff, u.name
+      HAVING COUNT(DISTINCT d.an) >= 1
+      ORDER BY yw ASC, coder_name
+    `).catch(() => []);
+
+    // Build week × coder matrix
+    const weekMap = new Map();
+    const coderSet = new Set();
+    for (const r of (rows || [])) {
+      const wk = r.week_start?.toISOString?.()?.slice(0, 10) || r.week_start?.slice?.(0, 10) || String(r.yw);
+      if (!weekMap.has(wk)) weekMap.set(wk, { week: wk, coders: {}, total_cases: 0, avg_all: 0 });
+      const w = weekMap.get(wk);
+      coderSet.add(r.coder_name);
+      w.coders[r.coder_name] = { cases: Number(r.cases), avg_days: Number(r.avg_days) };
+      w.total_cases += Number(r.cases);
+    }
+
+    // Calculate overall avg per week
+    for (const w of weekMap.values()) {
+      const entries = Object.values(w.coders);
+      const totalCases = entries.reduce((s, e) => s + e.cases, 0);
+      w.avg_all = totalCases > 0
+        ? Math.round(entries.reduce((s, e) => s + e.avg_days * e.cases, 0) / totalCases * 10) / 10
+        : 0;
+    }
+
+    const weeks = Array.from(weekMap.values()).sort((a, b) => a.week.localeCompare(b.week));
+    const coders = Array.from(coderSet).sort();
+
+    // Format week labels
+    const formatted = weeks.map(w => {
+      const d = new Date(w.week);
+      const label = `${d.getDate()}/${d.getMonth() + 1}`;
+      const entry = { week: w.week, label, avg_all: w.avg_all, total_cases: w.total_cases };
+      for (const c of coders) entry[c] = w.coders[c]?.avg_days ?? null;
+      return entry;
+    });
+
+    return {
+      data_source: 'HOSxP XE · iptdiag + ipt',
+      weeks: formatted,
+      coders,
+      target_days: 3,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.error('Turnaround trend error', { error: err.message });
+    return { weeks: [], coders: [], target_days: 3 };
+  }
+}));
+
+// ━━━━━━ DRG Kanban Board — CRUD ━━━━━━
+// GET: list all cards (with optional status filter)
+router.get('/kanban', (req, res) => {
+  try {
+    const db = getDb();
+    const status = req.query.status;
+    const rows = status
+      ? db.prepare('SELECT * FROM drg_kanban WHERE status = ? ORDER BY updated_at DESC').all(status)
+      : db.prepare('SELECT * FROM drg_kanban ORDER BY CASE status WHEN "pending" THEN 1 WHEN "review" THEN 2 WHEN "completed" THEN 3 WHEN "recovered" THEN 4 END, updated_at DESC').all();
+
+    // Count by status
+    const counts = db.prepare('SELECT status, COUNT(*) as cnt, SUM(est_revenue) as total_rev FROM drg_kanban GROUP BY status').all();
+    const summary = { pending: 0, review: 0, completed: 0, recovered: 0, total_revenue: 0 };
+    for (const r of counts) {
+      summary[r.status] = r.cnt;
+      summary.total_revenue += Number(r.total_rev || 0);
+    }
+
+    res.json({ cards: rows, summary, timestamp: new Date().toISOString() });
+  } catch (err) {
+    logger.error('Kanban GET error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST: sync from DRG optimization → create cards that don't exist yet
+router.post('/kanban/sync', async (req, res) => {
+  try {
+    const db = getDb();
+    const drgOpt = req.body?.cases || [];
+
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO drg_kanban (an, hn, patient_name, ward, category, issue, ai_suggest, est_revenue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let added = 0;
+    const tx = db.transaction((cases) => {
+      for (const c of cases) {
+        const result = insert.run(c.an, c.hn, c.name, c.ward, c.category || 'pdx', c.issue, c.aiSuggest, c.estRevenue || 0);
+        if (result.changes > 0) added++;
+      }
+    });
+    tx(drgOpt);
+
+    res.json({ added, total: db.prepare('SELECT COUNT(*) as cnt FROM drg_kanban').get().cnt });
+  } catch (err) {
+    logger.error('Kanban sync error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH: update card status (drag & drop)
+router.patch('/kanban/:an', (req, res) => {
+  try {
+    const db = getDb();
+    const { status, assigned_to, notes } = req.body;
+    const an = req.params.an;
+
+    const sets = [];
+    const vals = [];
+    if (status) { sets.push('status = ?'); vals.push(status); }
+    if (assigned_to !== undefined) { sets.push('assigned_to = ?'); vals.push(assigned_to); }
+    if (notes !== undefined) { sets.push('notes = ?'); vals.push(notes); }
+    sets.push("updated_at = datetime('now','localtime')");
+    vals.push(an);
+
+    db.prepare(`UPDATE drg_kanban SET ${sets.join(', ')} WHERE an = ?`).run(...vals);
+
+    const updated = db.prepare('SELECT * FROM drg_kanban WHERE an = ?').get(an);
+    res.json({ success: true, card: updated });
+  } catch (err) {
+    logger.error('Kanban PATCH error', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE: remove card
+router.delete('/kanban/:an', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM drg_kanban WHERE an = ?').run(req.params.an);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Revenue Fiscal — hospital-wide (MedRec covers all coding) ----
+router.get('/revenue-fiscal', cached('medrecRevenueFiscal', 3600000, (req) => getRevenueFiscal(null, 'HOSxP XE · vn_stat (MedRec)', req?.query?.start, req?.query?.end)));
 
 export default router;

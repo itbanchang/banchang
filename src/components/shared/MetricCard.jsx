@@ -126,7 +126,7 @@ const MetricCard = ({
       {target != null && hasNumValue && (
         <div style={targetWrapStyle}>
           <div style={targetLabelStyle}>
-            Target: {target}{unit}
+            Target: {target}{typeof target === 'number' && unit && !String(unit).includes('%') ? unit : ''}
           </div>
           <div style={progressTrackStyle}>
             <div

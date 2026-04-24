@@ -327,3 +327,33 @@ export function useDashboard() {
     if (!context) throw new Error('useDashboard must be used within DashboardProvider');
     return context;
 }
+
+// Zustand-style selector hook. Subscribes to the full context; callers pick
+// the slice they need. The outer object identity tracks state identity 1:1
+// (state is spread-copied on every dispatch), so key memoisation on the
+// *inner* slice (e.g. state.opdToday) whose reference is stable when
+// unchanged.
+export function useShallowDashboardSelector(selector) {
+    const { state } = useDashboard();
+    return selector(state);
+}
+
+// Stable-reference action accessors. Each function is already memoised
+// inside DashboardProvider, so this hook just forwards them.
+export function useDashboardActions() {
+    const ctx = useDashboard();
+    return useMemo(() => ({
+        setTab: ctx.setTab,
+        dispatch: ctx.dispatch,
+        fetchData: ctx.fetchData,
+        fetchParallel: ctx.fetchParallel,
+        batchFetch: ctx.batchFetch,
+        addAlert: ctx.addAlert,
+        dismissAlert: ctx.dismissAlert,
+        openDrillDown: ctx.openDrillDown,
+        closeDrillDown: ctx.closeDrillDown,
+    }), [
+        ctx.setTab, ctx.dispatch, ctx.fetchData, ctx.fetchParallel, ctx.batchFetch,
+        ctx.addAlert, ctx.dismissAlert, ctx.openDrillDown, ctx.closeDrillDown,
+    ]);
+}

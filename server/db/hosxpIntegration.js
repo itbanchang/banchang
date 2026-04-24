@@ -3,6 +3,7 @@
 // OPTIMIZED — ใช้ specific columns, ไม่ SELECT *, เร็วสุด
 // ============================================================
 import { dbQuery, dbQueryOne } from './mysql.js';
+import { getWardName, getDoctorName, getICD10TName, getPtypeName, enrichRows } from '../cache/masterData.js';
 
 // ============================================================
 // DASHBOARD SUMMARY — Query เดียวดึงทั้งหมด
@@ -108,7 +109,7 @@ export async function getClaimsData(options = {}) {
   const { limit = 100, dateFrom, dateTo } = options;
   let sql = `
     SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
-    pt.name as payer, id.icd10, i.regdate, i.dchdate,
+    i.pttype as pttype_code, id.icd10, i.regdate, i.dchdate,
     a.drg, a.rw,
     COALESCE(a.income, 0) as charge,
     COALESCE(a.rcpt_money, 0) + COALESCE(a.uc_money, 0) + COALESCE(a.discount_money, 0) + COALESCE(a.paid_money, 0) as paid,
@@ -116,7 +117,6 @@ export async function getClaimsData(options = {}) {
     u.name as staff_name
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
-    LEFT JOIN pttype pt ON i.pttype = pt.pttype
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
     LEFT JOIN an_stat a ON i.an = a.an
     LEFT JOIN ipt_pttype ip ON i.an = ip.an
@@ -128,7 +128,10 @@ export async function getClaimsData(options = {}) {
   if (dateTo) { sql += ' AND i.regdate <= ?'; params.push(dateTo); }
   sql += ' ORDER BY i.regdate DESC LIMIT ?';
   params.push(limit);
-  return await dbQuery(sql, params);
+  const rows = await dbQuery(sql, params);
+  return enrichRows(rows, {
+    payer: { source: 'pttype_code', lookup: getPtypeName },
+  });
 }
 
 // ============================================================
@@ -165,23 +168,25 @@ export { REAL_BEDS };
 export async function getActiveAdmissions(wardId = null) {
   let sql = `
     SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
-    i.regdate, w.name as ward, w.ward as ward_id, d.name as doctor,
-    id.icd10, icd.tname as dx_name,
+    i.regdate, i.ward as ward_id, i.admdoctor as doctor_code,
+    id.icd10, i.pttype as pttype_code,
     DATEDIFF(NOW(), i.regdate) as stay_days,
-    pt.name as payer, TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age, p.sex
+    TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age, p.sex
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
-    LEFT JOIN ward w ON i.ward = w.ward
-    LEFT JOIN doctor d ON i.admdoctor = d.code
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
-    LEFT JOIN pttype pt ON i.pttype = pt.pttype
     WHERE i.dchdate IS NULL
     `;
   const params = [];
   if (wardId) { sql += ' AND i.ward = ?'; params.push(wardId); }
   sql += ' ORDER BY i.regdate ASC';
-  return await dbQuery(sql, params);
+  const rows = await dbQuery(sql, params);
+  return enrichRows(rows, {
+    ward:   { source: 'ward_id', lookup: getWardName },
+    doctor: { source: 'doctor_code', lookup: getDoctorName },
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+    payer:  { source: 'pttype_code', lookup: getPtypeName },
+  });
 }
 
 // ============================================================
@@ -207,21 +212,23 @@ export async function getALOSData(options = {}) {
 // CLINICAL — High Risk Patients (current IPD)
 // ============================================================
 export async function getHighRiskPatients() {
-  return await dbQuery(`
+  const rows = await dbQuery(`
     SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
     TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age, p.sex,
-    w.name as ward, i.regdate, DATEDIFF(NOW(), i.regdate) as stay_days,
-    d.name as doctor, id.icd10, icd.tname as dx_name, pt.name as payer
+    i.ward as ward_id, i.regdate, DATEDIFF(NOW(), i.regdate) as stay_days,
+    i.admdoctor as doctor_code, id.icd10, i.pttype as pttype_code
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
-    LEFT JOIN ward w ON i.ward = w.ward
-    LEFT JOIN doctor d ON i.admdoctor = d.code
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
-    LEFT JOIN pttype pt ON i.pttype = pt.pttype
     WHERE i.dchdate IS NULL
     ORDER BY i.regdate ASC
     `);
+  return enrichRows(rows, {
+    ward:    { source: 'ward_id', lookup: getWardName },
+    doctor:  { source: 'doctor_code', lookup: getDoctorName },
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+    payer:   { source: 'pttype_code', lookup: getPtypeName },
+  });
 }
 
 // ============================================================
@@ -241,25 +248,27 @@ export async function getPatientVitals(hn) {
 // ER — Today Patients & Triage
 // ============================================================
 export async function getERTodayPatients() {
-  return await dbQuery(`
+  const rows = await dbQuery(`
     SELECT e.vn, e.vstdate, o.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
     TIMESTAMPDIFF(YEAR, p.birthday, NOW()) as age, p.sex,
     e.er_emergency_type as triage_id,
     e.enter_er_time, e.doctor_tx_time, e.finish_time,
-    d.name as doctor_name,
+    e.er_doctor as doctor_code,
     e.er_dch_type as dch_type_id,
     GREATEST(0, TIMESTAMPDIFF(MINUTE, e.enter_er_time, COALESCE(e.finish_time, NOW()))) as stay_minutes,
     os.bps, os.bpd, os.pulse, os.rr, os.temperature as temp, os.o2sat,
-    pt.name as pttype_name
+    o.pttype as pttype_code
     FROM er_regist e
     INNER JOIN ovst o ON e.vn = o.vn
     INNER JOIN patient p ON o.hn = p.hn
-    LEFT JOIN doctor d ON e.er_doctor = d.code
     LEFT JOIN opdscreen os ON e.vn = os.vn
-    LEFT JOIN pttype pt ON o.pttype = pt.pttype
     WHERE e.vstdate = CURDATE()
     ORDER BY e.enter_er_time DESC
     `);
+  return enrichRows(rows, {
+    doctor_name: { source: 'doctor_code', lookup: getDoctorName },
+    pttype_name: { source: 'pttype_code', lookup: getPtypeName },
+  });
 }
 
 export async function getERTriageStats() {
@@ -390,75 +399,83 @@ export async function getPPFSComparison() {
 // IPD DRILL-DOWN — Professional Details
 // ============================================================
 export async function getIPDReadmissionDetails() {
-  return await dbQuery(`
+  const rows = await dbQuery(`
     SELECT i2.an, i2.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
     i1.dchdate as prev_dchdate, i2.regdate as readmit_date,
     DATEDIFF(i2.regdate, i1.dchdate) as days_since_dch,
-    w.name as ward, icd.tname as dx_name
+    i2.ward as ward_id, id.icd10
     FROM ipt i1
     INNER JOIN ipt i2 ON i1.hn = i2.hn AND i2.an != i1.an
     INNER JOIN patient p ON i1.hn = p.hn
-    LEFT JOIN ward w ON i2.ward = w.ward
     LEFT JOIN iptdiag id ON i2.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
     WHERE i1.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
       AND i2.regdate BETWEEN i1.dchdate AND DATE_ADD(i1.dchdate, INTERVAL 30 DAY)
     ORDER BY i2.regdate DESC
     LIMIT 50
   `);
+  return enrichRows(rows, {
+    ward:    { source: 'ward_id', lookup: getWardName },
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+  });
 }
 
 export async function getIPDALOSVarianceDetails() {
-  return await dbQuery(`
+  const rows = await dbQuery(`
     SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
     i.regdate, i.dchdate, DATEDIFF(COALESCE(i.dchdate, CURDATE()), i.regdate) as actual_alos,
     ROUND(a.rw * 4, 1) as benchmark_alos,
     (DATEDIFF(COALESCE(i.dchdate, CURDATE()), i.regdate) - ROUND(a.rw * 4, 1)) as excess_days,
-    w.name as ward, icd.tname as dx_name
+    i.ward as ward_id, id.icd10
     FROM ipt i
     INNER JOIN an_stat a ON i.an = a.an
     INNER JOIN patient p ON i.hn = p.hn
-    LEFT JOIN ward w ON i.ward = w.ward
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
     WHERE i.regdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
       AND (DATEDIFF(COALESCE(i.dchdate, CURDATE()), i.regdate) > (a.rw * 4))
     ORDER BY excess_days DESC
     LIMIT 50
   `);
+  return enrichRows(rows, {
+    ward:    { source: 'ward_id', lookup: getWardName },
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+  });
 }
 
 export async function getIPDCMIDetails() {
-  return await dbQuery(`
-    SELECT a.drg, icd.tname as dx_name, COUNT(*) as cases,
+  const rows = await dbQuery(`
+    SELECT a.drg, id.icd10, COUNT(*) as cases,
     ROUND(AVG(a.rw), 3) as avg_rw, SUM(a.rw) as total_rw,
     ROUND(AVG(a.income), 0) as avg_income
     FROM an_stat a
     LEFT JOIN ipt i ON a.an = i.an
     LEFT JOIN iptdiag id ON a.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
     WHERE a.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-    GROUP BY a.drg, icd.tname
+    GROUP BY a.drg, id.icd10
     ORDER BY total_rw DESC
     LIMIT 50
   `);
+  return enrichRows(rows, {
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+  });
 }
 
 export async function getIPDMortalityDetails() {
-  return await dbQuery(`
+  const rows = await dbQuery(`
     SELECT i.an, i.hn, CONCAT(p.pname, p.fname, ' ', p.lname) as name,
-    i.regdate, i.dchdate, w.name as ward, icd.tname as dx_name, d.name as doctor
+    i.regdate, i.dchdate, i.ward as ward_id, id.icd10, i.admdoctor as doctor_code
     FROM ipt i
     INNER JOIN patient p ON i.hn = p.hn
-    LEFT JOIN ward w ON i.ward = w.ward
     LEFT JOIN iptdiag id ON i.an = id.an AND id.diagtype = 1
-    LEFT JOIN icd101 icd ON id.icd10 = icd.code
-    LEFT JOIN doctor d ON i.admdoctor = d.code
     WHERE i.dchdate >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
       AND i.dchtype IN ('8','9')
     ORDER BY i.dchdate DESC
     LIMIT 50
   `);
+  return enrichRows(rows, {
+    ward:    { source: 'ward_id', lookup: getWardName },
+    dx_name: { source: 'icd10', lookup: getICD10TName },
+    doctor:  { source: 'doctor_code', lookup: getDoctorName },
+  });
 }
 
 export default {

@@ -1,6 +1,8 @@
 // ============================================================
 // BCH 360° Intelligence V.10 - Stale-While-Revalidate Cache
 // ============================================================
+import { safeError } from '../lib/safeError.js';
+
 const cache = {};
 const inflight = new Map();
 
@@ -64,7 +66,7 @@ export function cached(key, ttl, fn) {
                 .type('json').end(json);
         } catch (err) {
             inflight.delete(k);
-            res.status(500).json({ error: err.message });
+            safeError(res, err, 'Cache');
         }
     };
 }

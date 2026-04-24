@@ -12,13 +12,16 @@ import { getCalibrated, getCalibrationMeta } from '../ai/calibration.js';
 import { getAlertStatus } from '../monitoring/alerts.js';
 import { getMetricsJSON } from '../monitoring/metrics.js';
 import logger from '../logger.js';
+import { validateQuery, validateParams } from '../middleware/validate.js';
+import { exportDatasetParams, exportMonthsQuery } from '../middleware/schemas.js';
+import { safeError } from '../lib/safeError.js';
 
 const router = Router();
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 1. CSV EXPORT — Download any KPI dataset as CSV
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/export/:dataset', async (req, res) => {
+router.get('/export/:dataset', validateParams(exportDatasetParams), validateQuery(exportMonthsQuery), async (req, res) => {
   try {
     const { dataset } = req.params;
     const { months = 6 } = req.query;
@@ -115,7 +118,7 @@ router.get('/export/:dataset', async (req, res) => {
     res.send(csv);
   } catch (err) {
     logger.error('Export failed', { error: err.message, dataset: req.params.dataset });
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Executive');
   }
 });
 
@@ -367,7 +370,7 @@ router.get('/report', cached('exec_report_v2', 1800000, async () => {
     // ── Top Diagnoses ──
     top_diseases: (topDiseases || []).slice(0, 10).map(d => ({
       icd10: d.icd10 || d.code,
-      name: d.name || d.tname || d.icd10_name,
+      name: d.name || d.tname || d.name,
       count: Number(d.visit_count || d.count || d.cnt || 0),
     })),
 

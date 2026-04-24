@@ -8,6 +8,9 @@ import { dbQuery, dbQueryHeavy, dbQueryOne } from '../db/mysql.js';
 import { cached } from '../cache/staleCache.js';
 import { KPI } from '../config/kpiThresholds.js';
 import logger from '../logger.js';
+import { validateQuery } from '../middleware/validate.js';
+import { fiscalCompareQuery } from '../middleware/schemas.js';
+import { safeError } from '../lib/safeError.js';
 
 const router = Router();
 
@@ -34,25 +37,44 @@ function fyStartCE(beFY) {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /ipd-compare — รายงานผู้ป่วยในเปรียบเทียบปีงบประมาณ
-// Query: ?fy1=2568&fy2=2569
+// Query: ?fy1=2568&fy2=2569  or  ?fy1=2568&fy2=2569&start=YYYY-MM-DD&end=YYYY-MM-DD
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get(
   '/ipd-compare',
+  validateQuery(fiscalCompareQuery),
   cached('report_ipd_compare_v4', 3600000, async req => {
-    // Default: compare current FY vs previous FY
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
     const currentFYBE = currentMonth >= 10 ? currentYear + 544 : currentYear + 543;
     const prevFYBE = currentFYBE - 1;
 
-    const fy1BE = Number(req?.query?.fy1 || prevFYBE);
-    const fy2BE = Number(req?.query?.fy2 || currentFYBE);
+    const customStart = req?.query?.start;
+    const customEnd = req?.query?.end;
+    const dateRangeMode = customStart && customEnd;
 
-    const fy1Start = `${fyStartCE(fy1BE)}-10-01`;
-    const fy1End = `${fyStartCE(fy1BE) + 1}-09-30`;
-    const fy2Start = `${fyStartCE(fy2BE)}-10-01`;
-    const fy2End = `${fyStartCE(fy2BE) + 1}-09-30`;
+    let fy1BE, fy2BE, fy1Start, fy1End, fy2Start, fy2End;
+
+    if (dateRangeMode) {
+      // Date-range mode: fy2 = selected period, fy1 = same window shifted back 1 year
+      const cs = new Date(customStart), ce = new Date(customEnd);
+      fy2Start = customStart;
+      fy2End = customEnd;
+      fy1Start = `${cs.getFullYear() - 1}-${String(cs.getMonth() + 1).padStart(2, '0')}-${String(cs.getDate()).padStart(2, '0')}`;
+      fy1End = `${ce.getFullYear() - 1}-${String(ce.getMonth() + 1).padStart(2, '0')}-${String(ce.getDate()).padStart(2, '0')}`;
+      // Derive fiscal year labels from end date
+      const eFY = ce.getMonth() >= 9 ? ce.getFullYear() : ce.getFullYear() - 1;
+      fy2BE = eFY + 544;
+      fy1BE = fy2BE - 1;
+    } else {
+      // Legacy fiscal-year mode: fy1/fy2 from query params
+      fy1BE = Number(req?.query?.fy1 || prevFYBE);
+      fy2BE = Number(req?.query?.fy2 || currentFYBE);
+      fy1Start = `${fyStartCE(fy1BE)}-10-01`;
+      fy1End = `${fyStartCE(fy1BE) + 1}-09-30`;
+      fy2Start = `${fyStartCE(fy2BE)}-10-01`;
+      fy2End = `${fyStartCE(fy2BE) + 1}-09-30`;
+    }
 
     // Determine which months of fy2 have data (for partial year comparison)
     const fy2LastMonth =
@@ -60,16 +82,16 @@ router.get(
 
     const totalBeds = KPI.ipd.total_beds; // 120 เตียงจริง (จาก config)
 
-    const [monthlyData] = await Promise.all([
-      // Monthly IPD statistics for both fiscal years
+    const [monthlyData, admitData] = await Promise.all([
+      // Discharge-based stats (grouped by dchdate)
       dbQueryHeavy(
-        `report_ipd_fy_${fy1BE}_${fy2BE}`,
+        `report_ipd_dc_${fy1BE}_${fy2BE}_${fy1Start}_${fy2End}`,
         120,
         `
       SELECT
         YEAR(i.dchdate) AS yr,
         MONTH(i.dchdate) AS mo,
-        COUNT(DISTINCT i.an) AS admits,
+        COUNT(DISTINCT i.an) AS discharges,
         SUM(DATEDIFF(i.dchdate, i.regdate)) AS total_los,
         ROUND(AVG(DATEDIFF(i.dchdate, i.regdate)), 2) AS alos,
         ROUND(SUM(COALESCE(i.adjrw, a.rw, 0)), 2) AS sum_adjrw,
@@ -77,7 +99,6 @@ router.get(
       FROM ipt i
       LEFT JOIN an_stat a ON i.an = a.an
       WHERE i.dchdate IS NOT NULL
-        AND i.ward != '06'
         AND (
           (i.dchdate >= ? AND i.dchdate <= LEAST(?, CURDATE()))
           OR
@@ -89,7 +110,33 @@ router.get(
         [fy1Start, fy1End, fy2Start, fy2End],
         { timeoutMs: 25000 }
       ),
+      // Admission-based count (grouped by regdate)
+      dbQueryHeavy(
+        `report_ipd_adm_${fy1BE}_${fy2BE}_${fy1Start}_${fy2End}`,
+        120,
+        `
+      SELECT
+        YEAR(i.regdate) AS yr,
+        MONTH(i.regdate) AS mo,
+        COUNT(DISTINCT i.an) AS admits
+      FROM ipt i
+      WHERE i.regdate IS NOT NULL
+        AND (
+          (i.regdate >= ? AND i.regdate <= LEAST(?, CURDATE()))
+          OR
+          (i.regdate >= ? AND i.regdate <= LEAST(?, CURDATE()))
+        )
+      GROUP BY YEAR(i.regdate), MONTH(i.regdate)
+      ORDER BY yr, mo
+    `,
+        [fy1Start, fy1End, fy2Start, fy2End],
+        { timeoutMs: 25000 }
+      ),
     ]);
+
+    // Build admit lookup map: "yr-mo" → admits
+    const admitMap = new Map();
+    for (const r of (admitData || [])) admitMap.set(`${r.yr}-${r.mo}`, Number(r.admits || 0));
 
     // ── Build month map for each FY ──
     function buildFYMonths(rows, fyBE) {
@@ -99,9 +146,10 @@ router.get(
       for (const fm of FISCAL_MONTHS) {
         const calYear = fm.mo >= 10 ? fyStartYear : fyStartYear + 1;
         const row = (rows || []).find(r => Number(r.yr) === calYear && Number(r.mo) === fm.mo);
+        const admitsCount = admitMap.get(`${calYear}-${fm.mo}`) || 0;
 
-        if (row && Number(row.admits) > 0) {
-          const admits = Number(row.admits);
+        if (row && Number(row.discharges) > 0) {
+          const discharges = Number(row.discharges);
           const totalLOS = Number(row.total_los || 0);
           const daysInMonth = new Date(calYear, fm.mo, 0).getDate();
           const occupancyRate =
@@ -112,7 +160,8 @@ router.get(
             month: fm.label,
             month_num: fm.mo,
             fiscal_idx: fm.idx,
-            admits,
+            admits: admitsCount,
+            discharges,
             total_los: totalLOS,
             alos: Number(row.alos || 0),
             occupancy_rate: occupancyRate,
@@ -126,14 +175,15 @@ router.get(
             month: fm.label,
             month_num: fm.mo,
             fiscal_idx: fm.idx,
-            admits: 0,
+            admits: admitsCount,
+            discharges: 0,
             total_los: 0,
             alos: 0,
             occupancy_rate: 0,
             active_beds: 0,
             sum_adjrw: 0,
             cmi: 0,
-            has_data: false,
+            has_data: admitsCount > 0,
           });
         }
       }
@@ -147,9 +197,10 @@ router.get(
     function computeTotals(months) {
       const withData = months.filter(m => m.has_data);
       const totalAdmits = withData.reduce((s, m) => s + m.admits, 0);
+      const totalDischarges = withData.reduce((s, m) => s + m.discharges, 0);
       const totalLOS = withData.reduce((s, m) => s + m.total_los, 0);
       const totalAdjRW = withData.reduce((s, m) => s + m.sum_adjrw, 0);
-      const avgALOS = totalAdmits > 0 ? Math.round((totalLOS / totalAdmits) * 100) / 100 : 0;
+      const avgALOS = totalDischarges > 0 ? Math.round((totalLOS / totalDischarges) * 100) / 100 : 0;
       const totalDays = withData.reduce((s, m) => {
         const calYear = m.month_num >= 10 ? fyStartCE(fy1BE) : fyStartCE(fy1BE) + 1;
         return s + new Date(calYear, m.month_num, 0).getDate();
@@ -171,6 +222,7 @@ router.get(
       return {
         months_with_data: withData.length,
         admits: totalAdmits,
+        discharges: totalDischarges,
         total_los: totalLOS,
         alos: avgALOS,
         occupancy_rate: avgOccupancy,
@@ -195,8 +247,13 @@ router.get(
             : 0;
       const diff = m2.admits - m1.admits;
 
+      // Month label with BE year (from fy2 side)
+      const calYear = fm.mo >= 10 ? fyStartCE(fy2BE) : fyStartCE(fy2BE) + 1;
+      const beYear = calYear + 543;
+      const monthLabel = `${fm.label} ${beYear}`;
+
       return {
-        month: fm.label,
+        month: monthLabel,
         month_num: fm.mo,
         fy1: m1,
         fy2: m2,
@@ -217,14 +274,16 @@ router.get(
     const rebuildTotals = fySide => {
       const cm = comparableMonths.map(c => c[fySide]);
       const admits = cm.reduce((s, m) => s + m.admits, 0);
+      const discharges = cm.reduce((s, m) => s + m.discharges, 0);
       const los = cm.reduce((s, m) => s + m.total_los, 0);
       const adjrw = cm.reduce((s, m) => s + m.sum_adjrw, 0);
       const cmis = cm.filter(m => m.cmi > 0);
       return {
         months_with_data: cm.length,
         admits,
+        discharges,
         total_los: los,
-        alos: admits > 0 ? Math.round((los / admits) * 100) / 100 : 0,
+        alos: discharges > 0 ? Math.round((los / discharges) * 100) / 100 : 0,
         occupancy_rate:
           cm.length > 0
             ? Math.round((cm.reduce((s, m) => s + m.occupancy_rate, 0) / cm.length) * 100) / 100
@@ -244,15 +303,22 @@ router.get(
     const comparableFy1 = rebuildTotals('fy1');
     const comparableFy2 = rebuildTotals('fy2');
 
+    const fy1Label = dateRangeMode ? `${fy1Start} — ${fy1End}` : `ปี งบ ${fy1BE}`;
+    const fy2Label = dateRangeMode ? `${fy2Start} — ${fy2End}` : `ปี งบ ${fy2BE}`;
+
     return {
       data_source: 'HOSxP XE · ipt + an_stat',
       timestamp: new Date().toISOString(),
-      title: `รายงานจำนวนผู้ป่วยในเปรียบเทียบ ปี ${fy1BE}-${fy2BE}`,
+      title: dateRangeMode
+        ? `รายงานจำนวนผู้ป่วยใน — ${fy2Start} ถึง ${fy2End} เทียบปีก่อน`
+        : `รายงานจำนวนผู้ป่วยในเปรียบเทียบ ปี ${fy1BE}-${fy2BE}`,
 
       fiscal_years: {
-        fy1: { be: fy1BE, label: `ปี งบ ${fy1BE}`, start: fy1Start, end: fy1End },
-        fy2: { be: fy2BE, label: `ปี งบ ${fy2BE}`, start: fy2Start, end: fy2End },
+        fy1: { be: fy1BE, label: fy1Label, start: fy1Start, end: fy1End },
+        fy2: { be: fy2BE, label: fy2Label, start: fy2Start, end: fy2End },
       },
+
+      custom_range: dateRangeMode ? { start: customStart, end: customEnd } : null,
 
       total_beds: totalBeds,
       fy1_totals: comparableFy1,
@@ -271,6 +337,7 @@ router.get(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get(
   '/opd-compare',
+  validateQuery(fiscalCompareQuery),
   cached('report_opd_compare_v1', 3600000, async req => {
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
@@ -391,11 +458,681 @@ router.get(
 );
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /opd-compare-daterange — OPD เปรียบเทียบปีก่อน (auto shift -1 year)
+// Query: ?start=2025-10-01&end=2026-03-31
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/opd-compare-daterange', validateQuery(fiscalCompareQuery), async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+
+    const cs = new Date(start), ce = new Date(end);
+    const fy2Start = start, fy2End = end;
+    const fy1Start = `${cs.getFullYear() - 1}-${String(cs.getMonth() + 1).padStart(2, '0')}-${String(cs.getDate()).padStart(2, '0')}`;
+    const fy1End = `${ce.getFullYear() - 1}-${String(ce.getMonth() + 1).padStart(2, '0')}-${String(ce.getDate()).padStart(2, '0')}`;
+
+    const THAI_MO = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+    const [rows] = await Promise.all([
+      dbQueryHeavy(
+        `report_opd_cmp_${fy1Start}_${fy2End}`,
+        60,
+        `SELECT
+           YEAR(vstdate) AS yr, MONTH(vstdate) AS mo,
+           COUNT(*) AS visits, COUNT(DISTINCT hn) AS patients,
+           ROUND(SUM(COALESCE(income, 0)), 2) AS revenue,
+           ROUND(SUM(COALESCE(inc_drug, 0)), 2) AS drug_cost,
+           ROUND(SUM(COALESCE(inc03, 0)), 2) AS lab_cost,
+           ROUND(SUM(COALESCE(inc04, 0)), 2) AS xray_cost,
+           ROUND(AVG(COALESCE(income, 0)), 2) AS avg_income
+         FROM vn_stat
+         WHERE (
+           (vstdate >= ? AND vstdate <= LEAST(?, CURDATE()))
+           OR
+           (vstdate >= ? AND vstdate <= LEAST(?, CURDATE()))
+         )
+         GROUP BY YEAR(vstdate), MONTH(vstdate)
+         ORDER BY yr, mo`,
+        [fy1Start, fy1End, fy2Start, fy2End],
+        { timeoutMs: 25000 }
+      ),
+    ]);
+
+    // Build month map
+    const rowMap = new Map();
+    for (const r of (rows || [])) rowMap.set(`${r.yr}-${r.mo}`, r);
+
+    // Determine months to show (based on fy2 range)
+    const months = [];
+    let d = new Date(cs);
+    while (d <= ce) {
+      const mo = d.getMonth() + 1;
+      const yr = d.getFullYear();
+      if (!months.find(m => m.yr === yr && m.mo === mo)) months.push({ yr, mo });
+      d.setMonth(d.getMonth() + 1);
+    }
+
+    const num = (v) => Number(v || 0);
+    const comparison = months.map(({ yr, mo }) => {
+      const fy2Row = rowMap.get(`${yr}-${mo}`) || {};
+      const fy1Row = rowMap.get(`${yr - 1}-${mo}`) || {};
+      const label = `${THAI_MO[mo]} ${yr + 543}`;
+      return {
+        month: label, month_num: mo,
+        fy1: { visits: num(fy1Row.visits), patients: num(fy1Row.patients), revenue: num(fy1Row.revenue), drug_cost: num(fy1Row.drug_cost), lab_cost: num(fy1Row.lab_cost), xray_cost: num(fy1Row.xray_cost), avg_income: num(fy1Row.avg_income), has_data: num(fy1Row.visits) > 0 },
+        fy2: { visits: num(fy2Row.visits), patients: num(fy2Row.patients), revenue: num(fy2Row.revenue), drug_cost: num(fy2Row.drug_cost), lab_cost: num(fy2Row.lab_cost), xray_cost: num(fy2Row.xray_cost), avg_income: num(fy2Row.avg_income), has_data: num(fy2Row.visits) > 0 },
+        has_data: num(fy1Row.visits) > 0 || num(fy2Row.visits) > 0,
+      };
+    }).filter(c => c.has_data);
+
+    const comparableMonths = comparison.filter(c => c.fy1.has_data && c.fy2.has_data);
+    const sumSide = (side) => {
+      const cm = comparableMonths.map(c => c[side]);
+      const visits = cm.reduce((s, m) => s + m.visits, 0);
+      const patients = cm.reduce((s, m) => s + m.patients, 0);
+      const revenue = Math.round(cm.reduce((s, m) => s + m.revenue, 0) * 100) / 100;
+      const drug_cost = Math.round(cm.reduce((s, m) => s + m.drug_cost, 0) * 100) / 100;
+      const lab_cost = Math.round(cm.reduce((s, m) => s + m.lab_cost, 0) * 100) / 100;
+      const xray_cost = Math.round(cm.reduce((s, m) => s + m.xray_cost, 0) * 100) / 100;
+      return { visits, patients, revenue, drug_cost, lab_cost, xray_cost, avg_income: visits > 0 ? Math.round((revenue / visits) * 100) / 100 : 0 };
+    };
+    const fy1Totals = sumSide('fy1');
+    const fy2Totals = sumSide('fy2');
+    const yoyVisits = fy1Totals.visits > 0 ? Math.round(((fy2Totals.visits - fy1Totals.visits) / fy1Totals.visits) * 100) : 0;
+
+    res.json({
+      data_source: 'HOSxP XE · vn_stat',
+      timestamp: new Date().toISOString(),
+      title: `รายงานจำนวนผู้ป่วยนอก — ${fy2Start} ถึง ${fy2End} เทียบปีก่อน`,
+      custom_range: { start: fy2Start, end: fy2End },
+      fiscal_years: {
+        fy1: { label: `${fy1Start} — ${fy1End}`, start: fy1Start, end: fy1End },
+        fy2: { label: `${fy2Start} — ${fy2End}`, start: fy2Start, end: fy2End },
+      },
+      fy1_totals: fy1Totals,
+      fy2_totals: fy2Totals,
+      overall_growth_pct: yoyVisits,
+      comparable_months: comparableMonths.length,
+      comparison,
+    });
+  } catch (err) {
+    logger.error('OPD compare-daterange error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /opd-daterange — รายงานผู้ป่วยนอก ช่วงวันที่กำหนดเอง (legacy)
+// Query: ?start=2024-10-01&end=2025-03-27
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/opd-daterange', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    // Daily breakdown
+    const dailyData = await dbQueryHeavy(
+      `report_opd_range_${start}_${end}`,
+      60,
+      `SELECT
+         DATE_FORMAT(vstdate, '%Y-%m-%d') AS date,
+         YEAR(vstdate) AS yr,
+         MONTH(vstdate) AS mo,
+         DAY(vstdate) AS dy,
+         COUNT(*) AS visits,
+         COUNT(DISTINCT hn) AS patients,
+         ROUND(SUM(COALESCE(income, 0)), 2) AS revenue,
+         ROUND(SUM(COALESCE(inc_drug, 0)), 2) AS drug_cost,
+         ROUND(SUM(COALESCE(inc03, 0)), 2) AS lab_cost,
+         ROUND(SUM(COALESCE(inc04, 0)), 2) AS xray_cost,
+         ROUND(AVG(COALESCE(income, 0)), 2) AS avg_income
+       FROM vn_stat
+       WHERE vstdate >= ? AND vstdate <= LEAST(?, CURDATE())
+       GROUP BY vstdate
+       ORDER BY vstdate`,
+      [start, end],
+      { timeoutMs: 25000 }
+    );
+
+    // Monthly summary
+    const monthlyData = await dbQueryHeavy(
+      `report_opd_range_monthly_${start}_${end}`,
+      60,
+      `SELECT
+         YEAR(vstdate) AS yr,
+         MONTH(vstdate) AS mo,
+         COUNT(*) AS visits,
+         COUNT(DISTINCT hn) AS patients,
+         ROUND(SUM(COALESCE(income, 0)), 2) AS revenue,
+         ROUND(SUM(COALESCE(inc_drug, 0)), 2) AS drug_cost,
+         ROUND(SUM(COALESCE(inc03, 0)), 2) AS lab_cost,
+         ROUND(SUM(COALESCE(inc04, 0)), 2) AS xray_cost,
+         ROUND(AVG(COALESCE(income, 0)), 2) AS avg_income
+       FROM vn_stat
+       WHERE vstdate >= ? AND vstdate <= LEAST(?, CURDATE())
+       GROUP BY YEAR(vstdate), MONTH(vstdate)
+       ORDER BY yr, mo`,
+      [start, end],
+      { timeoutMs: 25000 }
+    );
+
+    const THAI_MONTHS = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+    const monthly = (monthlyData || []).map(r => ({
+      month: `${THAI_MONTHS[Number(r.mo)]} ${Number(r.yr) + 543}`,
+      yr: Number(r.yr),
+      mo: Number(r.mo),
+      visits: Number(r.visits),
+      patients: Number(r.patients),
+      revenue: Number(r.revenue || 0),
+      drug_cost: Number(r.drug_cost || 0),
+      lab_cost: Number(r.lab_cost || 0),
+      xray_cost: Number(r.xray_cost || 0),
+      avg_income: Number(r.avg_income || 0),
+    }));
+
+    const totals = {
+      visits: monthly.reduce((s, m) => s + m.visits, 0),
+      patients: monthly.reduce((s, m) => s + m.patients, 0),
+      revenue: Math.round(monthly.reduce((s, m) => s + m.revenue, 0) * 100) / 100,
+      drug_cost: Math.round(monthly.reduce((s, m) => s + m.drug_cost, 0) * 100) / 100,
+      lab_cost: Math.round(monthly.reduce((s, m) => s + m.lab_cost, 0) * 100) / 100,
+      xray_cost: Math.round(monthly.reduce((s, m) => s + m.xray_cost, 0) * 100) / 100,
+      avg_income: 0,
+    };
+    totals.avg_income = totals.visits > 0 ? Math.round((totals.revenue / totals.visits) * 100) / 100 : 0;
+
+    res.json({
+      data_source: 'HOSxP XE · vn_stat',
+      timestamp: new Date().toISOString(),
+      title: `รายงานจำนวนผู้ป่วยนอก ${start} ถึง ${end}`,
+      date_range: { start, end },
+      monthly,
+      daily: (dailyData || []).map(r => ({
+        date: r.date,
+        visits: Number(r.visits),
+        patients: Number(r.patients),
+        revenue: Number(r.revenue || 0),
+      })),
+      totals,
+      total_months: monthly.length,
+    });
+  } catch (err) {
+    logger.error('OPD daterange report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /frax-patients — ดึงผู้ป่วยหญิงที่ตรวจ Bone Density + คำนวณ FRAX
+// Query: ?start=2024-10-01&end=2025-03-27
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/frax-patients', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    // Query: ผู้ป่วยหญิงที่ตรวจ Bone Density X-Ray ในช่วงวันที่
+    const rows = await dbQueryHeavy(
+      `frax_patients_${start}_${end}`,
+      120,
+      `SELECT
+         xh.vn,
+         p.hn,
+         p.cid,
+         CONCAT(p.pname, p.fname, ' ', p.lname) AS fullname,
+         p.sex,
+         TIMESTAMPDIFF(YEAR, p.birthday, xh.order_date) AS age,
+         p.mobile_phone_number AS phone,
+         xh.order_date AS vstdate,
+         DATE_FORMAT(xh.order_date_time, '%H:%i:%s') AS vsttime,
+         os.bw AS weight,
+         COALESCE(os.height, p.height) AS height,
+         o.vstdate AS ovst_date,
+         v.pttype,
+         pt.name AS pttype_name,
+         v.hospmain,
+         v.hospsub
+       FROM xray_head xh
+       INNER JOIN xray_report xr ON xh.vn = xr.vn
+       INNER JOIN xray_items xi ON xr.xray_items_code = xi.xray_items_code
+       INNER JOIN patient p ON xh.hn = p.hn
+       INNER JOIN ovst o ON xh.vn = o.vn
+       LEFT JOIN vn_stat v ON xh.vn = v.vn
+       LEFT JOIN pttype pt ON v.pttype = pt.pttype
+       LEFT JOIN opdscreen os ON xh.vn = os.vn
+       WHERE p.sex IN ('2','ญ','หญิง')
+         AND xi.xray_items_name LIKE '%bone%density%'
+         AND xh.order_date >= ? AND xh.order_date <= LEAST(?, CURDATE())
+       GROUP BY xh.vn
+       ORDER BY xh.order_date DESC, xh.order_date_time DESC`,
+      [start, end],
+      { timeoutMs: 30000 }
+    );
+
+    // FRAX Log Trilinear Interpolation — Thai Female
+    // Source: FRAX Plus API grid (fraxplus.org), 1,210 data points
+    const gridPath = new URL('../data/frax_grid.json', import.meta.url);
+    const GRID = JSON.parse(await import('fs').then(fs => fs.promises.readFile(gridPath, 'utf8')));
+    const AGES = GRID.ages, WEIGHTS = GRID.weights, HEIGHTS = GRID.heights;
+    const MOF_LOG = GRID.mof_log, HIP_LOG = GRID.hip_log;
+
+    function findIdx(arr, val) {
+      const v = Math.max(arr[0], Math.min(arr[arr.length - 1], val));
+      for (let i = 0; i < arr.length - 1; i++) {
+        if (v >= arr[i] && v <= arr[i + 1]) {
+          return [i, (v - arr[i]) / (arr[i + 1] - arr[i])];
+        }
+      }
+      return [arr.length - 2, 1.0];
+    }
+
+    function trilinear(grid, ai, at, wi, wt, hi, ht) {
+      const c000 = grid[ai][wi][hi],     c001 = grid[ai][wi][hi+1];
+      const c010 = grid[ai][wi+1][hi],   c011 = grid[ai][wi+1][hi+1];
+      const c100 = grid[ai+1][wi][hi],   c101 = grid[ai+1][wi][hi+1];
+      const c110 = grid[ai+1][wi+1][hi], c111 = grid[ai+1][wi+1][hi+1];
+      const c00 = c000*(1-ht) + c001*ht;
+      const c01 = c010*(1-ht) + c011*ht;
+      const c10 = c100*(1-ht) + c101*ht;
+      const c11 = c110*(1-ht) + c111*ht;
+      const c0 = c00*(1-wt) + c01*wt;
+      const c1 = c10*(1-wt) + c11*wt;
+      return c0*(1-at) + c1*at;
+    }
+
+    function calcFRAX(age, weight, height) {
+      const a = Math.max(40, Math.min(90, Number(age) || 65));
+      const w = Math.max(30, Math.min(120, Number(weight) || 60));
+      const h = Math.max(100, Math.min(200, Number(height) || 155));
+      const [ai, at] = findIdx(AGES, a);
+      const [wi, wt] = findIdx(WEIGHTS, w);
+      const [hi, ht] = findIdx(HEIGHTS, h);
+      const mofLog = trilinear(MOF_LOG, ai, at, wi, wt, hi, ht);
+      const hipLog = trilinear(HIP_LOG, ai, at, wi, wt, hi, ht);
+      return {
+        major: Math.round(Math.max(0, Math.expm1(mofLog)) * 100) / 100,
+        hip:   Math.round(Math.max(0, Math.expm1(hipLog)) * 100) / 100,
+      };
+    }
+
+    // Filter: age >= 60, must have weight & height
+    const eligible = (rows || []).filter(r => {
+      const age = Number(r.age);
+      return age >= 60 && r.weight && r.height;
+    });
+
+    const patients = eligible.map((r, idx) => {
+      const frax = calcFRAX(r.age, r.weight, r.height);
+      return {
+        no: idx + 1,
+        vn: r.vn,
+        hn: r.hn,
+        cid: r.cid,
+        fullname: r.fullname,
+        sex: 'หญิง',
+        age: Number(r.age) || null,
+        phone: r.phone || '',
+        vstdate: r.vstdate,
+        vsttime: r.vsttime,
+        pttype: r.pttype,
+        pttype_name: r.pttype_name,
+        hospmain: r.hospmain,
+        hospsub: r.hospsub,
+        weight: r.weight ? Number(r.weight) : null,
+        height: r.height ? Number(r.height) : null,
+        bmi: r.weight && r.height ? (r.weight / ((r.height / 100) ** 2)).toFixed(1) : null,
+        major_osteoporotic: frax.major,
+        hip_fracture: frax.hip,
+      };
+    });
+
+    res.json({
+      data_source: 'HOSxP XE · FRAX Log Trilinear Interpolation (Thai Female, 1210-point grid)',
+      timestamp: new Date().toISOString(),
+      title: `FRAX — ผู้ป่วยหญิง ≥60 ปี ตรวจ Bone Density (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total_bone_density: (rows || []).length,
+      total: patients.length,
+      patients,
+    });
+  } catch (err) {
+    logger.error('FRAX patients report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /pt-patients — รายงานกายภาพบำบัด (Physical Therapy Patient List)
+// Query: ?start=2025-10-01&end=2026-04-07
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/pt-patients', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const rows = await dbQueryHeavy(
+      `pt_patients_${start}_${end}`,
+      120,
+      `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         p.cid,
+         o.vstdate,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         c.icd10,
+         dt.name AS icd10name,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint,
+         CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 'IPD' ELSE 'OPD' END AS visit_type,
+         o.an,
+         w.name AS ward_name
+       FROM ovst o
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN ovstdiag c ON c.vn = o.vn AND c.diagtype = '1'
+       LEFT JOIN icd101 dt ON dt.code = c.icd10
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       LEFT JOIN ipt i ON i.an = o.an
+       LEFT JOIN ward w ON w.ward = i.ward
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+         AND o.main_dep IN ('034','140')
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 5000`,
+      [start, end],
+      { timeoutMs: 30000 }
+    );
+
+    const patients = (rows || []).map((r, idx) => ({
+      no: idx + 1,
+      vn: r.vn,
+      hn: r.hn,
+      pt_name: r.pt_name,
+      age_y: Number(r.age_y) || null,
+      cid: r.cid,
+      vstdate: r.vstdate,
+      department: r.department || 'กายภาพบำบัด',
+      pttype_name: r.pttype_name || '',
+      address: r.address || '',
+      mobile_phone_number: r.mobile_phone_number || '',
+      icd10: r.icd10 || '',
+      icd10name: r.icd10name || '',
+      income: Number(r.income) || 0,
+      chief_complaint: r.chief_complaint || '',
+      visit_type: r.visit_type || 'OPD',
+      an: r.an || '',
+      ward_name: r.ward_name || '',
+    }));
+
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const opdPatients = patients.filter(p => p.visit_type === 'OPD');
+    const ipdPatients = patients.filter(p => p.visit_type === 'IPD');
+
+    res.json({
+      data_source: 'HOSxP XE · กายภาพบำบัด (main_dep = 034, 140)',
+      timestamp: new Date().toISOString(),
+      title: `รายงานกายภาพบำบัด และ ศูนย์บริการสิทธิข้าราชการ (ออฟฟิศซินโดรม) (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total: patients.length,
+      total_income: totalIncome,
+      opd_count: opdPatients.length,
+      opd_income: opdPatients.reduce((s, p) => s + p.income, 0),
+      ipd_count: ipdPatients.length,
+      ipd_income: ipdPatients.reduce((s, p) => s + p.income, 0),
+      patients,
+    });
+  } catch (err) {
+    logger.error('PT patients report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /fluoride-patients — รายงานการเคลือบฟลูออไรด์ 25-59 ปี
+// Query: ?start=2025-10-01&end=2026-04-16
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/fluoride-patients', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const rows = await dbQueryHeavy(
+      `fluoride_patients_${start}_${end}`,
+      120,
+      `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         p.cid,
+         o.vstdate,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         c.icd10,
+         dt.name AS icd10name,
+         COALESCE(oi.sum_price, 0) AS fluoride_price,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint
+       FROM ovst o
+       INNER JOIN opitemrece oi ON oi.vn = o.vn AND oi.icode = '3004640'
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN ovstdiag c ON c.vn = o.vn AND c.diagtype = '1'
+       LEFT JOIN icd101 dt ON dt.code = c.icd10
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+         AND v.age_y BETWEEN 25 AND 59
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 5000`,
+      [start, end],
+      { timeoutMs: 30000 }
+    );
+
+    const patients = (rows || []).map((r, idx) => ({
+      no: idx + 1,
+      vn: r.vn,
+      hn: r.hn,
+      pt_name: r.pt_name,
+      age_y: Number(r.age_y) || null,
+      cid: r.cid,
+      vstdate: r.vstdate,
+      department: r.department || 'ทันตกรรม',
+      pttype_name: r.pttype_name || '',
+      address: r.address || '',
+      mobile_phone_number: r.mobile_phone_number || '',
+      icd10: r.icd10 || '',
+      icd10name: r.icd10name || '',
+      fluoride_price: Number(r.fluoride_price) || 0,
+      income: Number(r.income) || 0,
+      chief_complaint: r.chief_complaint || '',
+    }));
+
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const totalFluoridePrice = patients.reduce((s, p) => s + p.fluoride_price, 0);
+
+    res.json({
+      data_source: 'HOSxP XE · opitemrece icode=3004640 (เคลือบฟลูออไรด์ กลุ่มเสี่ยง) · อายุ 25-59 ปี',
+      timestamp: new Date().toISOString(),
+      title: `รายงานการเคลือบฟลูออไรด์ 25-59 ปี (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total: patients.length,
+      total_income: totalIncome,
+      total_fluoride_price: totalFluoridePrice,
+      patients,
+    });
+  } catch (err) {
+    logger.error('Fluoride patients report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /elderly-cxr — รายงานผู้สูงอายุ 60+ ที่มี CXR (Chest X-Ray)
+// Query: ?start=2025-10-01&end=2026-04-16
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/elderly-cxr', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    // รหัสค่ารักษา CXR ทั้งหมดจาก HOSxP (NonDrugItems)
+    const CXR_ICODES = [
+      '3001443', // CXR AP (250)
+      '3001390', // CXR Lordotic view (250)
+      '3001305', // CXR Lt Lateral (250)
+      '3001306', // CXR Lt Lateral decubitus (250)
+      '3001361', // CXR PA Upright (250)
+      '3001433', // CXR Portable (350)
+      '3001622', // CXR Portable (350)
+      '3001667', // CXR Portable PA (350)
+      '3004476', // CXR Portable PA ตรวจสุขภาพ (350)
+      '3001307', // CXR Rt Lateral (250)
+      '3001308', // CXR Rt Lateral decubitus (250)
+      '3004424', // CXR ตรวจสุขภาพ (250)
+      '3004462', // CXR ตรวจสุขภาพ 170 (170)
+      '3005210', // CXR ตรวจสุขภาพ วนชัย (200)
+    ];
+    const icodePlaceholders = CXR_ICODES.map(() => '?').join(',');
+
+    const rows = await dbQueryHeavy(
+      `elderly_cxr_${start}_${end}`,
+      120,
+      `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         CASE WHEN p.sex IN ('1','ช','ชาย') THEN 'ชาย' ELSE 'หญิง' END AS sex,
+         p.cid,
+         o.vstdate,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         oi.icode AS cxr_icode,
+         nd.name AS cxr_name,
+         COALESCE(oi.sum_price, 0) AS cxr_price,
+         c.icd10,
+         dt.name AS icd10name,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint
+       FROM ovst o
+       INNER JOIN opitemrece oi ON oi.vn = o.vn AND oi.icode IN (${icodePlaceholders})
+       LEFT JOIN nondrugitems nd ON nd.icode = oi.icode
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN ovstdiag c ON c.vn = o.vn AND c.diagtype = '1'
+       LEFT JOIN icd101 dt ON dt.code = c.icd10
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+         AND v.age_y >= 60
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 5000`,
+      [...CXR_ICODES, start, end],
+      { timeoutMs: 30000 }
+    );
+
+    const patients = (rows || []).map((r, idx) => ({
+      no: idx + 1,
+      vn: r.vn,
+      hn: r.hn,
+      pt_name: r.pt_name,
+      age_y: Number(r.age_y) || null,
+      sex: r.sex || '',
+      cid: r.cid,
+      vstdate: r.vstdate,
+      department: r.department || '',
+      pttype_name: r.pttype_name || '',
+      address: r.address || '',
+      mobile_phone_number: r.mobile_phone_number || '',
+      cxr_icode: r.cxr_icode || '',
+      cxr_name: r.cxr_name || '',
+      cxr_price: Number(r.cxr_price) || 0,
+      icd10: r.icd10 || '',
+      icd10name: r.icd10name || '',
+      income: Number(r.income) || 0,
+      chief_complaint: r.chief_complaint || '',
+    }));
+
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const totalCxrPrice = patients.reduce((s, p) => s + p.cxr_price, 0);
+
+    res.json({
+      data_source: 'HOSxP XE · opitemrece CXR icode (14 รหัส) · ผู้สูงอายุ 60+ ปี',
+      timestamp: new Date().toISOString(),
+      title: `รายงานผู้สูงอายุ 60+ ที่มี CXR (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total: patients.length,
+      total_income: totalIncome,
+      total_cxr_price: totalCxrPrice,
+      patients,
+    });
+  } catch (err) {
+    logger.error('Elderly CXR report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /resource-usage — รายงานการใช้ทรัพยากรสำคัญ OPD/IPD (Lab, Drug, CT/X-ray)
 // Query: ?fy1=2568&fy2=2569
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get(
   '/resource-usage',
+  validateQuery(fiscalCompareQuery),
   cached('report_resource_usage_v4', 3600000, async req => {
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
@@ -525,6 +1262,7 @@ router.get(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 router.get(
   '/resource-opd-monthly',
+  validateQuery(fiscalCompareQuery),
   cached('report_resource_opd_monthly_v1', 3600000, async req => {
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
@@ -654,5 +1392,840 @@ router.get(
     };
   })
 );
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /resource-ipd-monthly — ทรัพยากรผู้ป่วยใน รายเดือน (Lab/Drug/CT-Xray)
+// Query: ?fy1=2568&fy2=2569
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get(
+  '/resource-ipd-monthly',
+  validateQuery(fiscalCompareQuery),
+  cached('report_resource_ipd_monthly_v1', 3600000, async req => {
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    const currentFYBE = currentMonth >= 10 ? currentYear + 544 : currentYear + 543;
+
+    const fy1BE = Number(req?.query?.fy1 || currentFYBE - 1);
+    const fy2BE = Number(req?.query?.fy2 || currentFYBE);
+
+    const fy1Start = `${fyStartCE(fy1BE)}-10-01`;
+    const fy1End = `${fyStartCE(fy1BE) + 1}-09-30`;
+    const fy2Start = `${fyStartCE(fy2BE)}-10-01`;
+    const fy2End = `${fyStartCE(fy2BE) + 1}-09-30`;
+
+    // IPD uses an_stat with dchdate, inc03=Lab, inc12=Drug, inc04=X-ray
+    const [monthlyData] = await Promise.all([
+      dbQueryHeavy(
+        `report_res_ipd_mo_${fy1BE}_${fy2BE}`,
+        120,
+        `SELECT
+           YEAR(dchdate) AS yr,
+           MONTH(dchdate) AS mo,
+           COUNT(CASE WHEN inc03 > 0 THEN 1 END) AS lab_orders,
+           ROUND(SUM(COALESCE(inc03, 0))) AS lab_price,
+           COUNT(CASE WHEN inc12 > 0 THEN 1 END) AS drug_orders,
+           ROUND(SUM(COALESCE(inc12, 0))) AS drug_price,
+           COUNT(CASE WHEN inc04 > 0 THEN 1 END) AS xray_orders,
+           ROUND(SUM(COALESCE(inc04, 0))) AS xray_price
+         FROM an_stat
+         WHERE (dchdate >= ? AND dchdate <= LEAST(?, CURDATE()))
+            OR (dchdate >= ? AND dchdate <= LEAST(?, CURDATE()))
+         GROUP BY YEAR(dchdate), MONTH(dchdate)
+         ORDER BY yr, mo`,
+        [fy1Start, fy1End, fy2Start, fy2End]
+      ),
+    ]);
+
+    function buildFYMonths(rows, fyBE) {
+      const fyStartYear = fyStartCE(fyBE);
+      return FISCAL_MONTHS.map(fm => {
+        const calYear = fm.mo >= 10 ? fyStartYear : fyStartYear + 1;
+        const row = (rows || []).find(r => Number(r.yr) === calYear && Number(r.mo) === fm.mo);
+        if (row) {
+          return {
+            month: fm.label, month_num: fm.mo, fiscal_idx: fm.idx,
+            lab_orders: Number(row.lab_orders || 0), lab_price: Number(row.lab_price || 0),
+            drug_orders: Number(row.drug_orders || 0), drug_price: Number(row.drug_price || 0),
+            xray_orders: Number(row.xray_orders || 0), xray_price: Number(row.xray_price || 0),
+            has_data: Number(row.lab_orders || 0) + Number(row.drug_orders || 0) + Number(row.xray_orders || 0) > 0,
+          };
+        }
+        return {
+          month: fm.label, month_num: fm.mo, fiscal_idx: fm.idx,
+          lab_orders: 0, lab_price: 0, drug_orders: 0, drug_price: 0,
+          xray_orders: 0, xray_price: 0, has_data: false,
+        };
+      });
+    }
+
+    const fy1Months = buildFYMonths(monthlyData, fy1BE);
+    const fy2Months = buildFYMonths(monthlyData, fy2BE);
+
+    const comparison = FISCAL_MONTHS.map((fm, i) => ({
+      month: fm.label, month_num: fm.mo,
+      fy1: fy1Months[i], fy2: fy2Months[i],
+      has_data: fy1Months[i].has_data || fy2Months[i].has_data,
+    }));
+
+    const comparableMonths = comparison.filter(c => c.fy1.has_data && c.fy2.has_data);
+    const buildTotals = side => {
+      const cm = comparableMonths.map(c => c[side]);
+      return {
+        lab_orders: cm.reduce((s, m) => s + m.lab_orders, 0),
+        lab_price: cm.reduce((s, m) => s + m.lab_price, 0),
+        drug_orders: cm.reduce((s, m) => s + m.drug_orders, 0),
+        drug_price: cm.reduce((s, m) => s + m.drug_price, 0),
+        xray_orders: cm.reduce((s, m) => s + m.xray_orders, 0),
+        xray_price: cm.reduce((s, m) => s + m.xray_price, 0),
+      };
+    };
+
+    const fy1Totals = buildTotals('fy1');
+    const fy2Totals = buildTotals('fy2');
+    const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : a > 0 ? 100 : 0;
+
+    return {
+      data_source: 'HOSxP XE · an_stat (inc03 · inc12 · inc04)',
+      timestamp: new Date().toISOString(),
+      title: `ทรัพยากร ผู้ป่วยใน (Lab / Drug / CT-Xray) เปรียบเทียบปีงบประมาณ ${fy1BE} vs ${fy2BE}`,
+      fiscal_years: {
+        fy1: { be: fy1BE, label: `ปี งบ ${fy1BE}`, start: fy1Start, end: fy1End },
+        fy2: { be: fy2BE, label: `ปี งบ ${fy2BE}`, start: fy2Start, end: fy2End },
+      },
+      fy1_totals: fy1Totals,
+      fy2_totals: fy2Totals,
+      overall_orders_growth_pct: pct(
+        fy2Totals.lab_orders + fy2Totals.drug_orders + fy2Totals.xray_orders,
+        fy1Totals.lab_orders + fy1Totals.drug_orders + fy1Totals.xray_orders
+      ),
+      overall_price_growth_pct: pct(
+        fy2Totals.lab_price + fy2Totals.drug_price + fy2Totals.xray_price,
+        fy1Totals.lab_price + fy1Totals.drug_price + fy1Totals.xray_price
+      ),
+      comparable_months: comparableMonths.length,
+      comparison,
+    };
+  })
+);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /mortality-monthly — รายงานการตาย รายเดือน แยก OPD / IPD
+// Query: ?fy1=2568&fy2=2569
+// IPD death: ipt.dchtype IN ('8','9','08','09')
+// OPD death: vn_stat.count_dead > 0 (HOSxP XE dead-at-visit flag)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get(
+  '/mortality-monthly',
+  validateQuery(fiscalCompareQuery),
+  cached('report_mortality_monthly_v1', 3600000, async req => {
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    const currentFYBE = currentMonth >= 10 ? currentYear + 544 : currentYear + 543;
+
+    const fy1BE = Number(req?.query?.fy1 || currentFYBE - 1);
+    const fy2BE = Number(req?.query?.fy2 || currentFYBE);
+
+    const fy1Start = `${fyStartCE(fy1BE)}-10-01`;
+    const fy1End = `${fyStartCE(fy1BE) + 1}-09-30`;
+    const fy2Start = `${fyStartCE(fy2BE)}-10-01`;
+    const fy2End = `${fyStartCE(fy2BE) + 1}-09-30`;
+
+    // ── IPD Mortality: dchtype IN ('8','9','08','09') from ipt ──
+    // ── All Deaths: from death table, split by an IS NULL (OPD) vs an IS NOT NULL (IPD) ──
+    const [ipdRows, deathRows] = await Promise.all([
+      dbQueryHeavy(
+        `report_mortality_ipd_${fy1BE}_${fy2BE}`, 120,
+        `SELECT
+           YEAR(i.dchdate) AS yr, MONTH(i.dchdate) AS mo,
+           COUNT(*) AS total_discharge,
+           SUM(CASE WHEN i.dchtype IN ('8','9','08','09') THEN 1 ELSE 0 END) AS deaths,
+           SUM(CASE WHEN i.dchtype IN ('8','9','08','09') AND DATEDIFF(i.dchdate, i.regdate) < 2 THEN 1 ELSE 0 END) AS early_deaths
+         FROM ipt i
+         WHERE i.dchdate IS NOT NULL AND i.ward != '06'
+           AND ((i.dchdate >= ? AND i.dchdate <= LEAST(?, CURDATE()))
+             OR (i.dchdate >= ? AND i.dchdate <= LEAST(?, CURDATE())))
+         GROUP BY YEAR(i.dchdate), MONTH(i.dchdate)
+         ORDER BY yr, mo`,
+        [fy1Start, fy1End, fy2Start, fy2End]
+      ),
+      // death table: split OPD (an is null/empty) vs IPD (an is not null)
+      dbQueryHeavy(
+        `report_mortality_death_${fy1BE}_${fy2BE}`, 120,
+        `SELECT
+           YEAR(d.death_date) AS yr, MONTH(d.death_date) AS mo,
+           SUM(CASE WHEN d.an IS NULL OR d.an = '' THEN 1 ELSE 0 END) AS opd_deaths,
+           SUM(CASE WHEN d.an IS NOT NULL AND d.an != '' THEN 1 ELSE 0 END) AS ipd_deaths,
+           COUNT(*) AS total_deaths
+         FROM death d
+         WHERE ((d.death_date >= ? AND d.death_date <= LEAST(?, CURDATE()))
+             OR (d.death_date >= ? AND d.death_date <= LEAST(?, CURDATE())))
+         GROUP BY YEAR(d.death_date), MONTH(d.death_date)
+         ORDER BY yr, mo`,
+        [fy1Start, fy1End, fy2Start, fy2End]
+      ),
+    ]);
+    const opdRows = deathRows; // alias for clarity
+
+    function buildFYMonths(ipdData, deathData, fyBE) {
+      const fyStartYear = fyStartCE(fyBE);
+      return FISCAL_MONTHS.map(fm => {
+        const calYear = fm.mo >= 10 ? fyStartYear : fyStartYear + 1;
+        const ipd = (ipdData || []).find(r => Number(r.yr) === calYear && Number(r.mo) === fm.mo);
+        const dt = (deathData || []).find(r => Number(r.yr) === calYear && Number(r.mo) === fm.mo);
+        const ipdDeaths = Number(ipd?.deaths || 0);
+        const ipdDischarge = Number(ipd?.total_discharge || 0);
+        const opdDeaths = Number(dt?.opd_deaths || 0);
+        const totalDeaths = Number(dt?.total_deaths || 0);
+        return {
+          month: fm.label, month_num: fm.mo, fiscal_idx: fm.idx,
+          ipd_discharge: ipdDischarge,
+          ipd_deaths: ipdDeaths,
+          ipd_early_deaths: Number(ipd?.early_deaths || 0),
+          ipd_mortality_rate: ipdDischarge > 0
+            ? Math.round((ipdDeaths / ipdDischarge) * 10000) / 100 : 0,
+          opd_deaths: opdDeaths,
+          total_deaths: totalDeaths || (ipdDeaths + opdDeaths),
+          has_data: ipdDischarge > 0 || totalDeaths > 0,
+        };
+      });
+    }
+
+    const fy1Months = buildFYMonths(ipdRows, opdRows, fy1BE);
+    const fy2Months = buildFYMonths(ipdRows, opdRows, fy2BE);
+
+    const comparison = FISCAL_MONTHS.map((fm, i) => ({
+      month: fm.label, month_num: fm.mo,
+      fy1: fy1Months[i], fy2: fy2Months[i],
+      has_data: fy1Months[i].has_data || fy2Months[i].has_data,
+    }));
+
+    const sumTotals = (months) => {
+      const d = months.filter(m => m.has_data);
+      return {
+        ipd_discharge: d.reduce((s, m) => s + m.ipd_discharge, 0),
+        ipd_deaths: d.reduce((s, m) => s + m.ipd_deaths, 0),
+        ipd_early_deaths: d.reduce((s, m) => s + m.ipd_early_deaths, 0),
+        opd_deaths: d.reduce((s, m) => s + m.opd_deaths, 0),
+        total_deaths: d.reduce((s, m) => s + m.total_deaths, 0),
+      };
+    };
+
+    const comparableMonths = comparison.filter(c => c.fy1.has_data && c.fy2.has_data);
+    const buildTotals = side => {
+      const t = sumTotals(comparableMonths.map(c => c[side]));
+      t.ipd_mortality_rate = t.ipd_discharge > 0 ? Math.round((t.ipd_deaths / t.ipd_discharge) * 10000) / 100 : 0;
+      return t;
+    };
+
+    const fy1Totals = buildTotals('fy1');
+    const fy2Totals = buildTotals('fy2');
+    const pct = (a, b) => b > 0 ? Math.round(((a - b) / b) * 100) : a > 0 ? 100 : 0;
+
+    return {
+      data_source: 'HOSxP XE · ipt (dchtype 8,9) + death table',
+      timestamp: new Date().toISOString(),
+      title: `รายงานการตาย OPD / IPD เปรียบเทียบปีงบประมาณ ${fy1BE} vs ${fy2BE}`,
+      fiscal_years: {
+        fy1: { be: fy1BE, label: `ปี งบ ${fy1BE}`, start: fy1Start, end: fy1End },
+        fy2: { be: fy2BE, label: `ปี งบ ${fy2BE}`, start: fy2Start, end: fy2End },
+      },
+      fy1_totals: fy1Totals,
+      fy2_totals: fy2Totals,
+      death_growth_pct: pct(fy2Totals.total_deaths, fy1Totals.total_deaths),
+      ipd_death_growth_pct: pct(fy2Totals.ipd_deaths, fy1Totals.ipd_deaths),
+      comparable_months: comparableMonths.length,
+      comparison,
+    };
+  })
+);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /ncd-patients — รายงานผู้รับบริการ NCD แยกโรค (รายราย)
+// Concept เดียวกับ elderly-cxr: รายชื่อผู้ป่วยพร้อมรายละเอียด
+// Query: ?start=YYYY-MM-DD&end=YYYY-MM-DD
+// กลุ่มโรค NCD: DM(E1x), HT(I1x), IHD(I20-I259), Stroke(I60-I699), COPD(J40-J479), CKD(N18x)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CKD-EPI 2009 (without race factor) — eGFR ml/min/1.73m² from serum Cr
+function computeEgfr(scr, age, isFemale) {
+  if (!scr || !age || scr <= 0) return null;
+  const kappa = isFemale ? 0.7 : 0.9;
+  const alpha = isFemale ? -0.241 : -0.302;
+  const ratio = scr / kappa;
+  const minPart = Math.pow(Math.min(ratio, 1), alpha);
+  const maxPart = Math.pow(Math.max(ratio, 1), -1.200);
+  let egfr = 142 * minPart * maxPart * Math.pow(0.9938, age);
+  if (isFemale) egfr *= 1.012;
+  return Math.round(egfr);
+}
+
+function ckdStageFromEgfr(egfr) {
+  if (egfr == null) return null;
+  if (egfr >= 90) return 'CKD1';
+  if (egfr >= 60) return 'CKD2';
+  if (egfr >= 30) return 'CKD3';
+  if (egfr >= 15) return 'CKD4';
+  return 'CKD5';
+}
+
+router.get('/ncd-patients', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const [rows, crRows] = await Promise.all([
+      dbQueryHeavy(
+        `ncd_patients_v3_${start}_${end}`,
+        120,
+        `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         CASE WHEN p.sex IN ('1','ช','ชาย') THEN 'ชาย' ELSE 'หญิง' END AS sex,
+         p.cid,
+         o.vstdate,
+         o.vsttime,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         GROUP_CONCAT(DISTINCT
+           CASE
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'E11%' THEN 'DM'                     -- Type 2 DM
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'E78%' THEN 'DLP'                    -- Hyperlipidemia
+             WHEN UPPER(TRIM(od.icd10)) = 'I10' THEN 'HT'                         -- Essential HT (ตรง Top ICD)
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'I25%' THEN 'IHD'                    -- Chronic IHD
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'I69%' THEN 'Stroke'                 -- Sequelae of stroke
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'J44%' THEN 'COPD'                   -- true COPD
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N181%' THEN 'CKD1'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N182%' THEN 'CKD2'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N183%' THEN 'CKD3'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N184%' THEN 'CKD4'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N185%' THEN 'CKD5'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N186%' THEN 'CKD5'
+             WHEN UPPER(TRIM(od.icd10)) LIKE 'N18%' THEN 'CKD'
+           END
+           ORDER BY 1 SEPARATOR ', '
+         ) AS disease_groups,
+         GROUP_CONCAT(DISTINCT UPPER(TRIM(od.icd10)) ORDER BY UPPER(TRIM(od.icd10)) SEPARATOR ', ') AS icd10,
+         GROUP_CONCAT(DISTINCT dt.name ORDER BY dt.name SEPARATOR ' | ') AS icd10name,
+         GROUP_CONCAT(DISTINCT CONCAT(UPPER(TRIM(od.icd10)), '::', COALESCE(dt.name, ''))
+                      ORDER BY 1 SEPARATOR '||') AS icd_pairs,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint
+       FROM ovst o
+       LEFT JOIN ovstdiag od ON o.vn = od.vn
+       LEFT JOIN icd101 dt ON dt.code = od.icd10
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+         AND o.main_dep = '024'
+         AND COALESCE(o.an, '') = ''  -- exclude IPD-linked visits (only OPD)
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 100000`,
+        [start, end],
+        { timeoutMs: 60000 }
+      ),
+      // Latest serum Creatinine per patient — look back 365 days from end date
+      // across ALL departments (lab may be ordered from OPD/IPD, not just NCD clinic)
+      // for eGFR-based CKD staging
+      dbQueryHeavy(
+        `ncd_creatinine_${start}_${end}`,
+        120,
+        `SELECT
+           lh.hn,
+           CAST(lo.lab_order_result AS DECIMAL(8,3)) AS creatinine,
+           lh.order_date,
+           ROW_NUMBER() OVER (PARTITION BY lh.hn ORDER BY lh.order_date DESC) AS rn
+         FROM lab_head lh
+         INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
+         WHERE lh.order_date BETWEEN DATE_SUB(?, INTERVAL 365 DAY) AND LEAST(?, CURDATE())
+           AND lh.hn IS NOT NULL
+           AND (lo.lab_items_name_ref LIKE '%reatinine%'
+             OR lo.lab_items_name_ref LIKE 'Cr%'
+             OR lo.lab_items_name_ref LIKE '%Cr (S)%'
+             OR lo.lab_items_name_ref LIKE '%Cr(S)%'
+             OR lo.lab_items_name_ref LIKE '%ครีเอ%')
+           AND lo.lab_order_result IS NOT NULL
+           AND lo.lab_order_result REGEXP '^[0-9]+(\\\\.[0-9]+)?$'
+           AND CAST(lo.lab_order_result AS DECIMAL(8,3)) BETWEEN 0.1 AND 30`,
+        [end, end],
+        { timeoutMs: 30000 }
+      ).catch(() => []),
+    ]);
+
+    // Map: HN -> latest creatinine
+    const crByHn = {};
+    for (const r of (crRows || [])) {
+      if (Number(r.rn) === 1) crByHn[r.hn] = Number(r.creatinine);
+    }
+
+    const patients = (rows || []).map((r, idx) => {
+      const age = Number(r.age_y) || null;
+      const isFemale = r.sex === 'หญิง';
+      const cr = crByHn[r.hn];
+      const egfr = computeEgfr(cr, age, isFemale);
+      const computedStage = ckdStageFromEgfr(egfr);
+
+      // If patient has any CKD diagnosis (N18.x), prefer eGFR-based stage
+      let groups = (r.disease_groups || '').split(',').map(s => s.trim()).filter(Boolean);
+      const hasCkd = groups.some(g => g === 'CKD' || /^CKD[1-5]$/.test(g));
+      if (hasCkd && computedStage) {
+        groups = groups.filter(g => g !== 'CKD' && !/^CKD[1-5]$/.test(g));
+        groups.push(computedStage);
+      }
+      // Visits to NCD clinic with no NCD-coded diagnosis → 'Other' bucket
+      if (groups.length === 0) groups = ['Other'];
+
+      return {
+        no: idx + 1,
+        vn: r.vn,
+        hn: r.hn,
+        pt_name: r.pt_name,
+        age_y: age,
+        sex: r.sex || '',
+        cid: r.cid,
+        vstdate: r.vstdate,
+        vsttime: r.vsttime,
+        department: r.department || '',
+        pttype_name: r.pttype_name || '',
+        address: r.address || '',
+        mobile_phone_number: r.mobile_phone_number || '',
+        disease_groups: groups.join(', '),
+        icd10: r.icd10 || '',
+        icd10name: r.icd10name || '',
+        icd_pairs: r.icd_pairs || '',
+        income: Number(r.income) || 0,
+        chief_complaint: r.chief_complaint || '',
+        creatinine: cr ?? null,
+        egfr: egfr ?? null,
+        ckd_stage: hasCkd ? (computedStage || 'CKD') : null,
+      };
+    });
+
+    // Disease group counts (each patient may have multiple diseases)
+    const DISEASES = ['DM', 'HT', 'DLP', 'IHD', 'Stroke', 'COPD', 'CKD1', 'CKD2', 'CKD3', 'CKD4', 'CKD5', 'CKD', 'Other'];
+    const diseaseCounts = Object.fromEntries(DISEASES.map(d => [d, 0]));
+    for (const p of patients) {
+      const groups = (p.disease_groups || '').split(',').map(s => s.trim()).filter(Boolean);
+      for (const g of groups) if (g in diseaseCounts) diseaseCounts[g]++;
+    }
+
+    // CKD detail stats
+    const ckdPatients = patients.filter(p => p.ckd_stage);
+    const ckdWithEgfr = ckdPatients.filter(p => p.egfr != null);
+    const avgEgfr = ckdWithEgfr.length > 0
+      ? Math.round(ckdWithEgfr.reduce((s, p) => s + p.egfr, 0) / ckdWithEgfr.length)
+      : null;
+
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const uniquePatients = new Set(patients.map(p => p.hn)).size;
+
+    res.json({
+      data_source: 'HOSxP XE · ovst + ovstdiag (main_dep=024) · NCD groups: DM·HT·DLP·IHD·Stroke·COPD·CKD1-5 · CKD stage จาก eGFR (CKD-EPI 2009)',
+      timestamp: new Date().toISOString(),
+      title: `รายงานผู้รับบริการ NCD แยกโรค (${start} ถึง ${end})`,
+      date_range: { start, end },
+      ckd_total_patients: ckdPatients.length,
+      ckd_with_egfr: ckdWithEgfr.length,
+      ckd_avg_egfr: avgEgfr,
+      total: patients.length,
+      unique_patients: uniquePatients,
+      total_income: totalIncome,
+      diseases: DISEASES,
+      disease_labels: {
+        DM:   'เบาหวาน Type 2 (DM · E11)',
+        HT:   'ความดันโลหิตสูง Essential (HT · I10)',
+        DLP:  'ไขมันในเลือดสูง (DLP · E78)',
+        IHD:  'หัวใจขาดเลือดเรื้อรัง (IHD · I25)',
+        Stroke: 'หลอดเลือดสมอง Sequelae (Stroke · I69)',
+        COPD: 'ปอดอุดกั้นเรื้อรัง (COPD · J44)',
+        CKD1: 'CKD Stage 1 (N18.1 · GFR ≥90)',
+        CKD2: 'CKD Stage 2 (N18.2 · GFR 60-89)',
+        CKD3: 'CKD Stage 3 (N18.3 · GFR 30-59)',
+        CKD4: 'CKD Stage 4 (N18.4 · GFR 15-29)',
+        CKD5: 'CKD Stage 5 / ESRD (N18.5-6 · GFR <15)',
+        CKD:  'CKD ไม่ระบุ stage (N18.9)',
+        Other: 'มาคลินิก NCD แต่ไม่มีรหัสโรค NCD',
+      },
+      disease_counts: diseaseCounts,
+      patients,
+    });
+  } catch (err) {
+    logger.error('NCD patients report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /ncd-diagnostic — diagnose visit-count gap vs HOSxP
+// Query: ?start=YYYY-MM-DD&end=YYYY-MM-DD
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/ncd-diagnostic', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const queries = await Promise.all([
+      // 1. Raw count from ovst only (most permissive — should match HOSxP)
+      dbQueryOne(
+        `SELECT COUNT(*) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'`,
+        [start, end]
+      ),
+      // 2. Count distinct VN
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'`,
+        [start, end]
+      ),
+      // 3. Count distinct VN, vn not null
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024' AND vn IS NOT NULL`,
+        [start, end]
+      ),
+      // 4. Excluding cancelled (ovstost 54/61/89)
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'
+           AND (ovstost IS NULL OR ovstost NOT IN ('54','61','89'))`,
+        [start, end]
+      ),
+      // 5. Cancelled only count
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'
+           AND ovstost IN ('54','61','89')`,
+        [start, end]
+      ),
+      // 6. Status distribution
+      dbQuery(
+        `SELECT IFNULL(ovstost, 'NULL') AS status, COUNT(*) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'
+         GROUP BY ovstost ORDER BY cnt DESC`,
+        [start, end]
+      ),
+      // 7. Date < end+1 day (DATETIME edge case test)
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 DAY) AND main_dep = '024'`,
+        [start, end]
+      ),
+      // 8. Replicate the actual ncd-patients query (LEFT JOIN, GROUP BY)
+      dbQueryOne(
+        `SELECT COUNT(*) AS cnt FROM (
+           SELECT o.vn FROM ovst o
+           LEFT JOIN ovstdiag od ON o.vn = od.vn
+           LEFT JOIN icd101 dt ON dt.code = od.icd10
+           LEFT JOIN patient p ON p.hn = o.hn
+           LEFT JOIN pttype pt ON pt.pttype = o.pttype
+           LEFT JOIN vn_stat v ON v.vn = o.vn
+           LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+           LEFT JOIN opdscreen op ON op.vn = o.vn
+           WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+             AND o.main_dep = '024'
+           GROUP BY o.vn
+         ) sub`,
+        [start, end]
+      ),
+      // 9. Same as 8 but WITHOUT thaiaddress JOINs (which may multiply rows)
+      dbQueryOne(
+        `SELECT COUNT(*) AS cnt FROM (
+           SELECT o.vn FROM ovst o
+           LEFT JOIN ovstdiag od ON o.vn = od.vn
+           WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+             AND o.main_dep = '024'
+           GROUP BY o.vn
+         ) sub`,
+        [start, end]
+      ),
+      // 9b. WITH thaiaddress JOINs (the actual query) — to confirm thaiaddress is the issue
+      dbQueryOne(
+        `SELECT COUNT(*) AS cnt FROM (
+           SELECT o.vn FROM ovst o
+           LEFT JOIN ovstdiag od ON o.vn = od.vn
+           LEFT JOIN patient p ON p.hn = o.hn
+           LEFT JOIN thaiaddress t1
+             ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+           LEFT JOIN thaiaddress t2
+             ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+           LEFT JOIN thaiaddress t3
+             ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+           WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+             AND o.main_dep = '024'
+           GROUP BY o.vn
+         ) sub`,
+        [start, end]
+      ).catch(e => ({ cnt: 0, error: e.message })),
+      // 9c. Run the EXACT actual query but only count rows
+      dbQueryHeavy(
+        `ncd_diag_actual_${start}_${end}`,
+        60,
+        `SELECT COUNT(*) AS cnt FROM (
+           SELECT o.vn FROM ovst o
+           LEFT JOIN ovstdiag od ON o.vn = od.vn
+           LEFT JOIN icd101 dt ON dt.code = od.icd10
+           LEFT JOIN patient p ON p.hn = o.hn
+           LEFT JOIN thaiaddress t1
+             ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+           LEFT JOIN thaiaddress t2
+             ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+           LEFT JOIN thaiaddress t3
+             ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+           LEFT JOIN pttype pt ON pt.pttype = o.pttype
+           LEFT JOIN vn_stat v ON v.vn = o.vn
+           LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+           LEFT JOIN opdscreen op ON op.vn = o.vn
+           WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+             AND o.main_dep = '024'
+           GROUP BY o.vn
+           ORDER BY o.vstdate DESC, o.vsttime DESC
+           LIMIT 5000
+         ) sub`,
+        [start, end],
+        { timeoutMs: 30000 }
+      ).then(r => r[0] || { cnt: 0 }).catch(e => ({ cnt: 0, error: e.message })),
+      // 10. Daily breakdown of main_dep=024 visits
+      dbQuery(
+        `SELECT vstdate, COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024'
+         GROUP BY vstdate ORDER BY vstdate`,
+        [start, end]
+      ),
+      // 11. VNs with NULL hn (would break joins differently)
+      dbQueryOne(
+        `SELECT COUNT(DISTINCT vn) AS cnt FROM ovst
+         WHERE vstdate BETWEEN ? AND ? AND main_dep = '024' AND (hn IS NULL OR hn = '')`,
+        [start, end]
+      ),
+      // 12. vstdate column type detection
+      dbQuery(
+        `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ovst'
+           AND COLUMN_NAME IN ('vstdate', 'vsttime', 'vn', 'main_dep', 'ovstost')`
+      ).catch(() => []),
+    ]);
+
+    const [
+      total_ovst_count,
+      total_distinct_vn,
+      vn_not_null,
+      excluding_cancelled,
+      cancelled_only,
+      status_dist,
+      datetime_safe_count,
+      ncd_patients_replica,
+      no_address_join,
+      with_address_join,
+      exact_actual_query,
+      daily_breakdown,
+      null_hn_count,
+      column_types,
+    ] = queries;
+
+    res.json({
+      data_source: 'HOSxP XE · ovst diagnostic',
+      timestamp: new Date().toISOString(),
+      query: { start, end },
+      counts: {
+        '1_total_ovst_count_raw': Number(total_ovst_count?.cnt || 0),
+        '2_distinct_vn': Number(total_distinct_vn?.cnt || 0),
+        '3_distinct_vn_not_null': Number(vn_not_null?.cnt || 0),
+        '4_excluding_cancelled_status': Number(excluding_cancelled?.cnt || 0),
+        '5_cancelled_only': Number(cancelled_only?.cnt || 0),
+        '6_datetime_safe_range': Number(datetime_safe_count?.cnt || 0),
+        '7_ncd_patients_replica_no_address': Number(ncd_patients_replica?.cnt || 0),
+        '8_ncd_patients_no_address_joins': Number(no_address_join?.cnt || 0),
+        '9a_with_3_thaiaddress_joins': Number(with_address_join?.cnt || 0),
+        '9b_with_thaiaddress_error': with_address_join?.error || null,
+        '9c_exact_actual_query_with_limit': Number(exact_actual_query?.cnt || 0),
+        '9d_exact_query_error': exact_actual_query?.error || null,
+        '10_null_hn_count': Number(null_hn_count?.cnt || 0),
+      },
+      status_distribution: (status_dist || []).map(r => ({
+        ovstost: r.status,
+        count: Number(r.cnt || 0),
+      })),
+      column_types: (column_types || []).map(c => ({
+        column: c.COLUMN_NAME,
+        type: c.DATA_TYPE,
+      })),
+      daily_breakdown: (daily_breakdown || []).map(r => ({
+        date: r.vstdate,
+        count: Number(r.cnt || 0),
+      })),
+      analysis: {
+        hosxp_expected: 2113,
+        gap_explanation: 'เปรียบเทียบ count ในแต่ละข้อ — ข้อที่ใกล้ HOSxP คือ filter ที่ HOSxP ใช้',
+      },
+    });
+  } catch (err) {
+    logger.error('NCD diagnostic error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /imaging-services — รายงานบริการ XRAY/CT/Portable/BMD
+// Concept เดียวกับ NCD แยกโรค: รายชื่อผู้ป่วยพร้อมรายละเอียด
+// Query: ?start=YYYY-MM-DD&end=YYYY-MM-DD
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/imaging-services', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const rows = await dbQueryHeavy(
+      `imaging_services_${start}_${end}`,
+      120,
+      `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         CASE WHEN p.sex IN ('1','ช','ชาย') THEN 'ชาย' ELSE 'หญิง' END AS sex,
+         p.cid,
+         o.vstdate,
+         o.vsttime,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         GROUP_CONCAT(DISTINCT
+           CASE
+             WHEN nd.name LIKE '%BMD%' OR nd.name LIKE '%Bone Density%' OR nd.name LIKE '%Bone Densitometry%' OR nd.name LIKE '%DEXA%' THEN 'BMD'
+             WHEN nd.name LIKE '%CT %' OR nd.name LIKE '%CT-%' OR nd.name LIKE 'CT%' OR nd.name LIKE '%Computed Tomography%' THEN 'CT'
+             WHEN nd.name LIKE '%Portable%' OR nd.name LIKE '%Mobile%' OR nd.name LIKE '%บีดไซด์%' THEN 'Portable'
+             WHEN nd.name LIKE '%X-ray%' OR nd.name LIKE '%X-Ray%' OR nd.name LIKE '%XRAY%' OR nd.name LIKE '%CXR%' OR nd.name LIKE 'X-%' THEN 'XRAY'
+           END
+           ORDER BY 1 SEPARATOR ', '
+         ) AS service_groups,
+         GROUP_CONCAT(DISTINCT nd.name ORDER BY nd.name SEPARATOR ' | ') AS service_names,
+         GROUP_CONCAT(DISTINCT oi.icode ORDER BY oi.icode SEPARATOR ', ') AS service_codes,
+         ROUND(SUM(COALESCE(oi.sum_price, 0)), 2) AS imaging_price,
+         GROUP_CONCAT(DISTINCT od.icd10 ORDER BY od.icd10 SEPARATOR ', ') AS icd10,
+         GROUP_CONCAT(DISTINCT dt.name ORDER BY dt.name SEPARATOR ' | ') AS icd10name,
+         GROUP_CONCAT(DISTINCT CONCAT(od.icd10, '::', COALESCE(dt.name, ''))
+                      ORDER BY 1 SEPARATOR '||') AS icd_pairs,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint
+       FROM ovst o
+       INNER JOIN opitemrece oi ON oi.vn = o.vn
+       INNER JOIN nondrugitems nd ON nd.icode = oi.icode
+         AND (
+           nd.name LIKE '%BMD%' OR nd.name LIKE '%Bone Density%' OR nd.name LIKE '%Bone Densitometry%' OR nd.name LIKE '%DEXA%'
+           OR nd.name LIKE '%CT %' OR nd.name LIKE '%CT-%' OR nd.name LIKE 'CT%' OR nd.name LIKE '%Computed Tomography%'
+           OR nd.name LIKE '%Portable%' OR nd.name LIKE '%Mobile%' OR nd.name LIKE '%บีดไซด์%'
+           OR nd.name LIKE '%X-ray%' OR nd.name LIKE '%X-Ray%' OR nd.name LIKE '%XRAY%' OR nd.name LIKE '%CXR%' OR nd.name LIKE 'X-%'
+         )
+       LEFT JOIN ovstdiag od ON od.vn = o.vn AND od.diagtype = '1'
+       LEFT JOIN icd101 dt ON dt.code = od.icd10
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 5000`,
+      [start, end],
+      { timeoutMs: 30000 }
+    );
+
+    const SERVICES = ['XRAY', 'CT', 'Portable', 'BMD'];
+    const patients = (rows || []).map((r, idx) => {
+      const groups = (r.service_groups || '').split(',').map(s => s.trim()).filter(Boolean);
+      return {
+        no: idx + 1,
+        vn: r.vn,
+        hn: r.hn,
+        pt_name: r.pt_name,
+        age_y: Number(r.age_y) || null,
+        sex: r.sex || '',
+        cid: r.cid,
+        vstdate: r.vstdate,
+        vsttime: r.vsttime,
+        department: r.department || '',
+        pttype_name: r.pttype_name || '',
+        address: r.address || '',
+        mobile_phone_number: r.mobile_phone_number || '',
+        service_groups: groups.join(', '),
+        service_names: r.service_names || '',
+        service_codes: r.service_codes || '',
+        imaging_price: Number(r.imaging_price) || 0,
+        icd10: r.icd10 || '',
+        icd10name: r.icd10name || '',
+        icd_pairs: r.icd_pairs || '',
+        income: Number(r.income) || 0,
+        chief_complaint: r.chief_complaint || '',
+      };
+    });
+
+    const serviceCounts = Object.fromEntries(SERVICES.map(s => [s, 0]));
+    let totalImagingPrice = 0;
+    for (const p of patients) {
+      const groups = (p.service_groups || '').split(',').map(s => s.trim()).filter(Boolean);
+      for (const g of groups) if (g in serviceCounts) serviceCounts[g]++;
+      totalImagingPrice += p.imaging_price;
+    }
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const uniquePatients = new Set(patients.map(p => p.hn)).size;
+
+    res.json({
+      data_source: 'HOSxP XE · opitemrece + nondrugitems · จำแนก XRAY / CT / Portable / BMD ตาม nd.name',
+      timestamp: new Date().toISOString(),
+      title: `รายงานบริการ XRAY / CT / Portable / BMD (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total: patients.length,
+      unique_patients: uniquePatients,
+      total_income: totalIncome,
+      total_imaging_price: totalImagingPrice,
+      services: SERVICES,
+      service_labels: {
+        XRAY:     'X-Ray ทั่วไป (Plain Radiography)',
+        CT:       'CT Scan (Computed Tomography)',
+        Portable: 'Portable X-Ray (เคลื่อนที่)',
+        BMD:      'BMD (Bone Mineral Density · DEXA)',
+      },
+      service_counts: serviceCounts,
+      patients,
+    });
+  } catch (err) {
+    logger.error('Imaging services report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
 
 export default router;

@@ -9,7 +9,7 @@ import {
     ResponsiveContainer, Cell, PieChart, Pie,
     ComposedChart, Area, Line, ReferenceLine, Legend
 } from 'recharts';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
 import StatusBadge from './shared/StatusBadge.jsx';
@@ -19,6 +19,7 @@ import HealthGauge from './shared/HealthGauge.jsx';
 import AlertBanner from './shared/AlertBanner.jsx';
 import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
 import EmptyState from './shared/EmptyState.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 const STATUS_COLORS = {
     'รอคัดกรอง': '#f5365c', // Danger
@@ -48,10 +49,10 @@ function computeDPI(opd) {
 }
 
 function OPDTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ opdToday: s.opdToday, loading: s.loading, opdMonthlyFiscal: s.opdMonthlyFiscal, opdRevenueFiscal: s.opdRevenueFiscal }));
+    const { fetchData } = useDashboardActions();
     const opd = state.opdToday;
     const loading = state.loading;
-
     const fiscalData = state.opdMonthlyFiscal;
 
     useEffect(() => {
@@ -154,17 +155,28 @@ function OPDTab() {
         const nextHourPeak = (opd.hourly_prediction || []).find(f => f.hour === (currentHour + 1))?.count || 0;
         const avgHourly = throughputVal || 20;
 
+        // Staffing: based on actual on-duty staff vs queue
+        const onDutyDoctors = opd.active_doctors_list?.length || 0;
+        const onDutyNurses = opd.active_nurses_list?.length || 0;
+        const totalOnDuty = onDutyDoctors + onDutyNurses;
+        const waitingQueue = opd.still_here_breakdown?.likely_waiting ?? opd.still_here ?? 0;
+        // Each doctor can see ~8 patients/hr, each nurse handles ~15/hr
+        const currentCapacityPerHr = (onDutyDoctors * 8) + (onDutyNurses * 15);
+        const queueHours = currentCapacityPerHr > 0 ? (waitingQueue / currentCapacityPerHr) : 99;
+        // Need additional staff only if queue backlog > 2 hours at current rate
+        const additionalNeeded = queueHours > 2 ? Math.ceil((waitingQueue - currentCapacityPerHr * 2) / 8) : 0;
+
         let staffingStatus = 'Optimal';
-        let staffingRec = 'กำลังพลเพียงพอต่อโหลดปัจจุบัน';
+        let staffingRec = `กำลังพลเพียงพอ (${onDutyDoctors} แพทย์ + ${onDutyNurses} พยาบาล)`;
         let staffingColor = '#10b981';
 
-        if (capacity > 90 || (nextHourPeak > avgHourly * 1.5)) {
+        if (additionalNeeded > 5 || capacity > 90) {
             staffingStatus = 'Overstrained';
-            staffingRec = `🚨 ต้องการแพทย์/พยาบาลเพิ่ม ${Math.ceil((nextHourPeak - avgHourly) / 5)} ท่าน เพื่อรองรับ Peak ในชั่วโมงถัดไป`;
+            staffingRec = `🚨 คิวค้าง ${waitingQueue} ราย — แนะนำเพิ่มแพทย์อีก ${Math.min(additionalNeeded, 10)} ท่าน หรือเปิด Fast-track`;
             staffingColor = '#f43f5e';
-        } else if (capacity > 75) {
+        } else if (additionalNeeded > 0 || capacity > 75) {
             staffingStatus = 'Tight';
-            staffingRec = '⚠️ ควรเฝ้าระวังและงดการพักในช่วง 60 นาทีถัดไป';
+            staffingRec = `⚠️ คิวค้าง ${waitingQueue} ราย — ควรเฝ้าระวังและงดการพักในช่วง 60 นาทีถัดไป`;
             staffingColor = '#f59e0b';
         }
 
@@ -460,7 +472,7 @@ function OPDTab() {
                 {/* ── กลับบ้านแล้ว ── */}
                 {[
                     { title: 'กลับบ้านแล้ว', value: opd?.completed, icon: '✅', unit: 'ราย', grad: ['#10b981', '#059669'], glow: 'rgba(16,185,129,.2)' },
-                    { title: 'ยังรอรับบริการ', value: opd?.still_here, icon: '⌛', unit: 'ราย', grad: ['#f59e0b', '#d97706'], glow: 'rgba(245,158,11,.2)' },
+                    { title: 'ยังรอรับบริการ', value: opd?.still_here_breakdown?.likely_waiting ?? opd?.still_here, icon: '⌛', unit: 'ราย', grad: ['#f59e0b', '#d97706'], glow: 'rgba(245,158,11,.2)', raw_still_here: opd?.still_here },
                     { title: 'เวลารอเฉลี่ย', value: opd?.avg_total_minutes, icon: '⏱️', unit: 'นาที', grad: opd?.avg_total_minutes > 90 ? ['#f43f5e', '#dc2626'] : opd?.avg_total_minutes > 60 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'], glow: opd?.avg_total_minutes > 90 ? 'rgba(244,63,94,.2)' : 'rgba(16,185,129,.2)' },
                 ].map((kpi, i) => (
                     <div key={i} style={{
@@ -492,16 +504,44 @@ function OPDTab() {
                                         ประสิทธิภาพการบริการ (Throughput)
                                     </div>
                                 )}
-                                {kpi.title === 'ยังรอรับบริการ' && (
-                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
-                                        ภาระงานที่คงค้าง (Work-in-Progress) หรือคิวไม่รักษา
-                                    </div>
-                                )}
-                                {kpi.title === 'เวลารอเฉลี่ย' && (
-                                    <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
-                                        ระยะเวลาบริการรวม (Cycle Time)
-                                    </div>
-                                )}
+                                {kpi.title === 'ยังรอรับบริการ' && (() => {
+                                    const bd = opd?.still_here_breakdown;
+                                    return (
+                                        <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                            {bd ? (
+                                                <>
+                                                    <span>น่าจะรออยู่จริง <b style={{ color: '#f59e0b' }}>{bd.likely_waiting}</b></span>
+                                                    {bd.likely_gone > 0 && <span> · น่าจะกลับแล้ว <b style={{ color: '#94a3b8' }}>{bd.likely_gone}</b></span>}
+                                                    {bd.by_stage && (
+                                                        <div style={{ marginTop: '3px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                            {bd.by_stage.wait_registration > 0 && <span>📋 รอคัดกรอง {bd.by_stage.wait_registration}</span>}
+                                                            {bd.by_stage.wait_doctor > 0 && <span>🩺 รอแพทย์ {bd.by_stage.wait_doctor}</span>}
+                                                            {bd.by_stage.wait_pharmacy > 0 && <span>💊 รอยา {bd.by_stage.wait_pharmacy}</span>}
+                                                        </div>
+                                                    )}
+                                                </>
+                                            ) : 'ภาระงานที่คงค้าง (Work-in-Progress)'}
+                                        </div>
+                                    );
+                                })()}
+                                {kpi.title === 'เวลารอเฉลี่ย' && (() => {
+                                    const steps = opd?.wait_steps;
+                                    const medianCycle = opd?.estimated_median_cycle;
+                                    // Find bottleneck (longest step)
+                                    const stepNames = { registration_to_screening: 'ลงทะเบียน→คัดกรอง', screening_to_doctor: 'คัดกรอง→แพทย์', doctor_to_pharmacy: 'แพทย์→รับยา', pharmacy_to_finance: 'รับยา→ชำระเงิน' };
+                                    const bottleneck = steps ? Object.entries(steps).reduce((max, [k, v]) => v > (max?.val || 0) ? { key: k, val: v } : max, { key: '', val: 0 }) : null;
+                                    return (
+                                        <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--md-text-tertiary)', marginBottom: '8px' }}>
+                                            <span>Cycle Time (ลงทะเบียน → กลับบ้าน)</span>
+                                            {medianCycle > 0 && <span> · Median ≈ {medianCycle} น.</span>}
+                                            {bottleneck?.val > 30 && (
+                                                <div style={{ marginTop: '3px', color: '#f43f5e', fontWeight: 700 }}>
+                                                    🔴 คอขวด: {stepNames[bottleneck.key] || bottleneck.key} ({bottleneck.val} น.)
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
                                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', marginBottom: '8px' }}>
                                     <span style={{ fontSize: '28px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
                                         {(kpi.value ?? 0).toLocaleString()}
@@ -515,12 +555,15 @@ function OPDTab() {
                                 )}
                                 {kpi.title === 'ยังรอรับบริการ' && (
                                     <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
-                                        วิธีคำนวณ: นับผู้ป่วยที่ยังรอตรวจ/รับยา โดยคัดแยกเคสเปลี่ยนสถานะออก (ยอดนี้อาจรวมถึงคิวที่คนไข้ไม่รอรักษา)
+                                        วิธีคำนวณ: นับผู้ป่วยที่ยังไม่จบกระบวนการ แยก "น่าจะรออยู่" (มี activity ใน 2 ชม.) vs "น่าจะกลับแล้ว" (ไม่มี activity &gt;2 ชม. + ไม่เคยคัดกรอง)
+                                        {kpi.raw_still_here > 0 && kpi.raw_still_here !== kpi.value && (
+                                            <span> · ดิบ: {kpi.raw_still_here} ราย</span>
+                                        )}
                                     </div>
                                 )}
                                 {kpi.title === 'เวลารอเฉลี่ย' && (
                                     <div style={{ marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.05)', fontSize: '8.5px', color: 'var(--md-text-tertiary)', lineHeight: 1.4, fontStyle: 'italic' }}>
-                                        วิธีคำนวณ: ค่าเฉลี่ยของ (เวลาเสร็จสิ้น - เวลาลงทะเบียน) ของผู้ป่วยที่จบกระบวนการแล้ว (ไม่นับคิวที่กลับก่อนหรือไม่รับบริการ)
+                                        วิธีคำนวณ: True Cycle Time = AVG(เวลาชำระเงิน − เวลาลงทะเบียน) ต่อราย (เฉพาะผู้ป่วยที่จบกระบวนการ ไม่นับคิวที่ยกเลิก/ไม่รับบริการ)
                                     </div>
                                 )}
                             </>
@@ -860,78 +903,6 @@ function OPDTab() {
                 </div>
             </div>
 
-            {/* ━━━━ Efficiency KPI Strip ━━━━ */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px' }}>
-                <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #5e72e4)', borderRadius: '99px' }} />
-                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
-                    📊 ตัวชี้วัดประสิทธิภาพ
-                </span>
-                <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, background: 'rgba(124,58,237,.06)', padding: '2px 8px', borderRadius: '99px' }}>Real-time</span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
-                {[
-                    {
-                        title: 'SLA ≤60 นาที', value: `${opd?.sla_pct ?? 0}%`, icon: '🎯',
-                        grad: (opd?.sla_pct ?? 0) >= 80 ? ['#10b981', '#059669'] : (opd?.sla_pct ?? 0) >= 60 ? ['#f59e0b', '#d97706'] : ['#f43f5e', '#dc2626'],
-                        sub: (opd?.sla_pct ?? 0) >= 80 ? '✅ ผ่านเกณฑ์' : (opd?.sla_pct ?? 0) >= 60 ? '⚠️ ใกล้เกณฑ์' : '🔴 ต่ำกว่าเกณฑ์',
-                    },
-                    {
-                        title: 'รอนานที่สุด', value: `${opd?.max_wait ?? 0}`, icon: '⚠️', unit: 'นาที',
-                        grad: (opd?.max_wait ?? 0) > 180 ? ['#f43f5e', '#dc2626'] : (opd?.max_wait ?? 0) > 120 ? ['#f59e0b', '#d97706'] : ['#0ea5e9', '#0284c7'],
-                        sub: 'วันนี้',
-                    },
-                    {
-                        title: 'คิวรอแพทย์', value: `${opd?.waiting_doctor ?? 0}`, icon: '🩺', unit: 'ราย',
-                        grad: (opd?.waiting_doctor ?? 0) > 30 ? ['#f43f5e', '#dc2626'] : (opd?.waiting_doctor ?? 0) > 15 ? ['#f59e0b', '#d97706'] : ['#10b981', '#059669'],
-                        sub: (opd?.waiting_doctor ?? 0) > 30 ? 'คิวยาวมาก' : (opd?.waiting_doctor ?? 0) > 15 ? 'คิวยาว' : 'ปกติ',
-                    },
-                    {
-                        title: 'Throughput', value: `${opd?.throughput ?? 0}`, icon: '⚡', unit: 'ราย/ชม.',
-                        grad: ['#6366f1', '#4f46e5'],
-                        sub: 'อัตราบริการ',
-                    },
-                    {
-                        title: 'Peak Hour', value: opd?.peak_hour >= 0 ? `${String(opd.peak_hour).padStart(2, '0')}:00` : '—', icon: '🕐',
-                        grad: ['#8b5cf6', '#7c3aed'],
-                        sub: 'ผู้ป่วยมากสุด',
-                    },
-                ].map((kpi, i) => (
-                    <div key={`eff-${i}`} style={{
-                        padding: '0.85rem 1rem', borderRadius: '12px',
-                        background: `linear-gradient(135deg, ${kpi.grad[0]}0D 0%, ${kpi.grad[1]}06 100%)`,
-                        border: `1px solid ${kpi.grad[0]}20`,
-                        transition: 'transform 0.2s, box-shadow 0.2s',
-                        cursor: 'default',
-                    }}
-                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 6px 20px ${kpi.grad[0]}20`; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
-                    >
-                        {loading.opdToday ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                                <div className="skeleton" style={{ height: '8px', width: '50px' }} />
-                                <div className="skeleton" style={{ height: '24px', width: '40px' }} />
-                            </div>
-                        ) : (
-                            <>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                    <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--md-text-tertiary)' }}>
-                                        {kpi.title}
-                                    </span>
-                                    <span style={{ fontSize: '16px' }}>{kpi.icon}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-                                    <span style={{ fontSize: '24px', fontWeight: 900, color: kpi.grad[0], letterSpacing: '-0.03em', lineHeight: 1 }}>
-                                        {kpi.value}
-                                    </span>
-                                    {kpi.unit && <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--md-text-tertiary)' }}>{kpi.unit}</span>}
-                                </div>
-                                <p style={{ margin: '3px 0 0', fontSize: '11px', fontWeight: 600, color: kpi.grad[0], opacity: 0.8 }}>{kpi.sub}</p>
-                            </>
-                        )}
-                    </div>
-                ))}
-            </div>
-
             {/* ━━━━━━ 📊 แดชบอร์ดวิเคราะห์ประสิทธิภาพเชิงยุทธศาสตร์ ━━━━━━ */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                 <div style={{ width: '3px', height: '18px', background: 'linear-gradient(180deg, #7c3aed, #0ea5e9)', borderRadius: '99px' }} />
@@ -1185,12 +1156,25 @@ function OPDTab() {
 
                 {/* Steps */}
                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, overflowX: 'auto' }}>
-                    {[
+                    {(() => {
+                        const ws = opd?.wait_steps || {};
+                        const steps = [
+                            { key: 'reg', raw: ws.registration_to_screening || 0 },
+                            { key: 'screen', raw: ws.screening_to_doctor || 0 },
+                            { key: 'doc', raw: ws.doctor_to_pharmacy || 0 },
+                            { key: 'rx', raw: ws.pharmacy_to_finance || 0 },
+                        ];
+                        const rawTotal = steps.reduce((s, st) => s + st.raw, 0);
+                        const trueTotal = opd?.avg_total_minutes || rawTotal;
+                        // Scale each step proportionally to match True Cycle Time
+                        const scale = rawTotal > 0 ? trueTotal / rawTotal : 1;
+                        const scaled = steps.map(st => Math.round(st.raw * scale));
+                        return [
                         {
                             icon: '📋',
                             label: 'ลงทะเบียน',
                             sublabel: 'เช็คอิน → คัดกรอง',
-                            value: opd?.wait_steps?.registration_to_screening,
+                            value: scaled[0],
                             color: '#7c3aed',
                             bg: 'rgba(124,58,237,.07)',
                             border: 'rgba(124,58,237,.2)',
@@ -1200,7 +1184,7 @@ function OPDTab() {
                             icon: '🔬',
                             label: 'คัดกรอง',
                             sublabel: 'คัดกรอง → พบแพทย์',
-                            value: opd?.wait_steps?.screening_to_doctor,
+                            value: scaled[1],
                             color: '#0ea5e9',
                             bg: 'rgba(14,165,233,.07)',
                             border: 'rgba(14,165,233,.2)',
@@ -1210,7 +1194,7 @@ function OPDTab() {
                             icon: '🩺',
                             label: 'ตรวจรักษา',
                             sublabel: 'พบแพทย์ → รับยา',
-                            value: opd?.wait_steps?.screening_to_doctor,
+                            value: scaled[2],
                             color: '#8b5cf6',
                             bg: 'rgba(139,92,246,.07)',
                             border: 'rgba(139,92,246,.2)',
@@ -1220,7 +1204,7 @@ function OPDTab() {
                             icon: '💊',
                             label: 'รับยา',
                             sublabel: 'รับยา → ชำระเงิน',
-                            value: opd?.wait_steps?.doctor_to_pharmacy,
+                            value: scaled[3],
                             color: '#10b981',
                             bg: 'rgba(16,185,129,.07)',
                             border: 'rgba(16,185,129,.2)',
@@ -1230,13 +1214,13 @@ function OPDTab() {
                             icon: '💳',
                             label: 'ชำระเงิน',
                             sublabel: 'ชำระเงิน → กลับบ้าน',
-                            value: opd?.wait_steps?.pharmacy_to_finance,
+                            value: ws.pharmacy_to_finance || 0,
                             color: '#f59e0b',
                             bg: 'rgba(245,158,11,.07)',
                             border: 'rgba(245,158,11,.2)',
                             warn: 10, critical: 20,
                         },
-                    ].map((step, i, arr) => {
+                    ]; })().map((step, i, arr) => {
                         const val = step.value || 0;
                         const isCritical = val >= step.critical;
                         const isWarn = val >= step.warn && !isCritical;
@@ -1487,16 +1471,24 @@ function OPDTab() {
                                             <p style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', margin: 0, fontWeight: 600 }}>
                                                 {fy.total_visits.toLocaleString()} visits · {fy.total_patients.toLocaleString()} patients · ฿{fy.avg_revenue_per_visit.toLocaleString()}/visit
                                             </p>
-                                            {isLatest && prevYear && (
-                                                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                    <span style={{ fontSize: '11px', fontWeight: 800, color: yoyGrowth >= 0 ? '#10b981' : '#f43f5e' }}>
-                                                        {yoyGrowth >= 0 ? '📈' : '📉'} YoY {yoyGrowth >= 0 ? '+' : ''}{yoyGrowth}%
-                                                    </span>
-                                                    <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
-                                                        vs {prevYear.fiscal_label} (เทียบ {compMonths} ด.)
-                                                    </span>
-                                                </div>
-                                            )}
+                                            {fi > 0 && (() => {
+                                                const prev = years[fi - 1];
+                                                if (!prev) return null;
+                                                const curRev = fy.comparable_revenue ?? fy.total_revenue;
+                                                const prevRev = prev.comparable_revenue ?? prev.total_revenue;
+                                                const growth = prevRev > 0 ? Math.round((curRev - prevRev) / prevRev * 1000) / 10 : 0;
+                                                const months = fy.comparable_months || 12;
+                                                return (
+                                                    <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        <span style={{ fontSize: '11px', fontWeight: 800, color: growth >= 0 ? '#10b981' : '#f43f5e' }}>
+                                                            {growth >= 0 ? '📈' : '📉'} YoY {growth >= 0 ? '+' : ''}{growth}%
+                                                        </span>
+                                                        <span style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 500 }}>
+                                                            vs {prev.fiscal_label} {isLatest ? `(เทียบ ${months} ด.)` : ''}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     );
                                 })}

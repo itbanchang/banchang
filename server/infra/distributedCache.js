@@ -16,7 +16,39 @@ const MAX_MEM_SIZE = 500;
 const CACHE_METRICS = {
   hits: 0, misses: 0, sets: 0, stale: 0, dedup: 0, errors: 0,
   redis_hits: 0, memory_hits: 0,
+  stale_circuit_breaks: 0,
 };
+
+// ── Stale Revalidation Circuit Breaker ──
+// Tracks consecutive background refresh failures per key.
+// After MAX_STALE_FAILURES, stale data is rejected and a fresh fetch is forced.
+const STALE_FAILURES = new Map();   // key → { count, lastError, firstFailAt }
+const MAX_STALE_FAILURES = 3;       // Force fresh after 3 consecutive bg failures
+const MAX_STALE_AGE_MS = 10 * 60 * 1000; // Hard limit: never serve data older than 10 min
+
+function _recordStaleFailure(k, err) {
+  const entry = STALE_FAILURES.get(k) || { count: 0, firstFailAt: Date.now() };
+  entry.count++;
+  entry.lastError = err?.message || 'unknown';
+  entry.lastFailAt = Date.now();
+  STALE_FAILURES.set(k, entry);
+  logger.warn('[Cache] Stale revalidation failed', { key: k, failures: entry.count, error: entry.lastError });
+}
+
+function _clearStaleFailure(k) {
+  STALE_FAILURES.delete(k);
+}
+
+function _isStaleCircuitOpen(k) {
+  const entry = STALE_FAILURES.get(k);
+  if (!entry) return false;
+  // Auto-reset after 5 minutes (allow retry)
+  if (Date.now() - entry.lastFailAt > 5 * 60 * 1000) {
+    STALE_FAILURES.delete(k);
+    return false;
+  }
+  return entry.count >= MAX_STALE_FAILURES;
+}
 
 // ============================================================
 // LOW-LEVEL: get / set / delete
@@ -113,22 +145,32 @@ export function cached(key, ttlMs, fn) {
             }
 
             if (age < staleSec) {
-              // STALE — return immediately, refresh in background
-              CACHE_METRICS.stale++;
-              res.set('X-Cache', 'STALE').set('X-Cache-Backend', 'redis')
-                .set('Cache-Control', `public, max-age=${ttlSec}, stale-while-revalidate=${staleSec}`)
-                .type('json').end(entry._json);
+              // Circuit breaker: if bg refresh failed too many times or data too old, force fresh fetch
+              const dataAgeMs = Date.now() - entry._ts;
+              if (_isStaleCircuitOpen(k) || dataAgeMs > MAX_STALE_AGE_MS) {
+                CACHE_METRICS.stale_circuit_breaks++;
+                // Fall through to MISS — force fresh fetch below
+              } else {
+                // STALE — return immediately, refresh in background
+                CACHE_METRICS.stale++;
+                res.set('X-Cache', 'STALE').set('X-Cache-Backend', 'redis')
+                  .set('Cache-Control', `public, max-age=${ttlSec}, stale-while-revalidate=${staleSec}`)
+                  .type('json').end(entry._json);
 
-              // Background refresh (dedup via Redis SETNX)
-              const lockKey = `lock:${k}`;
-              const locked = await redis.set(lockKey, '1', 'EX', ttlSec, 'NX');
-              if (locked) {
-                fn(req).then(data => {
-                  const json = JSON.stringify(data);
-                  redis.set(k, JSON.stringify({ _json: json, _ts: Date.now() }), 'EX', staleSec).catch(() => {});
-                }).catch(() => {}).finally(() => redis.del(lockKey).catch(() => {}));
+                // Background refresh (dedup via Redis SETNX)
+                const lockKey = `lock:${k}`;
+                const locked = await redis.set(lockKey, '1', 'EX', ttlSec, 'NX');
+                if (locked) {
+                  fn(req).then(data => {
+                    const json = JSON.stringify(data);
+                    redis.set(k, JSON.stringify({ _json: json, _ts: Date.now() }), 'EX', staleSec).catch(() => {});
+                    _clearStaleFailure(k);
+                  }).catch(err => {
+                    _recordStaleFailure(k, err);
+                  }).finally(() => redis.del(lockKey).catch(() => {}));
+                }
+                return;
               }
-              return;
             }
           }
         } catch {
@@ -148,18 +190,27 @@ export function cached(key, ttlMs, fn) {
             .type('json').end(memEntry.json);
         }
         if (age < ttlMs * 3) {
-          CACHE_METRICS.stale++;
-          res.set('X-Cache', 'STALE').set('X-Cache-Backend', 'memory')
-            .type('json').end(memEntry.json);
-          if (!MEM_INFLIGHT.has(k)) {
-            const p = fn(req).then(data => {
-              const json = JSON.stringify(data);
-              MEM_CACHE.set(k, { json, ts: Date.now() });
-              _tryRedisSet(k, json, staleSec);
-            }).catch(() => {}).finally(() => MEM_INFLIGHT.delete(k));
-            MEM_INFLIGHT.set(k, p);
+          // Circuit breaker: if bg refresh failed too many times or data too old, force fresh
+          if (_isStaleCircuitOpen(k) || age > MAX_STALE_AGE_MS) {
+            CACHE_METRICS.stale_circuit_breaks++;
+            // Fall through to MISS — force fresh fetch below
+          } else {
+            CACHE_METRICS.stale++;
+            res.set('X-Cache', 'STALE').set('X-Cache-Backend', 'memory')
+              .type('json').end(memEntry.json);
+            if (!MEM_INFLIGHT.has(k)) {
+              const p = fn(req).then(data => {
+                const json = JSON.stringify(data);
+                MEM_CACHE.set(k, { json, ts: Date.now() });
+                _tryRedisSet(k, json, staleSec);
+                _clearStaleFailure(k);
+              }).catch(err => {
+                _recordStaleFailure(k, err);
+              }).finally(() => MEM_INFLIGHT.delete(k));
+              MEM_INFLIGHT.set(k, p);
+            }
+            return;
           }
-          return;
         }
       }
 
@@ -191,7 +242,8 @@ export function cached(key, ttlMs, fn) {
     } catch (err) {
       MEM_INFLIGHT.delete(`cache:${key}:${suffix}`);
       CACHE_METRICS.errors++;
-      res.status(500).json({ error: err.message });
+      const IS_PROD = process.env.NODE_ENV === 'production';
+      res.status(500).json({ error: IS_PROD ? 'Internal server error' : err.message });
     }
   };
 }
@@ -254,6 +306,7 @@ export function getDistributedCacheStats() {
     max_memory_size: MAX_MEM_SIZE,
     inflight: MEM_INFLIGHT.size,
     ...CACHE_METRICS,
+    stale_circuit_breakers_active: STALE_FAILURES.size,
     hit_rate_pct: (CACHE_METRICS.hits + CACHE_METRICS.misses) > 0
       ? Math.round((CACHE_METRICS.hits / (CACHE_METRICS.hits + CACHE_METRICS.misses)) * 100) : 0,
   };

@@ -7,6 +7,7 @@ import hosxp from '../db/hosxpIntegration.js';
 import { cacheMiddleware } from '../cache/redis.js';
 import { z } from 'zod';
 import { validate, validateParams } from '../middleware/validate.js';
+import { safeError } from '../lib/safeError.js';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ router.get('/patients', cacheMiddleware(120), async (req, res) => {
     };
     res.json({ data_source: 'HOSxP XE', patients, stats });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Clinical');
   }
 });
 
@@ -58,7 +59,7 @@ router.get('/vitals/:patient_id', validateParams(patientIdParamsSchema), async (
     const vitals = await hosxp.getPatientVitals(req.params.patient_id);
     res.json({ data_source: 'HOSxP XE', vitals: vitals || [], patient_id: req.params.patient_id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Clinical');
   }
 });
 
@@ -95,7 +96,7 @@ router.get('/risk-distribution', cacheMiddleware(300), async (req, res) => {
       by_age: Object.values(byAge).sort((a, b) => a.age_group.localeCompare(b.age_group))
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Clinical');
   }
 });
 
@@ -468,7 +469,7 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Clinical');
   }
 });
 

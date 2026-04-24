@@ -4,16 +4,18 @@
 // ⏱️ Professional Data Analytics KPIs Edition — Premium Quality
 // ============================================================
 import React, { useEffect, useMemo } from 'react';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
     LineChart, Line, PieChart, Pie, Cell, Area, ComposedChart
 } from 'recharts';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
+import AIServerInsights from './shared/AIServerInsights.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
 import TabLoadingSkeleton from './shared/TabLoadingSkeleton.jsx';
 import EmptyState from './shared/EmptyState.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 
 // Color theme: sky blue / cyan for laboratory
 const THEME = {
@@ -52,7 +54,8 @@ function getCriticalColor(testName, value) {
 }
 
 function LaboratoryTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ labToday: s.labToday, labAnalytics: s.labAnalytics, labRevenueFiscal: s.labRevenueFiscal, labAI: s.labAI, loading: s.loading }));
+    const { fetchData } = useDashboardActions();
     const labToday = state.labToday || {};
     const labAnalytics = state.labAnalytics;
     const labRevenueFiscal = state.labRevenueFiscal;
@@ -68,6 +71,9 @@ function LaboratoryTab() {
         if (!labRevenueFiscal && !loading.labRevenueFiscal) {
             fetchData('labRevenueFiscal', '/api/lab/revenue-fiscal');
         }
+        // AI Lab Optimization (deferred)
+        const t = setTimeout(() => fetchData('labAI', '/api/ai/lab/optimization'), 300);
+        return () => clearTimeout(t);
     }, [fetchData]);
 
     // ━━━━━━ AI Strategic Intelligence ━━━━━━
@@ -249,6 +255,7 @@ function LaboratoryTab() {
         >
 
             {/* ━━━━ 1. AI Strategic Intelligence Feed (Hero Strip) ━━━━ */}
+            <SubErrorBoundary name="AI Strategic Intelligence Feed">
             <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
                 <div className="glass-card" style={{
                     flex: '1 1 300px', padding: '14px 20px', display: 'flex', alignItems: 'center', gap: '16px',
@@ -302,6 +309,7 @@ function LaboratoryTab() {
                     </div>
                 </div>
             </div>
+            </SubErrorBoundary>
 
             {/* ━━━━ 2. MetricsStrip — 8 Key Performance Indicators ━━━━ */}
             <MetricsStrip
@@ -316,8 +324,8 @@ function LaboratoryTab() {
                     {
                         label: 'Completed',
                         value: labToday.completed ?? '—',
-                        unit: completionPct > 0 ? completionPct + '%' : '',
-                        target: 95,
+                        unit: completionPct > 0 ? `${completionPct}%` : '',
+                        target: `95%`,
                         status: completionPct >= 95 ? 'success' : completionPct >= 80 ? 'warning' : 'danger',
                         icon: '✅',
                     },
@@ -465,6 +473,7 @@ function LaboratoryTab() {
             </div>
 
             {/* ━━━━ 4. AI Analytics Section — 4 Insight Cards ━━━━ */}
+            <SubErrorBoundary name="AI Lab Intelligence">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '-4px', marginTop: '8px' }}>
                 <div style={{ width: '4px', height: '22px', background: 'linear-gradient(180deg, #0ea5e9, #06b6d4)', borderRadius: '99px' }} />
                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: 'var(--md-text-primary)' }}>
@@ -534,6 +543,7 @@ function LaboratoryTab() {
                     borderColor="rgba(16,185,129,.25)"
                 />
             </div>
+            </SubErrorBoundary>
 
             {/* ━━━━ 5. Critical Lab Values Section ━━━━ */}
             {(labToday.critical_values?.length > 0) && (
@@ -579,8 +589,10 @@ function LaboratoryTab() {
                         {/* Critical Values Grid */}
                         <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px' }}>
                             {labToday.critical_values.map((cv, i) => {
-                                const severity = getCriticalColor(cv.test_name || cv.test, cv.latest_value || cv.result);
-                                const isDanger = severity === '#f43f5e';
+                                // Use backend severity if available, fallback to local getCriticalColor
+                                const severityLevel = cv.severity || 'WARNING';
+                                const severity = severityLevel === 'DANGER' ? '#f43f5e' : severityLevel === 'WARNING' ? '#f59e0b' : getCriticalColor(cv.test_name || cv.test, cv.latest_value || cv.result);
+                                const isDanger = severityLevel === 'DANGER';
                                 return (
                                     <div key={i} style={{
                                         padding: '12px 14px', borderRadius: '12px',
@@ -608,7 +620,7 @@ function LaboratoryTab() {
                                                 padding: '2px 8px', borderRadius: '4px',
                                                 background: severity + '20', color: severity,
                                             }}>
-                                                {isDanger ? 'DANGER' : severity === '#f59e0b' ? 'WARNING' : 'OK'}
+                                                {severityLevel}
                                             </span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
@@ -1110,6 +1122,10 @@ function LaboratoryTab() {
                     </div>
                 )}
             </div>
+
+            <SubErrorBoundary name="AI Server Insights">
+                <AIServerInsights data={state.labAI} theme="lab" title="AI Laboratory Intelligence" />
+            </SubErrorBoundary>
 
             {/* ━━━━ Footer ━━━━ */}
             <div style={{ textAlign: 'center', opacity: 0.3, padding: '16px 0' }}>

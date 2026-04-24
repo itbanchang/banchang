@@ -55,11 +55,13 @@ npm ci --omit=dev 2>&1 | tail -1
 ok "Dependencies installed"
 
 # ── Step 3: Build frontend ──
+log "Cleaning stale build artifacts..."
+npm run clean:dist 2>&1 | tail -1
 log "Building frontend (Vite)..."
 # Need devDependencies for build
 npm ci 2>&1 | tail -1
 npm run build 2>&1 | tail -3
-ok "Frontend built successfully"
+ok "Frontend built successfully ($(ls dist/assets/ | wc -l) files)"
 
 # ── Step 4: Ensure logs directory exists ──
 mkdir -p logs

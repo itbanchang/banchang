@@ -4,11 +4,13 @@
 // Color Theme: Rose/Red (#e11d48, #be123c)
 // ============================================================
 import React, { useEffect, useMemo } from 'react';
-import { useDashboard } from '../context/DashboardContext.jsx';
+import { useShallowDashboardSelector, useDashboardActions } from '../context/DashboardContext.jsx';
 import KPICardV2 from './KPICardV2.jsx';
 import KPIDescriptionCards from './shared/KPIDescriptionCards.jsx';
 import AIInsightCard from './shared/AIInsightCard.jsx';
+import AIServerInsights from './shared/AIServerInsights.jsx';
 import MetricsStrip from './shared/MetricsStrip.jsx';
+import SubErrorBoundary from './shared/SubErrorBoundary.jsx';
 import {
     BarChart, Bar, LineChart, Line, RadarChart, Radar, PolarGrid,
     PolarAngleAxis, PolarRadiusAxis, XAxis, YAxis, CartesianGrid,
@@ -205,7 +207,8 @@ const QUALITY_KPI_META = [
 
 // ── Main Component ────────────────────────────────────────────
 function QualityTab() {
-    const { state, fetchData } = useDashboard();
+    const state = useShallowDashboardSelector(s => ({ qualityToday: s.qualityToday, qualityAnalytics: s.qualityAnalytics, qualityIndicators: s.qualityIndicators, qualityAI: s.qualityAI, loading: s.loading }));
+    const { fetchData } = useDashboardActions();
 
     // Use dashboard context state (same auth token as all other tabs)
     const qualityToday     = state.qualityToday;
@@ -217,6 +220,9 @@ function QualityTab() {
         fetchData('qualityToday',      '/api/quality/today');
         fetchData('qualityAnalytics',  '/api/quality/analytics');
         fetchData('qualityIndicators', '/api/quality/indicators');
+        // AI Quality Prediction (deferred)
+        const t = setTimeout(() => fetchData('qualityAI', '/api/ai/quality/prediction'), 300);
+        return () => clearTimeout(t);
     }, [fetchData]);
 
     // ── AI Problem Detection ─────────────────────────────────
@@ -299,7 +305,7 @@ function QualityTab() {
                 icon: '🛡️',
                 priority: (mortality > 2 || hai > 1) ? 'HIGH' : (mortality > 1 || hai > 0.5) ? 'MEDIUM' : 'LOW',
                 summary: `Mortality ${mortality.toFixed(2)}% | HAI ${hai.toFixed(2)}% | ADR ${(a.adr_rate ?? 0).toFixed(2)}% -- ${mortality <= 2 && hai <= 1 ? 'Patient Safety อยู่ในเกณฑ์ดี' : 'มีจุดที่ต้องเฝ้าระวังด้านความปลอดภัย'}`,
-                analysis: `Mortality Rate ต้อง <2% (HA Standard), HAI Rate ต้อง <1% (IC Standard) -- แยก HAI: BSI ${a.hai_types?.bsi ?? 0}, SSI ${a.hai_types?.ssi ?? 0}, VAP ${a.hai_types?.pna ?? 0} -- ADR Cases: ${a.adr_count ?? 0} ราย`,
+                analysis: `Mortality Rate ต้อง <2% (HA Standard), HAI Rate ต้อง <1% (IC Standard) -- แยก HAI: BSI ${a.hai_types?.bsi ?? 0}, SSI ${a.hai_types?.ssi ?? 0}, VAP ${a.hai_types?.vap ?? 0}, CAUTI ${a.hai_types?.cauti ?? 0} -- ADR Cases: ${a.adr_count ?? 0} ราย`,
                 recommendation: mortality > 2 ? 'Case review ทุกรายที่เสียชีวิต ตรวจสอบ Morbidity Conference' : hai > 1 ? 'IC Team ตรวจสอบ HAI เร่งด่วน Hand hygiene + Bundle compliance' : 'เฝ้าระวังต่อเนื่อง ทำ Sentinel Event Report ทุกเดือน',
                 gradient: '#7c3aed',
                 gradientFrom: 'rgba(124,58,237,.08)',
@@ -352,6 +358,7 @@ function QualityTab() {
             <MetricsStrip metrics={metricsStripData} />
 
             {/* ── AI Analytics Cards — 4 Intelligence Panels ── */}
+            <SubErrorBoundary name="AI Analytics Cards">
             <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
                     <div style={{ width: '3px', height: '18px', background: `linear-gradient(180deg, ${C.primary}, ${C.purple})`, borderRadius: '99px' }} />
@@ -366,6 +373,7 @@ function QualityTab() {
                     ))}
                 </div>
             </div>
+            </SubErrorBoundary>
 
             {/* ── AI Problem Feed ── */}
             {aiProblems.length > 0 && (
@@ -386,6 +394,7 @@ function QualityTab() {
             )}
 
             {/* ── Today Snapshot ── */}
+            <SubErrorBoundary name="Today Snapshot & QPI Gauge">
             <div className="glass-card" style={{ padding: '1.25rem 1.5rem', background: `linear-gradient(135deg, ${C.primary}08, ${C.secondary}05)` }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
                     <div>
@@ -419,6 +428,7 @@ function QualityTab() {
                     ))}
                 </div>
             </div>
+            </SubErrorBoundary>
 
             {/* ── HA Domain Cards (5 domains) ── */}
             <div>
@@ -449,7 +459,8 @@ function QualityTab() {
                             { label: 'HAI Rate', value: pct(a.hai_rate), alert: a.hai_rate > 1 },
                             { label: 'BSI', value: a.hai_types?.bsi ?? '—', alert: (a.hai_types?.bsi ?? 0) > 0 },
                             { label: 'SSI', value: a.hai_types?.ssi ?? '—', alert: (a.hai_types?.ssi ?? 0) > 0 },
-                            { label: 'VAP', value: a.hai_types?.pna ?? '—', alert: (a.hai_types?.pna ?? 0) > 0 },
+                            { label: 'VAP', value: a.hai_types?.vap ?? '—', alert: (a.hai_types?.vap ?? 0) > 0 },
+                            { label: 'CAUTI', value: a.hai_types?.cauti ?? '—', alert: (a.hai_types?.cauti ?? 0) > 0 },
                         ]}
                     />
                     <DomainCard
@@ -643,7 +654,13 @@ function QualityTab() {
             </div>
 
             {/* ── KPI Description Cards ── */}
-            <KPIDescriptionCards kpis={enrichedKPIs} accentColor={C.primary} title="ตัวชี้วัดคุณภาพ HA Thailand" />
+            <SubErrorBoundary name="QPI Indicators">
+                <KPIDescriptionCards kpis={enrichedKPIs} accentColor={C.primary} title="ตัวชี้วัดคุณภาพ HA Thailand" />
+            </SubErrorBoundary>
+
+            <SubErrorBoundary name="AI Server Insights">
+                <AIServerInsights data={state.qualityAI} theme="quality" title="AI Quality Intelligence" />
+            </SubErrorBoundary>
         </div>
     );
 }
