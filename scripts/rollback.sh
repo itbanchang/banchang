@@ -110,13 +110,26 @@ ok "Files restored from $TARGET"
 
 # ── Docker rebuild ──
 header "Docker rebuild & restart"
-COMPOSE_CMD=$(detect_compose_cmd)
-[ -z "$COMPOSE_CMD" ] && fail "Neither 'docker compose' nor 'docker-compose' available on prod"
-log "Using: $COMPOSE_CMD"
-ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD build 2>&1 | tail -5" | sed 's/^/    /' \
-    || fail "$COMPOSE_CMD build failed"
-ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD up -d 2>&1 | tail -5" | sed 's/^/    /' \
-    || fail "$COMPOSE_CMD up -d failed"
+log "docker build (npm install + Vite build inside the image)..."
+ssh_exec "cd '$BCH_PROD_PATH' && docker build -t bch360:latest . 2>&1 | tail -10" \
+    | sed 's/^/    /' \
+    || fail "docker build failed"
+log "Stopping old container..."
+ssh_exec "docker stop bch360 2>&1 || true; docker rm bch360 2>&1 || true" \
+    | sed 's/^/    /' || true
+log "Starting restored container..."
+ssh_exec "docker run -d \
+    --name bch360 \
+    --restart unless-stopped \
+    --network host \
+    -v '$BCH_PROD_PATH/data_lake:/app/data_lake' \
+    -v '$BCH_PROD_PATH/logs:/app/logs' \
+    -v '$BCH_PROD_PATH/.env:/app/.env:ro' \
+    -e NODE_ENV=production \
+    -e PORT=4001 \
+    bch360:latest" \
+    | sed 's/^/    /' \
+    || fail "docker run failed"
 ok "Container restarted"
 
 # ── Healthcheck ──

@@ -232,37 +232,51 @@ fi
 rm -f "$TARBALL"
 
 # ── Docker rebuild + restart ──
+# Uses raw `docker` — the compose file on prod targets v3 schema but prod's
+# docker-compose is v1.17 (2017) which can't parse network_mode/healthcheck.
 header "Docker build & restart"
 if [ $DRY_RUN -eq 0 ]; then
-    log "Detecting compose CLI on prod..."
-    COMPOSE_CMD=$(detect_compose_cmd)
-    [ -z "$COMPOSE_CMD" ] && fail "Neither 'docker compose' nor 'docker-compose' available on prod"
-    ok "Using: $COMPOSE_CMD"
-
-    # Snapshot container start time before rebuild — used to verify restart actually happened
     BEFORE_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
+    BEFORE_IMAGE=$(ssh_exec "docker inspect bch360 --format '{{.Image}}' 2>/dev/null" | head -1 | tr -d '\r')
 
-    log "$COMPOSE_CMD build..."
-    ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD build 2>&1 | tail -10" \
+    log "docker build (this is the slow step — npm install + Vite build)..."
+    ssh_exec "cd '$BCH_PROD_PATH' && docker build -t bch360:latest . 2>&1 | tail -10" \
         | sed 's/^/    /' \
-        || fail "$COMPOSE_CMD build failed"
+        || fail "docker build failed"
 
-    log "$COMPOSE_CMD up -d..."
-    ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD up -d 2>&1 | tail -10" \
+    AFTER_IMAGE=$(ssh_exec "docker inspect bch360:latest --format '{{.Id}}' 2>/dev/null" | head -1 | tr -d '\r')
+    if [ -n "$BEFORE_IMAGE" ] && [ "$BEFORE_IMAGE" = "$AFTER_IMAGE" ]; then
+        warn "Image SHA unchanged after build — Dockerfile/source did not change"
+    else
+        ok "New image built: $AFTER_IMAGE"
+    fi
+
+    log "Stopping old container..."
+    ssh_exec "docker stop bch360 2>&1 || true; docker rm bch360 2>&1 || true" \
+        | sed 's/^/    /' || true
+
+    log "Starting new container (host network + .env + data_lake/logs volumes)..."
+    ssh_exec "docker run -d \
+        --name bch360 \
+        --restart unless-stopped \
+        --network host \
+        -v '$BCH_PROD_PATH/data_lake:/app/data_lake' \
+        -v '$BCH_PROD_PATH/logs:/app/logs' \
+        -v '$BCH_PROD_PATH/.env:/app/.env:ro' \
+        -e NODE_ENV=production \
+        -e PORT=4001 \
+        bch360:latest" \
         | sed 's/^/    /' \
-        || fail "$COMPOSE_CMD up -d failed"
+        || fail "docker run failed"
 
-    # Verify container actually restarted (StartedAt should change)
     sleep 2
     AFTER_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
-    if [ -n "$BEFORE_START" ] && [ "$BEFORE_START" = "$AFTER_START" ]; then
-        warn "Container StartedAt unchanged ($AFTER_START) — image may not have changed; forcing restart"
-        ssh_exec "docker restart bch360" || fail "docker restart failed"
-        AFTER_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
+    if [ -z "$AFTER_START" ]; then
+        fail "Container is not running after `docker run`"
     fi
-    ok "Container restarted (StartedAt: $AFTER_START)"
+    ok "Container started (StartedAt: $AFTER_START)"
 else
-    warn "[dry-run] would docker compose build && up -d"
+    warn "[dry-run] would docker build + docker stop/rm/run"
 fi
 
 # ── Healthcheck ──
