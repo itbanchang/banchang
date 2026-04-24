@@ -40,7 +40,18 @@ cd "$PROJECT_ROOT"
 BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/healthz}"
 
 SSH_OPTS=(-i "$BCH_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
-ssh_exec() { ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1 | grep -v '^\*\*' || true; }
+ssh_exec() {
+    local out rc
+    out=$(ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1)
+    rc=$?
+    [ -n "$out" ] && printf "%s\n" "$out" | grep -v '^\*\*'
+    return $rc
+}
+detect_compose_cmd() {
+    if ssh_exec "docker compose version >/dev/null 2>&1"; then echo "docker compose"
+    elif ssh_exec "command -v docker-compose >/dev/null 2>&1"; then echo "docker-compose"
+    else echo ""; fi
+}
 
 # Args
 TARGET=""
@@ -99,8 +110,13 @@ ok "Files restored from $TARGET"
 
 # ── Docker rebuild ──
 header "Docker rebuild & restart"
-ssh_exec "cd '$BCH_PROD_PATH' && docker compose build 2>&1 | tail -3" | sed 's/^/    /'
-ssh_exec "cd '$BCH_PROD_PATH' && docker compose up -d 2>&1 | tail -3" | sed 's/^/    /'
+COMPOSE_CMD=$(detect_compose_cmd)
+[ -z "$COMPOSE_CMD" ] && fail "Neither 'docker compose' nor 'docker-compose' available on prod"
+log "Using: $COMPOSE_CMD"
+ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD build 2>&1 | tail -5" | sed 's/^/    /' \
+    || fail "$COMPOSE_CMD build failed"
+ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD up -d 2>&1 | tail -5" | sed 's/^/    /' \
+    || fail "$COMPOSE_CMD up -d failed"
 ok "Container restarted"
 
 # ── Healthcheck ──

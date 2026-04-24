@@ -79,8 +79,27 @@ BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-https://${BCH_PROD_HOST}/healthz}"
 
 # ── SSH helpers ──
 SSH_OPTS=(-i "$BCH_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
-ssh_exec() { ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1 | grep -v '^\*\*' || true; }
+# ssh_exec: runs remote cmd, filters OpenSSH PQ-warning lines, propagates ssh exit code.
+# Use this for every remote command — relying on `set -e` is unsafe because pipes mask exit codes.
+ssh_exec() {
+    local out rc
+    out=$(ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "$@" 2>&1)
+    rc=$?
+    [ -n "$out" ] && printf "%s\n" "$out" | grep -v '^\*\*'
+    return $rc
+}
 scp_send() { scp "${SSH_OPTS[@]}" "$@"; }
+
+# Detect docker compose CLI (v2 plugin "docker compose" vs v1 standalone "docker-compose")
+detect_compose_cmd() {
+    if ssh_exec "docker compose version >/dev/null 2>&1"; then
+        echo "docker compose"
+    elif ssh_exec "command -v docker-compose >/dev/null 2>&1"; then
+        echo "docker-compose"
+    else
+        echo ""
+    fi
+}
 
 # ── Banner ──
 header "BCH 360 Promote — Local Dev -> $BCH_PROD_HOST"
@@ -157,14 +176,17 @@ SNAPSHOT_PATH="$BCH_SNAPSHOT_DIR/$SNAPSHOT_NAME"
 
 if [ $DRY_RUN -eq 0 ]; then
     log "Creating $SNAPSHOT_NAME on prod (excludes node_modules, dist, data_lake, logs, tmp)..."
+    # tar --warning=no-file-changed swallows the only benign warning we expect; treat
+    # exit code 1 (file-changed-during-read) as soft success but anything else hard-fail.
     ssh_exec "mkdir -p '$BCH_SNAPSHOT_DIR' && \
         cd '$BCH_PROD_PATH' && \
         tar --warning=no-file-changed \
             --exclude=node_modules --exclude=dist --exclude=data_lake \
             --exclude=logs --exclude=tmp --exclude='*.log' \
-            -czf '$SNAPSHOT_PATH' . 2>/dev/null || true"
+            -czf '$SNAPSHOT_PATH' . ; rc=\$?; [ \$rc -eq 0 ] || [ \$rc -eq 1 ] || exit \$rc" \
+        || fail "Snapshot tar failed on prod"
     SIZE=$(ssh_exec "ls -lh '$SNAPSHOT_PATH' | awk '{print \$5}'" | head -1)
-    [ -z "$SIZE" ] && fail "Snapshot creation failed"
+    [ -z "$SIZE" ] && fail "Snapshot creation failed (file not present after tar)"
     ok "Snapshot created: $SNAPSHOT_PATH ($SIZE)"
 
     # Record for rollback
@@ -210,13 +232,33 @@ rm -f "$TARBALL"
 # ── Docker rebuild + restart ──
 header "Docker build & restart"
 if [ $DRY_RUN -eq 0 ]; then
-    log "docker compose build..."
-    BUILD_OUT=$(ssh_exec "cd '$BCH_PROD_PATH' && docker compose build 2>&1 | tail -5")
-    echo "$BUILD_OUT" | sed 's/^/    /'
+    log "Detecting compose CLI on prod..."
+    COMPOSE_CMD=$(detect_compose_cmd)
+    [ -z "$COMPOSE_CMD" ] && fail "Neither 'docker compose' nor 'docker-compose' available on prod"
+    ok "Using: $COMPOSE_CMD"
 
-    log "docker compose up -d..."
-    ssh_exec "cd '$BCH_PROD_PATH' && docker compose up -d 2>&1 | tail -5" | sed 's/^/    /'
-    ok "Container restarted"
+    # Snapshot container start time before rebuild — used to verify restart actually happened
+    BEFORE_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
+
+    log "$COMPOSE_CMD build..."
+    ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD build 2>&1 | tail -10" \
+        | sed 's/^/    /' \
+        || fail "$COMPOSE_CMD build failed"
+
+    log "$COMPOSE_CMD up -d..."
+    ssh_exec "cd '$BCH_PROD_PATH' && $COMPOSE_CMD up -d 2>&1 | tail -10" \
+        | sed 's/^/    /' \
+        || fail "$COMPOSE_CMD up -d failed"
+
+    # Verify container actually restarted (StartedAt should change)
+    sleep 2
+    AFTER_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
+    if [ -n "$BEFORE_START" ] && [ "$BEFORE_START" = "$AFTER_START" ]; then
+        warn "Container StartedAt unchanged ($AFTER_START) — image may not have changed; forcing restart"
+        ssh_exec "docker restart bch360" || fail "docker restart failed"
+        AFTER_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
+    fi
+    ok "Container restarted (StartedAt: $AFTER_START)"
 else
     warn "[dry-run] would docker compose build && up -d"
 fi
