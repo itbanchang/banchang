@@ -21,9 +21,10 @@ npm run rollback               # back to the snapshot from previous promote
 | Tier | Where | What runs | URL |
 |---|---|---|---|
 | **Dev** | Local Desktop (Windows) | `npm run dev` (Vite + Express) | http://localhost:4001 |
-| **Prod** | `10.109.0.33` (Linux + Docker) | `bch360` container | https://10.109.0.33 |
+| **Staging** | `10.109.0.33` (parallel container) | `bch360-staging` container, port 4002 | http://10.109.0.33:4002 |
+| **Prod** | `10.109.0.33` (Linux + Docker) | `bch360` container, behind nginx | https://10.109.0.33 |
 
-There is **one** production host. Dev = your laptop. There is no staging tier yet.
+Staging shares the prod host but lives in `/opt/bch360-staging` with its own image (`bch360-staging`), container (`bch360-staging`), and volumes. Both tiers mount the **same `.env`** read-only, so DB credentials / Anthropic key match. Promote with `npm run promote:staging`, click around at `http://10.109.0.33:4002`, then `npm run promote` for prod.
 
 ## What `npm run promote` does
 

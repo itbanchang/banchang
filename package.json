@@ -20,6 +20,8 @@
     "promote": "bash scripts/promote.sh",
     "promote:force": "bash scripts/promote.sh --force",
     "promote:dry": "bash scripts/promote.sh --dry-run",
+    "promote:staging": "bash scripts/promote-staging.sh",
+    "promote:staging:force": "bash scripts/promote-staging.sh --force",
     "promote:safe-rotate:install": "bash scripts/install-safe-rotate-cron.sh",
     "rollback": "bash scripts/rollback.sh",
     "rollback:list": "bash scripts/rollback.sh --list",
