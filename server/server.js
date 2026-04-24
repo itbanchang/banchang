@@ -50,6 +50,7 @@ import safetyRoutes from './routes/safety.js';
 import kpiExtendedRoutes from './routes/kpiExtended.js';
 import dqRoutes from './routes/dq.js';
 import rumRoutes from './routes/rum.js';
+import smokeRoutes from './routes/smoke.js';
 import briefingRoutes from './routes/briefing.js';
 import v2Shims from './routes/v2Shims.js';
 import { authenticate, authorize } from './middleware/rbac.js';
@@ -266,6 +267,8 @@ app.use('/api', apiLimiter);
 app.use('/api/auth', authRoutes);
 // RUM ingestion — anonymous + internally rate-limited (web-vitals, client errors)
 app.use('/api/rum', rumRoutes);
+// Functional smoke test — promote.sh polls this after deploy
+app.use('/api/smoke', smokeRoutes);
 
 // ---- AI-1: Enable Authentication on all /api/* routes ----
 // All routes below this line require a valid JWT token.

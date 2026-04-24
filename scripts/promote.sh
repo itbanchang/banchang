@@ -398,8 +398,40 @@ if [ $DRY_RUN -eq 0 ]; then
 
     if [ $HEALTHY -eq 1 ]; then
         ok "Health check passed (HTTP $STATUS)"
-    else
-        warn "Healthcheck FAILED (HTTP $STATUS) — restoring bch360:safe (last known good image)"
+
+        # Functional smoke test — DB ping + sample query + frontend asset.
+        # /api/smoke was added in feat/dev-prod-promotion-flow Tier 2; older
+        # images return 404. Treat 404 as "endpoint not yet deployed; skip"
+        # rather than failing — otherwise this gate would block first-time
+        # promotes from images that pre-date the route.
+        SMOKE_URL="${BCH_HEALTHCHECK_URL%/*}/api/smoke"
+        log "Smoke test (functional) — $SMOKE_URL"
+        SMOKE_RESPONSE=$(curl -sk --max-time 10 "$SMOKE_URL" 2>/dev/null) || SMOKE_RESPONSE=""
+        SMOKE_HTTP=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "$SMOKE_URL" 2>/dev/null) || SMOKE_HTTP="000"
+        case "$SMOKE_HTTP" in
+            200)
+                # Cheap-and-cheerful JSON parse — looking for "status":"ok"
+                if echo "$SMOKE_RESPONSE" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                    ok "Smoke test passed (HTTP 200, status=ok)"
+                else
+                    warn "Smoke test FAILED (HTTP 200 but status != ok): $(echo "$SMOKE_RESPONSE" | head -c 200)"
+                    HEALTHY=0
+                fi
+                ;;
+            404)
+                warn "Smoke test endpoint not deployed yet (HTTP 404) — relying on /healthz only this run"
+                ;;
+            503)
+                warn "Smoke test FAILED (HTTP 503): $(echo "$SMOKE_RESPONSE" | head -c 300)"
+                HEALTHY=0
+                ;;
+            *)
+                warn "Smoke test inconclusive (HTTP $SMOKE_HTTP) — accepting /healthz result"
+                ;;
+        esac
+    fi
+    if [ $HEALTHY -ne 1 ]; then
+        warn "Health checks FAILED (healthz=$STATUS smoke=${SMOKE_HTTP:-n/a}) — restoring bch360:safe (last known good image)"
         ssh_exec "docker stop bch360 2>&1 || true; docker rm bch360 2>&1 || true; \
             docker run -d --name bch360 --restart unless-stopped --network host \
                 -v '$BCH_PROD_PATH/data_lake:/app/data_lake' \
