@@ -75,7 +75,12 @@ See `package.json` for the full list.
 
 `local desktop (npm run dev)` → `git commit` → `npm run promote` → `https://10.109.0.33`
 
-`promote` runs gates, snapshots prod, syncs source via SSH, rebuilds the Docker container, healthchecks, and auto-rolls back on failure. Full runbook at [docs/ops/promote-flow.md](docs/ops/promote-flow.md).
+`promote` enforces a deploy-window guard (no Mon-Fri 07-11, no Fri ≥15:00 unless `--emergency="reason"`), runs pre-flight gates (typecheck + lint baseline + build), snapshots prod, syncs source via SSH, rebuilds the Docker image (tagged with git SHA + deploy timestamp), restarts the container, healthchecks, and on failure restores `bch360:safe` (the last-known-good image, rotated hourly by `scripts/promote-safe-rotate.sh`). Full runbook at [docs/ops/promote-flow.md](docs/ops/promote-flow.md).
+
+**Image tag scheme on prod (10.109.0.33):**
+- `bch360:safe` — auto-rollback target. Rotated only after running container is healthy ≥1h. **Never overwritten by `promote.sh`.**
+- `bch360:latest` — current deploy.
+- `bch360:sha-<short>` and `bch360:deploy-<YYYYMMDD-HHMM>` — immutable per-deploy tags (10 newest kept).
 
 ## Directory map (high-level)
 

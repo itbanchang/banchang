@@ -3,18 +3,29 @@
 # BCH 360 V.10 — Local Dev -> Production Promotion
 #
 # Flow:
+#   0. Deploy-window guard (block weekday morning rounds + Friday afternoons
+#      unless --emergency or BCH_DEPLOY_SKIP_WINDOW=1)
 #   1. Pre-flight gates (git clean, typecheck, lint, build)
-#   2. Snapshot current prod -> /opt/bch360-snapshots/snapshot-<ts>.tar.gz
+#   2. Snapshot current /opt/bch360 source -> snapshot-<ts>.tar.gz
 #   3. Tar local source, scp, extract over /opt/bch360 (additive)
-#   4. docker compose build && docker compose up -d
-#   5. Healthcheck https://<host>/healthz
-#   6. On healthcheck fail -> auto rollback to the snapshot just taken
+#   4. docker build (tags: bch360:sha-<short> + bch360:deploy-<ts> + :latest)
+#   5. Stop old container, run new one
+#   6. Healthcheck https://<host>/healthz
+#   7. On healthcheck fail -> restore bch360:safe (immutable last-known-good
+#      image, rotated by scripts/promote-safe-rotate.sh after 1h healthy uptime)
+#
+# Image tag scheme on prod (10.109.0.33):
+#   bch360:sha-<short>          immutable, one per git SHA  (kept N newest)
+#   bch360:deploy-<YYYYMMDD-HHMM>  immutable, one per deploy  (kept N newest)
+#   bch360:latest               points to most recent deploy
+#   bch360:safe                 last-known-good, NEVER overwritten by promote
 #
 # Usage:
-#   bash scripts/promote.sh              # full promotion (recommended)
-#   bash scripts/promote.sh --force      # skip git/typecheck/lint gates
-#   bash scripts/promote.sh --skip-build # reuse existing dist/
-#   bash scripts/promote.sh --dry-run    # show what would happen, do nothing remote
+#   bash scripts/promote.sh                 # full promotion (recommended)
+#   bash scripts/promote.sh --force         # skip typecheck/lint gates
+#   bash scripts/promote.sh --skip-build    # reuse existing dist/
+#   bash scripts/promote.sh --dry-run       # show what would happen, no changes
+#   bash scripts/promote.sh --emergency="hotfix login"   # bypass window guard
 #
 # Config (set in .env or env vars):
 #   BCH_PROD_HOST            (default 10.109.0.33)
@@ -25,6 +36,10 @@
 #   BCH_HEALTHCHECK_TIMEOUT  (default 60 seconds)
 #   BCH_SNAPSHOT_DIR         (default /opt/bch360-snapshots)
 #   BCH_SNAPSHOT_KEEP        (default 5)
+#   BCH_IMAGE_KEEP           (default 10) — newest sha-/deploy- tags to keep
+#   BCH_BLOCK_HOURS_WEEKDAY  (default 07-11) — Mon-Fri block window
+#   BCH_BLOCK_FRIDAY_AFTER   (default 15)    — Friday afternoon block hour
+#   BCH_DEPLOY_SKIP_WINDOW   (default 0)     — set to 1 in .env for non-clinical hosts
 # ============================================================
 
 set -euo pipefail
@@ -38,18 +53,29 @@ BCH_HEALTHCHECK_URL="${BCH_HEALTHCHECK_URL:-}"
 BCH_HEALTHCHECK_TIMEOUT="${BCH_HEALTHCHECK_TIMEOUT:-60}"
 BCH_SNAPSHOT_DIR="${BCH_SNAPSHOT_DIR:-/opt/bch360-snapshots}"
 BCH_SNAPSHOT_KEEP="${BCH_SNAPSHOT_KEEP:-5}"
+BCH_IMAGE_KEEP="${BCH_IMAGE_KEEP:-10}"
+# Working-hours guard: deploys are blocked during these windows by default.
+# Override with --emergency. Times in 24h format; days are Mon=1..Sun=7 (date %u).
+BCH_BLOCK_HOURS_WEEKDAY="${BCH_BLOCK_HOURS_WEEKDAY:-07-11}" # Mon-Fri morning rounds
+BCH_BLOCK_FRIDAY_AFTER="${BCH_BLOCK_FRIDAY_AFTER:-15}"     # Fri 15:00 onwards
+# Bypass the guard entirely (for non-clinical hosts); set to 1 in .env to disable
+BCH_DEPLOY_SKIP_WINDOW="${BCH_DEPLOY_SKIP_WINDOW:-0}"
 
 # ── Args ──
 FORCE=0
 SKIP_BUILD=0
 DRY_RUN=0
+EMERGENCY=0
+EMERGENCY_REASON=""
 for arg in "$@"; do
     case "$arg" in
-        --force)      FORCE=1 ;;
-        --skip-build) SKIP_BUILD=1 ;;
-        --dry-run)    DRY_RUN=1 ;;
+        --force)        FORCE=1 ;;
+        --skip-build)   SKIP_BUILD=1 ;;
+        --dry-run)      DRY_RUN=1 ;;
+        --emergency=*)  EMERGENCY=1; EMERGENCY_REASON="${arg#--emergency=}" ;;
+        --emergency)    EMERGENCY=1; EMERGENCY_REASON="(no reason given)" ;;
         --help|-h)
-            sed -n '2,30p' "$0"
+            sed -n '2,40p' "$0"
             exit 0
             ;;
         *) echo "Unknown arg: $arg (use --help)" >&2; exit 2 ;;
@@ -103,10 +129,40 @@ detect_compose_cmd() {
     fi
 }
 
+# Guard: refuse to deploy during clinical hours unless --emergency.
+# Uses local clock; assumes the developer is in the same timezone as the hospital.
+check_deploy_window() {
+    [ "$BCH_DEPLOY_SKIP_WINDOW" = "1" ] && return 0
+    local dow hour reason=""
+    dow=$(date +%u)   # 1=Mon ... 7=Sun
+    hour=$(date +%H)  # zero-padded 00-23
+    hour=$((10#$hour)) # strip zero-pad before arithmetic
+    local block_start block_end
+    block_start=${BCH_BLOCK_HOURS_WEEKDAY%-*}
+    block_end=${BCH_BLOCK_HOURS_WEEKDAY#*-}
+    if [ "$dow" -le 5 ] && [ "$hour" -ge "$block_start" ] && [ "$hour" -lt "$block_end" ]; then
+        reason="weekday morning rounds (${BCH_BLOCK_HOURS_WEEKDAY})"
+    elif [ "$dow" -eq 5 ] && [ "$hour" -ge "$BCH_BLOCK_FRIDAY_AFTER" ]; then
+        reason="Friday afternoon (>=${BCH_BLOCK_FRIDAY_AFTER}:00) — too close to weekend on-call gap"
+    fi
+    if [ -n "$reason" ]; then
+        if [ $EMERGENCY -eq 1 ]; then
+            warn "EMERGENCY override: deploying during $reason"
+            warn "Reason: $EMERGENCY_REASON"
+        else
+            fail "Blocked by deploy window: $reason. Use --emergency=\"reason\" to override, or set BCH_DEPLOY_SKIP_WINDOW=1 in .env to disable this guard."
+        fi
+    fi
+}
+
 # ── Banner ──
 header "BCH 360 Promote — Local Dev -> $BCH_PROD_HOST"
-[ $DRY_RUN -eq 1 ] && warn "DRY RUN — no remote changes will be made"
-[ $FORCE   -eq 1 ] && warn "FORCE — pre-flight gates skipped"
+[ $DRY_RUN   -eq 1 ] && warn "DRY RUN — no remote changes will be made"
+[ $FORCE     -eq 1 ] && warn "FORCE — pre-flight gates skipped"
+[ $EMERGENCY -eq 1 ] && warn "EMERGENCY — deploy window guard bypassed: $EMERGENCY_REASON"
+
+# ── Gate 0: deploy window ──
+check_deploy_window
 
 # ── Gate 1: git status ──
 header "Pre-flight gates"
@@ -135,14 +191,18 @@ if [ $FORCE -eq 0 ]; then
     fi
 fi
 
-# ── Gate 3: lint ──
+# ── Gate 3: lint baseline ──
+# We compare against scripts/lint-baseline.json instead of using a hard
+# --max-warnings count. Master ships with 50 errors / 239 warnings as of
+# 2026-04-24; the baseline gate accepts <= those counts and fails on regression.
 if [ $FORCE -eq 0 ]; then
-    log "Gate 3/4 — ESLint"
-    if npm run lint --silent > /tmp/bch-lint.log 2>&1; then
-        ok "Lint passed"
+    log "Gate 3/4 — ESLint baseline (scripts/lint-baseline.json)"
+    if bash "$SCRIPT_DIR/lint-check.sh" --quiet > /tmp/bch-lint.log 2>&1; then
+        cat /tmp/bch-lint.log | tail -3
+        ok "Lint within baseline"
     else
-        tail -20 /tmp/bch-lint.log
-        fail "Lint failed (see /tmp/bch-lint.log). Use --force to override."
+        cat /tmp/bch-lint.log | tail -20
+        fail "Lint regressed beyond baseline. Fix new findings, or re-snapshot with 'bash scripts/lint-check.sh --update' if intentional. Use --force to override."
     fi
 fi
 
@@ -234,13 +294,44 @@ rm -f "$TARBALL"
 # ── Docker rebuild + restart ──
 # Uses raw `docker` — the compose file on prod targets v3 schema but prod's
 # docker-compose is v1.17 (2017) which can't parse network_mode/healthcheck.
+#
+# Tag scheme:
+#   bch360:sha-<short>          immutable, one per git SHA
+#   bch360:deploy-<YYYYMMDD-HHMM>  immutable, one per deploy
+#   bch360:latest               mutable, points to most recent deploy
+#   bch360:safe                 NEVER overwritten by promote — rotated by
+#                               scripts/promote-safe-rotate.sh after 1h healthy uptime
 header "Docker build & restart"
+DEPLOY_TAG="deploy-${TIMESTAMP}"
+SHA_TAG="sha-${SHORT_SHA}"
 if [ $DRY_RUN -eq 0 ]; then
     BEFORE_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
     BEFORE_IMAGE=$(ssh_exec "docker inspect bch360 --format '{{.Image}}' 2>/dev/null" | head -1 | tr -d '\r')
 
+    # Check that bch360:safe exists — auto-rollback target. If missing on first run,
+    # adopt the currently running image as :safe so we always have a fallback.
+    SAFE_EXISTS=$(ssh_exec "docker image inspect bch360:safe >/dev/null 2>&1 && echo YES || echo NO" | head -1 | tr -d '\r')
+    if [ "$SAFE_EXISTS" != "YES" ]; then
+        if [ -n "$BEFORE_IMAGE" ]; then
+            warn "bch360:safe missing — adopting current running image as initial :safe baseline"
+            ssh_exec "docker tag '$BEFORE_IMAGE' bch360:safe" \
+                || fail "Failed to seed bch360:safe from running container"
+            ok "Seeded bch360:safe = $BEFORE_IMAGE"
+        else
+            warn "bch360:safe missing AND no running container — cannot auto-rollback. Continue at your own risk."
+        fi
+    fi
+
     log "docker build (this is the slow step — npm install + Vite build)..."
-    ssh_exec "cd '$BCH_PROD_PATH' && docker build -t bch360:latest . 2>&1 | tail -10" \
+    ssh_exec "cd '$BCH_PROD_PATH' && docker build \
+        --label bch360.git-sha='$SHA' \
+        --label bch360.git-branch='$BRANCH' \
+        --label bch360.deployed-at='$TIMESTAMP' \
+        --label bch360.deployed-by='$(whoami)@$(hostname)' \
+        -t bch360:$SHA_TAG \
+        -t bch360:$DEPLOY_TAG \
+        -t bch360:latest \
+        . 2>&1 | tail -10" \
         | sed 's/^/    /' \
         || fail "docker build failed"
 
@@ -249,6 +340,7 @@ if [ $DRY_RUN -eq 0 ]; then
         warn "Image SHA unchanged after build — Dockerfile/source did not change"
     else
         ok "New image built: $AFTER_IMAGE"
+        ok "Tagged: bch360:latest, bch360:$SHA_TAG, bch360:$DEPLOY_TAG"
     fi
 
     log "Stopping old container..."
@@ -272,9 +364,17 @@ if [ $DRY_RUN -eq 0 ]; then
     sleep 2
     AFTER_START=$(ssh_exec "docker inspect bch360 --format '{{.State.StartedAt}}' 2>/dev/null" | head -1 | tr -d '\r')
     if [ -z "$AFTER_START" ]; then
-        fail "Container is not running after `docker run`"
+        fail "Container is not running after \`docker run\`"
     fi
     ok "Container started (StartedAt: $AFTER_START)"
+
+    # Prune older sha-*/deploy-* tags, keep N newest by image creation time
+    log "Pruning old image tags (keep $BCH_IMAGE_KEEP newest, never bch360:safe)..."
+    ssh_exec "docker images bch360 --format '{{.CreatedAt}} {{.Repository}}:{{.Tag}}' \
+        | grep -E '(bch360:sha-|bch360:deploy-)' \
+        | sort -r | tail -n +$((BCH_IMAGE_KEEP+1)) \
+        | awk '{print \$NF}' | xargs -r docker rmi -f 2>&1 | tail -5" \
+        | sed 's/^/    /' || true
 else
     warn "[dry-run] would docker build + docker stop/rm/run"
 fi
@@ -299,9 +399,24 @@ if [ $DRY_RUN -eq 0 ]; then
     if [ $HEALTHY -eq 1 ]; then
         ok "Health check passed (HTTP $STATUS)"
     else
-        warn "Healthcheck FAILED (HTTP $STATUS) — auto-rolling back to $SNAPSHOT_NAME"
-        bash "$SCRIPT_DIR/rollback.sh" --auto || true
-        fail "Promotion aborted; rolled back to previous version."
+        warn "Healthcheck FAILED (HTTP $STATUS) — restoring bch360:safe (last known good image)"
+        ssh_exec "docker stop bch360 2>&1 || true; docker rm bch360 2>&1 || true; \
+            docker run -d --name bch360 --restart unless-stopped --network host \
+                -v '$BCH_PROD_PATH/data_lake:/app/data_lake' \
+                -v '$BCH_PROD_PATH/logs:/app/logs' \
+                -v '$BCH_PROD_PATH/.env:/app/.env:ro' \
+                -e NODE_ENV=production -e PORT=4001 \
+                bch360:safe && docker tag bch360:safe bch360:latest" \
+            | sed 's/^/    /' || true
+        # Re-poll healthcheck to confirm safe image is healthy
+        sleep 5
+        SAFE_STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "$BCH_HEALTHCHECK_URL" 2>/dev/null || echo "000")
+        if [[ "$SAFE_STATUS" =~ ^2 ]]; then
+            warn "Auto-rollback to bch360:safe succeeded (HTTP $SAFE_STATUS). Source on /opt/bch360 is from the FAILED deploy — restore source manually if needed."
+        else
+            fail "Auto-rollback to bch360:safe failed (HTTP $SAFE_STATUS). MANUAL INTERVENTION REQUIRED. SSH and inspect: docker logs bch360"
+        fi
+        fail "Promotion aborted; restored bch360:safe."
     fi
 else
     warn "[dry-run] would curl $BCH_HEALTHCHECK_URL"

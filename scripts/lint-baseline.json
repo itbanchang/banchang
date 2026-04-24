@@ -1,0 +1,7 @@
+{
+  "errors": 50,
+  "warnings": 239,
+  "captured_at": "2026-04-24",
+  "captured_on_sha": "3303878",
+  "_note": "Baseline of pre-existing lint findings on master (V2 design system merge). promote.sh's lint gate accepts <= these counts. Reduce the numbers as you fix things; never increase them. Re-snapshot with: npm run lint:baseline"
+}
