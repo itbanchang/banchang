@@ -29,7 +29,9 @@
 set -euo pipefail
 
 MIN_UPTIME_HOURS="${MIN_UPTIME_HOURS:-1}"
-HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://localhost:4001/healthz}"
+# Going through nginx covers more failure modes (port mismatch, TLS broken,
+# upstream wrong) than hitting the container port directly.
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://localhost/healthz}"
 CONTAINER="${CONTAINER:-bch360}"
 
 log() { printf "%s [safe-rotate] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -58,8 +60,10 @@ if [ "$UPTIME_SEC" -lt "$MIN_UPTIME_SEC" ]; then
     exit 0
 fi
 
-# Healthcheck must pass
-HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "$HEALTHCHECK_URL" 2>/dev/null || echo "000")
+# Healthcheck must pass.
+# Note: `||` after the assignment, NOT after the curl, otherwise we double-emit
+# "000" (curl prints "000" on connection failure AND we append our own).
+HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "$HEALTHCHECK_URL" 2>/dev/null) || HTTP_CODE="000"
 if [[ ! "$HTTP_CODE" =~ ^2 ]]; then
     log "SKIP: healthcheck $HEALTHCHECK_URL returned HTTP $HTTP_CODE."
     exit 0
@@ -79,4 +83,6 @@ fi
 
 # Promote
 docker tag "$CURRENT_IMAGE" bch360:safe
-log "ROTATED: bch360:safe -> ${CURRENT_IMAGE:0:12} (was ${SAFE_IMAGE:0:12:-empty}); uptime ${UPTIME_SEC}s, health $HTTP_CODE."
+SAFE_PREV="${SAFE_IMAGE:0:12}"
+[ -z "$SAFE_PREV" ] && SAFE_PREV="(none)"
+log "ROTATED: bch360:safe -> ${CURRENT_IMAGE:0:12} (was $SAFE_PREV); uptime ${UPTIME_SEC}s, health $HTTP_CODE."

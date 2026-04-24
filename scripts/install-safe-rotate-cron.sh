@@ -22,23 +22,35 @@ cd "$PROJECT_ROOT"
 
 SSH_OPTS=(-i "$BCH_SSH_KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
 
-CRON_LINE="0 * * * * $BCH_PROD_PATH/scripts/promote-safe-rotate.sh >> /var/log/bch360-safe-rotate.log 2>&1"
+LOCAL_SCRIPT="$SCRIPT_DIR/promote-safe-rotate.sh"
+REMOTE_SCRIPT="$BCH_PROD_PATH/scripts/promote-safe-rotate.sh"
+CRON_LINE="0 * * * * $REMOTE_SCRIPT >> /var/log/bch360-safe-rotate.log 2>&1"
 
-echo "Installing cron on $BCH_PROD_USER@$BCH_PROD_HOST:"
-echo "  $CRON_LINE"
+[ -f "$LOCAL_SCRIPT" ] || { echo "Local script missing: $LOCAL_SCRIPT" >&2; exit 1; }
+
+echo "Step 1/2 — uploading $LOCAL_SCRIPT -> $BCH_PROD_USER@$BCH_PROD_HOST:$REMOTE_SCRIPT"
+ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "mkdir -p '$BCH_PROD_PATH/scripts'"
+scp "${SSH_OPTS[@]}" "$LOCAL_SCRIPT" "$BCH_PROD_USER@$BCH_PROD_HOST:$REMOTE_SCRIPT" > /dev/null
+echo "  ✓ uploaded"
+
 echo
-
+echo "Step 2/2 — installing cron entry:"
+echo "  $CRON_LINE"
 ssh "${SSH_OPTS[@]}" "$BCH_PROD_USER@$BCH_PROD_HOST" "
     set -e
-    chmod +x '$BCH_PROD_PATH/scripts/promote-safe-rotate.sh'
+    chmod +x '$REMOTE_SCRIPT'
     touch /var/log/bch360-safe-rotate.log
     chmod 644 /var/log/bch360-safe-rotate.log
     # Idempotent: drop any previous bch360 safe-rotate line, then add ours.
     ( crontab -l 2>/dev/null | grep -v 'promote-safe-rotate\.sh' || true ; \
       echo '$CRON_LINE' ) | crontab -
-    crontab -l | grep promote-safe-rotate
+    echo '  ✓ cron installed:'
+    crontab -l | grep promote-safe-rotate | sed 's/^/    /'
 "
 
 echo
 echo "Done. Verify with: ssh $BCH_PROD_USER@$BCH_PROD_HOST 'crontab -l'"
 echo "Logs will appear at: /var/log/bch360-safe-rotate.log on prod"
+echo
+echo "To run once now (test):"
+echo "  ssh $BCH_PROD_USER@$BCH_PROD_HOST '$REMOTE_SCRIPT'"
