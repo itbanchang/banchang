@@ -1,0 +1,7 @@
+{
+  "errors": 50,
+  "warnings": 243,
+  "captured_at": "2026-04-24",
+  "captured_on_sha": "4723088",
+  "_note": "Baseline of pre-existing lint findings. promote.sh accepts <= these counts. Reduce as you fix; never increase. Re-snapshot with: bash scripts/lint-check.sh --update"
+}

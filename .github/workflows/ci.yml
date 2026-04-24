@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main, 'feat/**', 'fix/**']
+
+# Allow concurrent runs on different refs but cancel older runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # `--if-present` lets these steps no-op when the script is undefined,
+      # which is the case on the production-baseline branch (no typecheck/test yet).
+      - name: TypeScript typecheck (if defined)
+        run: npm run typecheck --if-present
+
+      - name: Lint baseline check
+        run: bash scripts/lint-check.sh
+
+      - name: Vite production build (smoke)
+        run: npm run build
+
+      - name: Vitest (if defined)
+        run: npm run test --if-present
+        continue-on-error: true

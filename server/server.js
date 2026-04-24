@@ -28,6 +28,7 @@ import financeRoutes from './routes/finance.js';
 import ipdRoutes from './routes/ipd.js';
 import clinicalRoutes from './routes/clinical.js';
 import authRoutes from './routes/auth.js';
+import smokeRoutes from './routes/smoke.js';
 import opdRoutes from './routes/opd.js';
 import aiRoutes from './routes/ai_routes.js';
 import erRoutes from './routes/er.js';
@@ -255,6 +256,9 @@ app.use('/api', apiLimiter);
 
 // ---- Public Routes (before authenticate middleware) ----
 app.use('/api/auth', authRoutes);
+// Functional smoke test — promote.sh polls this after deploy to catch
+// "process is up but app is broken" failures (DB outage, missing dist asset, etc.)
+app.use('/api/smoke', smokeRoutes);
 
 // ---- AI-1: Enable Authentication on all /api/* routes ----
 // All routes below this line require a valid JWT token.
