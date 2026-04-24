@@ -23,8 +23,13 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # `npm install` (not `npm ci`) intentionally — package-lock.json is
+      # generated on Windows dev machines and contains @esbuild/win32-x64 which
+      # ubuntu-latest can't resolve. Same reason the Dockerfile uses
+      # `npm install --no-package-lock`. Trade strict-lock-pinning for cross-
+      # platform CI build.
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       # `--if-present` lets these steps no-op when the script is undefined,
       # which is the case on the production-baseline branch (no typecheck/test yet).
