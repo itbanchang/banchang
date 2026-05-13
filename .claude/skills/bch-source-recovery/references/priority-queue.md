@@ -155,14 +155,14 @@ Maintain this section, update each session.
 | Item | Status | Restored in commit/PR | Notes |
 |---|---|---|---|
 | **PT/Staff report** | **✅ DONE 2026-05-13** | `5b26a08` (partial) + `f078441` (complete) | src/components/reports/PTStaffReport.jsx — KPI grid (8 cards) + DeptBreakdown + AgeGroups + Icd10Top10 + DailyTrend + PatientTable (14 cols). Wired into ReportTab dispatcher. Side-by-side parity UAT deferred to Tier 1.5. |
-| Hamburger drawer | ⏸️ Pending | — | Next session (decompile required) |
-| KPI card system | ⏸️ Pending | — | Next session (decompile required) |
-| Fluoride | ⏸️ Pending | — | After PT/Staff template established |
-| Elderly-CXR | ⏸️ Pending | — | After PT/Staff template established |
-| Mortality | ⏸️ Pending | — | After PT/Staff template established |
-| FRAX | ⏸️ Pending | — | After PT/Staff template established |
-| NCD-disease | ⏸️ Pending | — | After PT/Staff template established |
-| Imaging-services | ⏸️ Pending | — | After PT/Staff template established |
+| **Hamburger drawer** | **✅ DONE earlier** | commit `7e2d01c` (pre-Phase H) | src/components/Sidebar.jsx — mobile drawer + desktop collapse + localStorage persist. Wired in App.jsx. |
+| **KPI card system (shared)** | **✅ DONE 2026-05-13** | this session | src/components/reports/_shared.jsx — KPICard, CardShell, Chip, DeptBreakdown, AgeGroups, Icd10Top10, DailyTrend, GenericPatientTable, ReportShell, useReportData hook + helpers. |
+| **Fluoride** | **✅ DONE 2026-05-13** | this session | src/components/reports/FluorideReport.jsx — uses _shared. KPI grid + dept + age (25-59 bucket) + ICD-10 + daily trend + 12-col patient table with fluoride_price highlight. |
+| **Elderly-CXR** | **✅ DONE 2026-05-13** | this session | src/components/reports/ElderlyCxrReport.jsx — adds GenderSplitCard + 60-69/70-79/80+ age buckets + cxr_name + cxr_price columns. |
+| **Mortality** | **✅ DONE 2026-05-13** | this session | src/components/reports/MortalityReport.jsx — FY-comparison style (different from patient-level). 5 KPIs + monthly comparison table (11 cols/FY) + YoY% col + totals row. |
+| **FRAX** | **✅ DONE 2026-05-13** | this session | src/components/reports/FraxReport.jsx — adds RiskDistribution (HIGH/MOD/LOW) + BMI category color + major%/hip% columns + risk-tier pill. |
+| **NCD-disease** | **✅ DONE 2026-05-13** | this session | src/components/reports/NcdDiseaseReport.jsx — DiseaseBreakdown by disease group + multi-tag disease pills + Cr/eGFR/CKD stage columns. |
+| **Imaging-services** | **✅ DONE 2026-05-13** | this session | src/components/reports/ImagingServicesReport.jsx — ServiceMix (4 modality) + multi-tag modality pills + service_names + imaging_price columns. |
 | IPD-compare | ⏸️ Pending | — | Tier 3 — biggest decompile |
 | OPD-compare | ⏸️ Pending | — | Tier 3 |
 | Resource-OPD | ⏸️ Pending | — | Tier 3 |
