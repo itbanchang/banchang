@@ -3,6 +3,7 @@
 // รายงานจำนวนผู้ป่วยในเปรียบเทียบปีงบประมาณ
 // ============================================================
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import PTStaffReport, { usePTStaffData } from './reports/PTStaffReport';
 
 const FISCAL_MONTHS = [
   'ต.ค.',
@@ -111,12 +112,29 @@ export default function ReportTab() {
     setLoading(false);
   }, [fy1, fy2]);
 
+  // PT/Staff date range derived from FY2 (Oct 1 of fy2-543 → today).
+  // PT/Staff use ?start=&end= instead of ?fy1=&fy2= because they're patient-level.
+  const ptStaffRange = useMemo(() => {
+    const ceY = fy2 - 543; // BE → CE
+    const start = `${ceY - 1}-10-01`;
+    const today = new Date();
+    const end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    return { start, end };
+  }, [fy2]);
+
+  const ptMode = reportType === 'staff-services' ? 'staff-services' : 'pt';
+  const ptStaffHook = usePTStaffData(ptMode, ptStaffRange.start, ptStaffRange.end);
+
   useEffect(() => {
     if (reportType === 'ipd-compare') fetchIPDCompare();
     else if (reportType === 'opd-compare') fetchOPDCompare();
     else if (reportType === 'resource-opd') fetchResOpdMonthly();
     else if (reportType === 'resource-ipd') fetchResourceUsage();
-  }, [reportType, fetchIPDCompare, fetchOPDCompare, fetchResourceUsage, fetchResOpdMonthly]);
+    else if (reportType === 'pt' || reportType === 'staff-services') {
+      // PT/Staff data fetch — uses usePTStaffData hook with date range
+      ptStaffHook.load();
+    }
+  }, [reportType, fetchIPDCompare, fetchOPDCompare, fetchResourceUsage, fetchResOpdMonthly, ptStaffHook]);
 
   // Determine which months of fy2 have data for the subtitle
   const fy2DataMonths = useMemo(() => {
@@ -406,6 +424,8 @@ export default function ReportTab() {
           <option value="ipd-compare">จำนวนผู้ป่วยใน (IPD)</option>
           <option value="resource-opd">ทรัพยากร ผู้ป่วยนอก (Lab/Drug/CT-Xray)</option>
           <option value="resource-ipd">ทรัพยากร ผู้ป่วยใน (Lab/Drug/CT-Xray)</option>
+          <option value="pt">รายงานกายภาพบำบัด และ PMC</option>
+          <option value="staff-services">รายงานการรับบริการของบุคลากร</option>
         </select>
 
         <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--md-text-secondary)' }}>
@@ -590,6 +610,34 @@ export default function ReportTab() {
           );
         })}
       </div>
+
+      {/* ── PT/Staff Reports — patient-level, no FY-comparison sheets ──
+          Bypasses One Page / Overview / Data sheets — renders own structure
+          (KPI grid + breakdowns + daily trend + patient table). */}
+      {(reportType === 'pt' || reportType === 'staff-services') && (
+        <div style={{ marginTop: '12px' }}>
+          {ptStaffHook.loading && (
+            <div style={{ padding: '32px', textAlign: 'center',
+              color: 'var(--md-text-tertiary)' }}>
+              กำลังโหลดข้อมูล...
+            </div>
+          )}
+          {ptStaffHook.error && (
+            <div style={{ padding: '16px', borderRadius: '12px',
+              background: 'rgba(239,68,68,.08)', color: '#dc2626',
+              border: '1px solid rgba(239,68,68,.2)' }}>
+              ❌ {ptStaffHook.error}
+            </div>
+          )}
+          {!ptStaffHook.loading && !ptStaffHook.error && (
+            <PTStaffReport
+              data={ptStaffHook.data}
+              mode={reportType}
+              displayLimit={100}
+            />
+          )}
+        </div>
+      )}
 
       {/* ── Sheet 1: ONE PAGE (infographic) ─────────────────────────────── */}
       {!loading && sheet === 'onepage' && (() => {
