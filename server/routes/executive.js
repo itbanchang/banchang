@@ -428,8 +428,15 @@ function _generateActionItems({ occupancy, avgLOS, criticalAlerts, monthlyRevTot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 4. ENHANCED BSC — Full Balanced Scorecard with Trends
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/bsc', cached('exec_bsc_v7_lwbs_clinical', 1800000, async () => {
-  const [financial, ipdStats, erStats, staffStats, revTrend] = await Promise.all([
+router.get('/bsc', cached('exec_bsc_v8_kaplan_5perspective', 1800000, async () => {
+  // BSC v8 (2026-05-13) — Kaplan-style 5 perspective with strategic weighting.
+  //   - Financial 20% — billed/collected/outstanding (existing)
+  //   - Customer 25% (NEW) — patient satisfaction + complaint + catchment
+  //   - Internal Process / Clinical 35% — mortality + ALOS + Avg RW
+  //   - Learning & Growth 20% — training + cert + CQI + turnover
+  //   - Operations (deprecated, merged into Internal Process)
+  // Sum = 100%. Weight reflects patient-safety-first priority.
+  const [financial, ipdStats, erStats, staffStats, satisfaction, complaints, revTrend] = await Promise.all([
     dbQueryOne(`
       SELECT ROUND(SUM(income)) AS revenue, ROUND(SUM(paid_money)) AS collected,
         ROUND(SUM(paid_money) / NULLIF(SUM(income), 0) * 100, 1) AS collection_rate,
@@ -479,72 +486,176 @@ router.get('/bsc', cached('exec_bsc_v7_lwbs_clinical', 1800000, async () => {
       WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND doctor IS NOT NULL AND doctor != ''
     `, [], { timeoutMs: 10000 }),
 
+    // BSC v8 Customer perspective — Patient Satisfaction from warehouse
+    (async () => {
+      try {
+        const stmt = `SELECT
+          COUNT(*) AS response_count,
+          ROUND(AVG(overall_rating), 2) AS avg_rating,
+          ROUND(SUM(CASE WHEN overall_rating >= 4 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS satisfied_pct,
+          ROUND(SUM(CASE WHEN nps_score >= 9 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS promoter_pct,
+          ROUND(SUM(CASE WHEN nps_score <= 6 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS detractor_pct
+          FROM dw_patient_satisfaction
+          WHERE submitted_at >= datetime('now', '-30 days')`;
+        return dw.getDb()?.prepare(stmt).get() || null;
+      } catch {
+        return null;
+      }
+    })(),
+
+    // BSC v8 — Complaint count (placeholder until complaint registry built)
+    Promise.resolve({ count_30d: 0, resolution_avg_days: null }),
+
     // Revenue trend (last 6 months from warehouse)
     (async () => { try { return dw.getRevenueTrend(1); } catch { return []; } })(),
   ]);
 
-  // Score calculations (0-100)
-  // clinScore now uses mortality_unexpected_pct (excludes Z51.5 palliative) — fairer for ward case-mix.
+  // ━━ BSC v8 Per-Perspective Score Calculations (0-100) ━━
+  // Higher = better. Each perspective uses its own scoring model.
+
+  // 1. Financial — based on collection_rate (target ≥ KPI.finance.collection_rate_good_pct, default 90%)
   const finScore = Math.min(100, Math.round(Number(financial?.collection_rate || 0)));
+
+  // 2. Customer — composite of satisfaction + NPS + complaint
+  //    Patient sat satisfied_pct (≥4 stars) contributes 60%
+  //    NPS (promoter% - detractor%) normalized to 0-100 contributes 40%
+  //    Complaint penalty: -2 points per complaint, max -20
+  const satPct = Number(satisfaction?.satisfied_pct || 0);
+  const npsValue = Number(satisfaction?.promoter_pct || 0) - Number(satisfaction?.detractor_pct || 0);
+  const npsNorm = Math.max(0, Math.min(100, npsValue + 100) / 2); // shift -100..100 → 0..100
+  const complaintPenalty = Math.min(20, Number(complaints?.count_30d || 0) * 2);
+  const customerScore = satisfaction?.response_count >= 10
+    ? Math.max(0, Math.min(100, Math.round(satPct * 0.6 + npsNorm * 0.4 - complaintPenalty)))
+    : null; // null = insufficient sample (< 10 responses)
+
+  // 3. Internal Process / Clinical — mortality_unexpected_pct + ALOS gap + ER quality
+  //    Uses unexpected mortality (excludes Z51.5) — fairer for case-mix
   const mortalityForScore = Number(ipdStats?.mortality_unexpected_pct ?? ipdStats?.mortality_pct ?? 0);
-  const clinScore = Math.min(100, Math.max(0, Math.round(
-    100 - mortalityForScore * 15 - Math.max(0, (Number(ipdStats?.alos || 4) - KPI.ipd.alos_target_days)) * 10
+  const alosGap = Math.max(0, Number(ipdStats?.alos || 4) - KPI.ipd.alos_target_days);
+  const ttdScore = 100 - Math.min(100, Number(erStats?.avg_ttd_min || 15) * 3);
+  const dchBeforeNoon = Number(ipdStats?.dch_before_noon_pct || 50);
+  const internalScore = Math.min(100, Math.max(0, Math.round(
+    (100 - mortalityForScore * 15 - alosGap * 10) * 0.5 +
+    (ttdScore * 0.3) +
+    (dchBeforeNoon * 0.2)
   )));
-  const opsScore = Math.min(100, Math.max(0, Math.round(
-    (Number(ipdStats?.dch_before_noon_pct || 50)) * 0.5 + (100 - Math.min(100, Number(erStats?.avg_ttd_min || 15) * 3)) * 0.5
-  )));
-  const growthScore = Math.min(100, Math.round(Number(staffStats?.doctors || 0) * 3 + Number(staffStats?.staff || 0) * 0.5));
-  const overallScore = Math.round((finScore + clinScore + opsScore + growthScore) / 4);
+
+  // 4. Learning & Growth — composite (training+cert+CQI+turnover from warehouse)
+  //    Currently warehouse doesn't track these yet — use stub fallback to staff count.
+  //    Note: real metrics require staffing manual entry (Tier 4 work) — see roadmap.
+  const trainingHours = 0; // TODO: dw_staff_training table
+  const certCompliancePct = null; // TODO: dw_staff_certification table
+  const cqiProjectsCount = 0; // TODO: dw_cqi_projects table
+  const turnoverPct = null; // TODO: dw_staff_turnover table
+  const growthStubScore = Math.min(100, Math.round(Number(staffStats?.doctors || 0) * 3 + Number(staffStats?.staff || 0) * 0.5));
+  const growthScore = trainingHours > 0
+    ? Math.round((Math.min(100, trainingHours / 10 * 100) * 0.3) + // 10 hr/emp/yr target
+                 ((certCompliancePct ?? 50) * 0.3) +
+                 (Math.min(100, cqiProjectsCount * 25) * 0.2) +
+                 ((100 - Math.min(100, (turnoverPct ?? 15) * 5)) * 0.2))
+    : growthStubScore; // fallback until staffing tracker built
+
+  // ━━ Strategic Weighted Overall (sum to 100%) ━━
+  //   Internal Process 35% (patient safety first)
+  //   Customer 25% (BCH stated content goal)
+  //   Financial 20% (เงินบำรุง important but not over-prioritize)
+  //   Learning & Growth 20% (long-term sustainability)
+  const WEIGHTS = { internal: 0.35, customer: 0.25, financial: 0.20, growth: 0.20 };
+  // Customer perspective uses 0 weight if insufficient sample, redistribute to internal
+  const effectiveWeights = customerScore == null
+    ? { internal: 0.5, customer: 0, financial: 0.25, growth: 0.25 }
+    : WEIGHTS;
+  const overallScore = Math.round(
+    internalScore * effectiveWeights.internal +
+    (customerScore ?? 0) * effectiveWeights.customer +
+    finScore * effectiveWeights.financial +
+    growthScore * effectiveWeights.growth
+  );
+
+  const gradeFor = (s) => s >= 85 ? 'A' : s >= 70 ? 'B' : s >= 55 ? 'C' : s >= 40 ? 'D' : 'F';
 
   return {
-    data_source: 'HOSxP XE · Balanced Scorecard',
+    data_source: 'HOSxP XE + warehouse · Balanced Scorecard v8 (Kaplan 4P + Customer)',
     timestamp: new Date().toISOString(),
     period: '30 days rolling',
+    version: 'v8',
     overall_score: overallScore,
-    overall_grade: overallScore >= 85 ? 'A' : overallScore >= 70 ? 'B' : overallScore >= 55 ? 'C' : overallScore >= 40 ? 'D' : 'F',
+    overall_grade: gradeFor(overallScore),
+    weights: effectiveWeights,
+    weights_explanation: customerScore == null
+      ? 'Customer perspective skipped (sample size < 10). Weights redistributed to Internal 50% / Financial 25% / Growth 25%.'
+      : 'Patient-safety-first: Internal 35% · Customer 25% · Financial 20% · Growth 20%',
 
     perspectives: [
       {
-        id: 'financial', name: 'Financial (การเงิน)', icon: '💰', score: finScore,
-        grade: finScore >= 85 ? 'A' : finScore >= 70 ? 'B' : finScore >= 55 ? 'C' : 'D',
+        id: 'internal',
+        name: 'Internal Process / Clinical Quality (กระบวนการภายใน)',
+        icon: '🏥',
+        weight: effectiveWeights.internal,
+        score: internalScore,
+        grade: gradeFor(internalScore),
         kpis: [
-          { name: 'รายได้ตามบิล (Billed)', value: Number(financial?.revenue || 0), format: 'currency', note: 'SUM(vn_stat.income) — ยอดเรียกเก็บ ไม่ใช่ยอดได้รับจริง' },
-          { name: 'เก็บได้จริง (Collected)', value: Number(financial?.collected || 0), format: 'currency', note: 'SUM(vn_stat.paid_money) — ยอดที่ได้รับจริงในช่วง' },
-          { name: 'ส่วนต่าง (Outstanding)', value: Math.max(0, Number(financial?.revenue || 0) - Number(financial?.collected || 0)), format: 'currency', note: 'รายได้ค้างเก็บ — ส่งเบิกแต่ยังไม่ได้รับ' },
+          { name: 'อัตราตาย (รวม)', value: Number(ipdStats?.mortality_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'รวมทุก discharge รหัส 09/9' },
+          { name: 'อัตราตาย (ไม่นับ Palliative)', value: Number(ipdStats?.mortality_unexpected_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'ตัด Z51.5 (palliative care) ออก — ใกล้กับ unexpected mortality' },
+          { name: 'ALOS', value: Number(ipdStats?.alos || 0), format: 'decimal', unit: 'วัน', target: KPI.ipd.alos_target_days, lower_better: true },
+          { name: 'Avg RW (CMI proxy)', value: Number(ipdStats?.avg_rw || 0), format: 'decimal', target: 0.8, note: 'AVG(rw) — ไม่ใช่ true CMI' },
+          { name: 'RW Stddev', value: Number(ipdStats?.rw_stddev || 0), format: 'decimal', note: 'case-mix variability' },
+          { name: 'Discharge ก่อนเที่ยง', value: dchBeforeNoon, format: 'pct', target: 50 },
+          { name: 'ER TTD', value: Number(erStats?.avg_ttd_min || 0), format: 'decimal', unit: 'นาที', target: 15, lower_better: true },
+          { name: 'ER LWBS (clinical proxy)', value: Number(erStats?.lwbs_pct || 0), format: 'pct', target: KPI.er.lwbs_alert_pct, lower_better: true },
+        ],
+      },
+      {
+        id: 'customer',
+        name: 'Customer (ผู้รับบริการ)',
+        icon: '🤝',
+        weight: effectiveWeights.customer,
+        score: customerScore,
+        grade: customerScore == null ? 'N/A' : gradeFor(customerScore),
+        kpis: customerScore == null
+          ? [{ name: 'รอข้อมูล', value: null, format: 'text', note: `Patient Satisfaction sample size = ${satisfaction?.response_count || 0} (need ≥ 10)` }]
+          : [
+              { name: 'ความพึงพอใจ ≥4 ดาว', value: satPct, format: 'pct', target: 85, lower_better: false, note: `n=${satisfaction?.response_count || 0} responses (30d)` },
+              { name: 'NPS Score', value: Math.round(npsValue), format: 'number', target: 50, lower_better: false, note: `Promoter ${satisfaction?.promoter_pct || 0}% − Detractor ${satisfaction?.detractor_pct || 0}%` },
+              { name: 'คะแนนเฉลี่ย (5 ดาว)', value: Number(satisfaction?.avg_rating || 0), format: 'decimal', target: 4.0, lower_better: false },
+              { name: 'ข้อร้องเรียน (30d)', value: Number(complaints?.count_30d || 0), format: 'number', target: 0, lower_better: true, note: 'manual entry — registry pending' },
+            ],
+      },
+      {
+        id: 'financial',
+        name: 'Financial (การเงิน)',
+        icon: '💰',
+        weight: effectiveWeights.financial,
+        score: finScore,
+        grade: gradeFor(finScore),
+        kpis: [
+          { name: 'รายได้ตามบิล (Billed)', value: Number(financial?.revenue || 0), format: 'currency', note: 'SUM(vn_stat.income)' },
+          { name: 'เก็บได้จริง (Collected)', value: Number(financial?.collected || 0), format: 'currency', note: 'SUM(vn_stat.paid_money)' },
+          { name: 'ส่วนต่าง (Outstanding)', value: Math.max(0, Number(financial?.revenue || 0) - Number(financial?.collected || 0)), format: 'currency', note: 'ค้างเก็บ' },
           { name: 'อัตราจัดเก็บ', value: Number(financial?.collection_rate || 0), format: 'pct', target: KPI.finance.collection_rate_good_pct, lower_better: false },
           { name: 'จำนวน Visit', value: Number(financial?.visits || 0), format: 'number' },
           { name: 'ผู้ป่วยไม่ซ้ำ', value: Number(financial?.patients || 0), format: 'number' },
         ],
       },
       {
-        id: 'clinical', name: 'Clinical Quality (คุณภาพ)', icon: '🏥', score: clinScore,
-        grade: clinScore >= 85 ? 'A' : clinScore >= 70 ? 'B' : clinScore >= 55 ? 'C' : 'D',
-        kpis: [
-          { name: 'อัตราตาย (รวม)', value: Number(ipdStats?.mortality_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'รวมทุก discharge รหัส 09/9' },
-          { name: 'อัตราตาย (ไม่นับ Palliative)', value: Number(ipdStats?.mortality_unexpected_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'ตัด Z51.5 (palliative care) ออก' },
-          { name: 'ALOS', value: Number(ipdStats?.alos || 0), format: 'decimal', unit: 'วัน', target: KPI.ipd.alos_target_days, lower_better: true },
-          { name: 'Avg RW (CMI proxy)', value: Number(ipdStats?.avg_rw || 0), format: 'decimal', target: 0.8, note: 'AVG(rw) — ไม่ใช่ true CMI; ดู rw_stddev ประกอบ' },
-          { name: 'RW Stddev', value: Number(ipdStats?.rw_stddev || 0), format: 'decimal', note: 'ความแปรปรวนของ case-mix' },
-          { name: 'Discharge จำนวน', value: Number(ipdStats?.discharges || 0), format: 'number' },
-        ],
-      },
-      {
-        id: 'operations', name: 'Operations (ปฏิบัติการ)', icon: '⚙️', score: opsScore,
-        grade: opsScore >= 85 ? 'A' : opsScore >= 70 ? 'B' : opsScore >= 55 ? 'C' : 'D',
-        kpis: [
-          { name: 'Discharge ก่อนเที่ยง', value: Number(ipdStats?.dch_before_noon_pct || 0), format: 'pct', target: 50 },
-          { name: 'ER TTD', value: Number(erStats?.avg_ttd_min || 0), format: 'decimal', unit: 'นาที', target: 15, lower_better: true },
-          { name: 'ER LWBS', value: Number(erStats?.lwbs_pct || 0), format: 'pct', target: KPI.er.lwbs_alert_pct, lower_better: true },
-          { name: 'ER Visits (30d)', value: Number(erStats?.visits || 0), format: 'number' },
-        ],
-      },
-      {
-        id: 'growth', name: 'Learning & Growth (เติบโต)', icon: '📚', score: growthScore,
-        grade: growthScore >= 85 ? 'A' : growthScore >= 70 ? 'B' : growthScore >= 55 ? 'C' : 'D',
-        kpis: [
-          { name: 'แพทย์ปฏิบัติงาน', value: Number(staffStats?.doctors || 0), format: 'number' },
-          { name: 'เจ้าหน้าที่ทั้งหมด', value: Number(staffStats?.staff || 0), format: 'number' },
-        ],
+        id: 'growth',
+        name: 'Learning & Growth (เติบโต)',
+        icon: '📚',
+        weight: effectiveWeights.growth,
+        score: growthScore,
+        grade: gradeFor(growthScore),
+        kpis: trainingHours > 0
+          ? [
+              { name: 'ชั่วโมงอบรม/คน', value: trainingHours, format: 'decimal', target: 10, lower_better: false, note: 'เป้า MoPH ≥10 ชม./คน/ปี' },
+              { name: 'Cert ไม่หมดอายุ', value: certCompliancePct, format: 'pct', target: 95, lower_better: false, note: 'ACLS/BLS/NRP' },
+              { name: 'CQI Projects', value: cqiProjectsCount, format: 'number', target: 4, lower_better: false, note: 'ต่อ quarter' },
+              { name: 'Turnover (12m)', value: turnoverPct, format: 'pct', target: 15, lower_better: true, note: 'เป้า < 15%/ปี' },
+            ]
+          : [
+              { name: 'แพทย์ปฏิบัติงาน (stub)', value: Number(staffStats?.doctors || 0), format: 'number', note: 'fallback metric — real metrics require warehouse staffing tracker' },
+              { name: 'เจ้าหน้าที่ทั้งหมด (stub)', value: Number(staffStats?.staff || 0), format: 'number' },
+              { name: 'แผน Tier 4', value: 'pending', format: 'text', note: 'dw_staff_training + dw_certification + dw_cqi + dw_turnover tables not yet built' },
+            ],
       },
     ],
 
