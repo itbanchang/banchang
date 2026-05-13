@@ -1,9 +1,6 @@
-#!/usr/bin/env sh
-# ============================================================
-# Pre-commit hook — runs lint-staged + secret scan
-# Install: npm install --save-dev husky lint-staged && npx husky install
+# Pre-commit hook — lint-staged + secret scan
 # Bypass (emergencies only): git commit --no-verify
-# ============================================================
+# Husky v9 — no shebang/sourcing line needed
 
 # Don't run on rebase / merge / cherry-pick
 if [ -f .git/MERGE_MSG ] || [ -f .git/CHERRY_PICK_HEAD ] || [ -f .git/REBASE_HEAD ]; then
@@ -14,8 +11,6 @@ fi
 npx lint-staged
 
 # Secret scan — block commits containing common secret patterns.
-# Catches: AWS keys, GH tokens, OpenAI/Anthropic API keys, generic 'password'
-# in non-test files.
 echo "🔍 Scanning for secrets..."
 PATTERNS='AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-(ant-)?[A-Za-z0-9_-]{40,}|BEGIN (RSA )?PRIVATE KEY'
 FOUND=$(git diff --cached --name-only -z | xargs -0 grep -lE "$PATTERNS" 2>/dev/null || true)

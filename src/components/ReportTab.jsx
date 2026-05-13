@@ -10,6 +10,7 @@ import FraxReport, { useFraxData } from './reports/FraxReport';
 import NcdDiseaseReport, { useNcdData } from './reports/NcdDiseaseReport';
 import ImagingServicesReport, { useImagingData } from './reports/ImagingServicesReport';
 import MortalityReport, { useMortalityData } from './reports/MortalityReport';
+import { AIInsightPanel } from './reports/_shared';
 
 const FISCAL_MONTHS = [
   'ต.ค.',
@@ -41,6 +42,107 @@ function ReportLoading() {
       กำลังโหลดข้อมูล...
     </div>
   );
+}
+
+// ============================================================
+// Tier 3.x — buildIpdCompareInsights: per-stakeholder AI insights
+// from ipd-compare data (fy1_totals vs fy2_totals).
+// Returns array of { icon, title, color, detail, actions: [{who, what}] }
+// for AIInsightPanel.
+// ============================================================
+function buildIpdCompareInsights(ipdData, fy1, fy2) {
+  if (!ipdData?.fy1_totals || !ipdData?.fy2_totals) return [];
+
+  const t1 = ipdData.fy1_totals;
+  const t2 = ipdData.fy2_totals;
+  const insights = [];
+
+  // 1. Admissions trend
+  const admGrowth = t1.admissions > 0
+    ? Math.round((t2.admissions - t1.admissions) / t1.admissions * 100)
+    : 0;
+  if (Math.abs(admGrowth) >= 5) {
+    insights.push({
+      icon: admGrowth >= 0 ? '📈' : '📉',
+      title: `Admission ${admGrowth >= 0 ? 'เพิ่มขึ้น' : 'ลดลง'} ${Math.abs(admGrowth)}% YoY`,
+      color: admGrowth >= 0 ? '#10b981' : '#f59e0b',
+      detail: `ปีงบ ${fy1} → ${fy2}: ${t1.admissions?.toLocaleString()} → ${t2.admissions?.toLocaleString()} admit ` +
+        `(ส่วนต่าง ${(t2.admissions - t1.admissions).toLocaleString()} ราย)`,
+      actions: admGrowth >= 0
+        ? [
+            { who: '👔 ผู้บริหาร', what: 'ทบทวนความพร้อมเตียง + บุคลากร · พิจารณาขยาย OR หรือ Day-care เพื่อระบายผู้ป่วยซับซ้อน' },
+            { who: '🩺 ทีมพยาบาล IPD', what: 'เตรียม staffing plan ตามความหนาแน่นเตียง · ปรับ rotation ในเดือนสูง' },
+          ]
+        : [
+            { who: '👔 ผู้บริหาร', what: 'วิเคราะห์เหตุ admission ลด — refer-out เพิ่ม? หรือผู้ป่วยน้อยจริง? · ติดตามรายเดือน' },
+            { who: '📊 ทีมสารสนเทศ', what: 'เปรียบเทียบ ER admit rate + dx mix · ตรวจ data quality (er_dch_type compliance)' },
+          ],
+    });
+  }
+
+  // 2. ALOS trend
+  const alosDelta = t2.alos - t1.alos;
+  if (Math.abs(alosDelta) >= 0.3) {
+    insights.push({
+      icon: alosDelta >= 0 ? '⏱️' : '🎯',
+      title: `ALOS ${alosDelta >= 0 ? 'ยาวขึ้น' : 'สั้นลง'} ${Math.abs(alosDelta).toFixed(1)} วัน`,
+      color: alosDelta >= 0 ? '#dc2626' : '#10b981',
+      detail: `เฉลี่ย ${t1.alos?.toFixed(1)} → ${t2.alos?.toFixed(1)} วัน. ` +
+        `${alosDelta >= 0 ? 'ค่าใช้จ่ายต่อ case สูงขึ้น · เตียงหมุนเวียนช้าลง' : 'ผู้ป่วยจำหน่ายเร็วขึ้น · เตียงหมุนเวียนดี'}`,
+      actions: alosDelta >= 0
+        ? [
+            { who: '🩺 ทีมแพทย์ IPD', what: 'ทบทวน discharge planning meeting รายเดือน · ระบุ case ที่ ALOS > ค่ามัธยฐาน +2 SD' },
+            { who: '👨‍⚕️ DRG Coder', what: 'ตรวจสอบ CC/MCC ที่ขาด — ALOS ยาวมักผูกกับ comorbidity ที่ไม่ได้ code' },
+          ]
+        : [
+            { who: '🩺 ทีม IPD', what: 'รักษามาตรฐาน discharge ก่อนเที่ยง · ติดตาม readmit 30d เพื่อให้แน่ใจไม่ early-discharge เสียคุณภาพ' },
+          ],
+    });
+  }
+
+  // 3. Mortality trend
+  const mortalityDelta = t2.mortality_rate - t1.mortality_rate;
+  if (Math.abs(mortalityDelta) >= 0.3) {
+    insights.push({
+      icon: '🚨',
+      title: `Mortality rate ${mortalityDelta >= 0 ? 'สูงขึ้น' : 'ลดลง'} ${Math.abs(mortalityDelta).toFixed(2)}%`,
+      color: mortalityDelta >= 0 ? '#dc2626' : '#059669',
+      detail: `${t1.mortality_rate?.toFixed(2)}% → ${t2.mortality_rate?.toFixed(2)}%. ` +
+        `${mortalityDelta >= 0
+          ? 'ต้องตั้ง Mortality Review Board ภายใน 30 วัน — review case-by-case'
+          : 'แนวโน้มดี — รักษามาตรฐานต่อ'}`,
+      actions: mortalityDelta >= 0
+        ? [
+            { who: '🔴 ผู้บริหาร P0', what: 'ตั้ง Mortality Review Board (MRB) — review 100% IPD deaths · แยก preventable vs non-preventable' },
+            { who: '🟠 ทีมแพทย์ P1', what: 'Re-train CPR/ACLS + Code Blue response ทุก ward · ดู rapid response team activation rate' },
+          ]
+        : [
+            { who: '✅ ทีมคุณภาพ', what: 'นำเสนอ M&M conference เป็น best-practice · share intervention timing ที่ลด mortality' },
+          ],
+    });
+  }
+
+  // 4. Revenue / case-mix
+  const revGrowth = t1.revenue > 0
+    ? Math.round((t2.revenue - t1.revenue) / t1.revenue * 100)
+    : 0;
+  if (Math.abs(revGrowth) >= 10) {
+    insights.push({
+      icon: revGrowth >= 0 ? '💰' : '💸',
+      title: `รายได้ IPD ${revGrowth >= 0 ? 'เพิ่ม' : 'ลด'} ${Math.abs(revGrowth)}% YoY`,
+      color: revGrowth >= 0 ? '#10b981' : '#f59e0b',
+      detail: `${(t1.revenue || 0).toLocaleString()} → ${(t2.revenue || 0).toLocaleString()} บาท. ` +
+        `${revGrowth >= 0 ? 'ตรวจว่าเพิ่มจาก volume หรือ case-mix' : 'ติดตาม claim denial rate + DRG audit'}`,
+      actions: revGrowth >= 0
+        ? [{ who: '💼 ทีมการเงิน', what: 'แยก revenue growth: volume effect vs price/mix effect · ตรวจ DRG weight 30 วัน' }]
+        : [
+            { who: '💼 ทีมการเงิน', what: 'ตรวจ claim denial pattern จาก สปสช./SSO · เร่ง follow-up pending bills' },
+            { who: '👨‍⚕️ DRG Coder', what: 'Audit under-coding — เคสที่ ALOS ยาวแต่ RW ต่ำ' },
+          ],
+    });
+  }
+
+  return insights;
 }
 
 function ReportError({ msg }) {
@@ -997,6 +1099,23 @@ export default function ReportTab() {
               <span>BCH 360° Intelligence · One-Page Summary</span>
               <span>{anyData?.timestamp && new Date(anyData.timestamp).toLocaleString('th-TH')}</span>
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Tier 3.x AI Insight (compare reports — shown above sheet content) ─
+          Renders when ipd-compare data has loaded with fy1/fy2 totals.
+          Uses _shared.AIInsightPanel + buildIpdCompareInsights helper. */}
+      {!loading && reportType === 'ipd-compare' && ipdData?.fy1_totals && ipdData?.fy2_totals && (() => {
+        const insights = buildIpdCompareInsights(ipdData, fy1, fy2);
+        if (insights.length === 0) return null;
+        return (
+          <div style={{ marginBottom: '14px' }}>
+            <AIInsightPanel
+              insights={insights}
+              subtitle={`ปี งบ ${fy1} vs ${fy2} · ${ipdData.comparison?.length || 0} เดือน`}
+              title="AI Insight — IPD เปรียบเทียบปีงบประมาณ"
+            />
           </div>
         );
       })()}
