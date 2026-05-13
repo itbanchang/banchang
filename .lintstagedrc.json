@@ -1,0 +1,12 @@
+{
+  "src/**/*.{js,jsx}": [
+    "eslint --fix --max-warnings 100"
+  ],
+  "server/**/*.js": [
+    "eslint --fix --max-warnings 100",
+    "node --check"
+  ],
+  "*.{json,md}": [
+    "prettier --write"
+  ]
+}

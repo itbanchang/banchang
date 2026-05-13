@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # npm dependencies — security updates only initially, expand as confidence grows
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Bangkok"
+    open-pull-requests-limit: 5
+    # Auto-merge security patches in CI (requires branch protection rule allowing dependabot)
+    labels:
+      - "dependencies"
+    # Group minor/patch updates to reduce PR noise
+    groups:
+      production:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      development:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions versions — pin major versions in workflows, dependabot bumps minor
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    labels:
+      - "ci-cd"

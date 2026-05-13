@@ -512,6 +512,85 @@ export function aggregateByDept(patients, key = 'department') {
 }
 
 // ============================================================
+// AIInsightPanel — per-stakeholder action panel (used by compare reports)
+// Translated from bundle line 5455-5575 (IPD-compare AI Insight section)
+//
+// insights: array of {
+//   icon: string,
+//   title: string,
+//   color: string (hex),
+//   detail: string | React.Node,
+//   actions: array of { who: string, what: string }
+// }
+// subtitle: short context line (e.g. "FY1 → FY2 · 12 เดือน · เตียง 120")
+// ============================================================
+export function AIInsightPanel({ insights = [], subtitle, title = 'AI Insight — สรุปวิเคราะห์' }) {
+  if (insights.length === 0) return null;
+
+  return (
+    <div style={{
+      background: 'linear-gradient(135deg, rgba(99,102,241,.04), rgba(168,85,247,.04))',
+      border: '1px solid rgba(99,102,241,.15)',
+      borderRadius: '14px',
+      padding: '14px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '14px' }}>
+        <span style={{ fontSize: '14px' }} aria-hidden="true">🤖</span>
+        <span style={{ fontSize: '12px', fontWeight: 800, color: '#6366f1' }}>{title}</span>
+        {subtitle && (
+          <span style={{ fontSize: '10px', fontWeight: 600,
+            color: 'var(--md-text-tertiary)', marginLeft: 'auto' }}>{subtitle}</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {insights.map((insight, idx) => (
+          <div key={idx} style={{
+            padding: '10px 14px',
+            borderRadius: '10px',
+            background: `${insight.color}08`,
+            borderLeft: `3px solid ${insight.color}`,
+          }}>
+            <div style={{ fontSize: '12px', fontWeight: 800, color: insight.color, marginBottom: '4px' }}>
+              <span aria-hidden="true">{insight.icon}</span> {insight.title}
+            </div>
+            <div style={{ fontSize: '12px', fontWeight: 600,
+              color: 'var(--md-text-secondary)', lineHeight: 1.7,
+              marginBottom: insight.actions?.length ? '8px' : 0 }}>
+              {insight.detail}
+            </div>
+            {insight.actions?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px',
+                marginTop: '6px', paddingTop: '8px',
+                borderTop: `1px dashed ${insight.color}20` }}>
+                <div style={{ fontSize: '11px', fontWeight: 800,
+                  color: '#f59e0b', marginBottom: '2px' }}>
+                  💡 แนวทางแก้ไข
+                </div>
+                {insight.actions.map((action, jdx) => (
+                  <div key={jdx} style={{ display: 'flex', gap: '6px',
+                    fontSize: '12px', lineHeight: 1.65 }}>
+                    <span style={{ fontSize: '10px', fontWeight: 800,
+                      color: '#6366f1', background: 'rgba(99,102,241,.08)',
+                      padding: '2px 6px', borderRadius: '4px',
+                      whiteSpace: 'nowrap', alignSelf: 'flex-start',
+                      marginTop: '2px' }}>
+                      {action.who}
+                    </span>
+                    <span style={{ color: 'var(--md-text-secondary)', flex: 1 }}>
+                      {action.what}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // Helper: daily trend builder
 // ============================================================
 export function buildDailyTrend(patients) {
