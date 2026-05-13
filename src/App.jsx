@@ -31,6 +31,7 @@ const preloadPriorityTabs = () => {
   import('./components/IPDTab.jsx');
 };
 const ERTab = React.lazy(() => import('./components/ERTab.jsx'));
+const ErauditTab = React.lazy(() => import('./components/ErauditTab.jsx'));
 const DentalTab = React.lazy(() => import('./components/DentalTab.jsx'));
 const ThaiMedTab = React.lazy(() => import('./components/ThaiMedTab.jsx'));
 const PhysTherapyTab = React.lazy(() => import('./components/PhysTherapyTab.jsx'));
@@ -44,6 +45,8 @@ const CompareTab = React.lazy(() => import('./components/CompareTab.jsx'));
 const ReportTab = React.lazy(() => import('./components/ReportTab.jsx'));
 const EvolutionTab = React.lazy(() => import('./components/EvolutionTab.jsx'));
 const CustomerInsightTab = React.lazy(() => import('./components/CustomerInsightTab.jsx'));
+const ITTab = React.lazy(() => import('./components/ITTab.jsx'));
+const StrategicTab = React.lazy(() => import('./components/StrategicTab.jsx'));
 
 const TABS = [
   { id: 'report', label: 'Report', icon: '📋', desc: 'REPORT Online โรงพยาบาลบ้านฉาง' },
@@ -57,6 +60,7 @@ const TABS = [
   { id: 'opd', label: 'OPD ผู้ป่วยนอก', icon: '⏱️', desc: 'ระยะเวลารอคอย · สถานะคลินิก' },
   { id: 'ipd', label: 'IPD ผู้ป่วยใน', icon: '🏥', desc: 'เตียง · การนอน · AI พยากรณ์' },
   { id: 'er', label: 'ห้องฉุกเฉิน', icon: '🚑', desc: 'สถานะ ER · AI Surge Alert' },
+  { id: 'eraudit', label: 'ห้องฉุกเฉิน (Audit)', icon: '📍', desc: 'แยกตำบล · Trauma/Non-Trauma · Stroke/STEMI/Sepsis' },
   { id: 'dental', label: 'ทันตกรรม', icon: '🦷', desc: 'คลินิกฟัน · DPI Analytics' },
   { id: 'xray', label: 'รังสีวิทยา', icon: '☢️', desc: 'X-Ray · CT · MRI' },
   { id: 'pharmacy', label: 'เภสัชกรรม', icon: '💊', desc: 'ยา · Generic · PPI Analytics' },
@@ -78,6 +82,8 @@ const TABS = [
     desc: 'คัดกรองผู้รับบริการ · สิทธิ · การเบิกจ่าย',
   },
   { id: 'evolution', label: 'Self-Upgrade', icon: '🧬', desc: 'Learning Journal · Evolution Log' },
+  { id: 'strategic', label: 'กลยุทธ์ (Strategic)', icon: '🌟', desc: 'MoPH Service Plan · PA Tracker · Catchment' },
+  { id: 'it', label: 'แผนกเทคโนโลยีสารสนเทศ', icon: '🖥️', desc: 'Server · Cache · Jobs · DB Cluster' },
 ];
 
 /* ----- Utility: คำนวณ trend % เทียบกับค่าก่อนหน้า ----------- */
@@ -175,7 +181,9 @@ class ErrorBoundary extends React.Component {
 /* ============================================================== */
 export default function App() {
   // ── All hooks MUST be called before any conditional returns ──
-  const { isAuthenticated, loading: authLoading, tokens, refreshAccessToken } = useAuth();
+  const { user: authUser, isAuthenticated, loading: authLoading, tokens, refreshAccessToken } = useAuth();
+  const isAdmin = authUser?.role === 'admin' || authUser?.role === 'director';
+  const visibleTabs = isAdmin ? TABS : TABS.filter(t => t.id !== 'it');
   const state = useShallowDashboardSelector(s => ({ activeTab: s.activeTab, dashboardSummary: s.dashboardSummary, user: s.user }));
   const { setTab, fetchData } = useDashboardActions();
   const { activeTab, dashboardSummary } = state;
@@ -307,7 +315,7 @@ export default function App() {
     <div className="min-h-screen" style={{ background: 'var(--md-bg)' }}>
       {/* Sidebar (incremental V2) */}
       <Sidebar
-        tabs={TABS}
+        tabs={visibleTabs}
         activeTab={activeTab}
         onSelect={setTab}
         open={sidebarOpen}
@@ -573,7 +581,7 @@ export default function App() {
         {/* Tab Content */}
         <ErrorBoundary
           key={activeTab}
-          tabName={TABS.find(t => t.id === activeTab)?.label || activeTab}
+          tabName={visibleTabs.find(t => t.id === activeTab)?.label || activeTab}
         >
           <Suspense fallback={<LoadingSpinner />}>
             <div
@@ -584,6 +592,7 @@ export default function App() {
               {activeTab === 'opd' && <OPDTab />}
               {activeTab === 'ipd' && <IPDTab />}
               {activeTab === 'er' && <ERTab />}
+              {activeTab === 'eraudit' && <ErauditTab />}
               {activeTab === 'dental' && <DentalTab />}
               {activeTab === 'xray' && <XRAYTab />}
               {activeTab === 'thaimed' && <ThaiMedTab />}
@@ -597,6 +606,19 @@ export default function App() {
               {activeTab === 'compare' && <CompareTab />}
               {activeTab === 'customer-insight' && <CustomerInsightTab />}
               {activeTab === 'evolution' && <EvolutionTab />}
+              {activeTab === 'strategic' && <StrategicTab />}
+              {activeTab === 'it' && isAdmin && <ITTab />}
+              {activeTab === 'it' && !isAdmin && (
+                <div className="glass-card" style={{ padding: '3rem', textAlign: 'center', margin: '2rem 0' }}>
+                  <div style={{ fontSize: 48, marginBottom: '1rem' }}>🔒</div>
+                  <h3 style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--md-text-primary)', marginBottom: '0.5rem' }}>
+                    ไม่มีสิทธิ์เข้าถึงแผนกเทคโนโลยีสารสนเทศ
+                  </h3>
+                  <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--md-text-secondary)' }}>
+                    หน้านี้สงวนสำหรับผู้ดูแลระบบ (admin) เท่านั้น
+                  </p>
+                </div>
+              )}
             </div>
           </Suspense>
         </ErrorBoundary>
