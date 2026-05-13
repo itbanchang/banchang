@@ -1,18 +1,13 @@
 // ============================================================
-// BCH 360° Intelligence V.10 — Job Queue (BullMQ)
-// Distributed job scheduling — cluster-safe
-// Falls back to node-cron if Redis unavailable
+// BCH 360° Intelligence V.10 — Job Queue (node-cron)
+// Lightweight job scheduling — no Redis dependency
 // ============================================================
-import { Queue, Worker } from 'bullmq';
 import cron from 'node-cron';
-import { getRedisClient, isRedisConnected } from './redisClient.js';
 import logger from '../logger.js';
 
 // ── State ──
-const _queues = {};
-const _workers = {};
-const _cronJobs = {};  // fallback cron jobs
-const _jobHistory = []; // last 100 job executions
+const _cronJobs = {};
+const _jobHistory = [];
 const MAX_HISTORY = 100;
 
 // ── Job Registry ──
@@ -30,98 +25,25 @@ export function registerJob(name, handler, opts = {}) {
 }
 
 /**
- * Start all registered jobs.
- * If Redis is available → BullMQ (distributed, deduped across PM2 workers)
- * If Redis unavailable → node-cron (per-process, simple)
+ * Start all registered jobs using node-cron.
  */
 export async function startAllJobs() {
-  const useRedis = isRedisConnected();
-  const mode = useRedis ? 'BullMQ (Redis)' : 'node-cron (in-memory)';
-  logger.info(`[JobQueue] Starting all jobs in ${mode} mode`);
+  logger.info('[JobQueue] Starting all jobs in node-cron mode');
 
   for (const [name, job] of Object.entries(JOB_REGISTRY)) {
     try {
-      if (useRedis) {
-        await _startBullMQJob(name, job);
-      } else {
-        _startCronJob(name, job);
-      }
+      _startCronJob(name, job);
     } catch (err) {
       logger.error(`[JobQueue] Failed to start job: ${name}`, { error: err.message });
-      // Try cron fallback
-      if (useRedis) {
-        logger.warn(`[JobQueue] Falling back to cron for: ${name}`);
-        _startCronJob(name, job);
-      }
     }
   }
 
-  return { mode, jobs: Object.keys(JOB_REGISTRY).length };
+  return { mode: 'node-cron', jobs: Object.keys(JOB_REGISTRY).length };
 }
 
-// ── BullMQ Implementation ──
-async function _startBullMQJob(name, job) {
-  const redis = getRedisClient();
-  if (!redis) throw new Error('Redis not available');
-
-  const connection = { host: redis.options.host, port: redis.options.port, db: redis.options.db };
-
-  // Create queue
-  const queue = new Queue(name, {
-    connection,
-    prefix: 'bch360:jobs',
-    defaultJobOptions: {
-      removeOnComplete: { count: 50 },   // keep last 50 completed
-      removeOnFail: { count: 20 },       // keep last 20 failed
-      attempts: 2,
-      backoff: { type: 'exponential', delay: 5000 },
-    },
-  });
-  _queues[name] = queue;
-
-  // Create worker
-  const worker = new Worker(name, async (bullJob) => {
-    const start = Date.now();
-    try {
-      const result = await job.handler(bullJob.data || {});
-      _recordHistory(name, 'completed', Date.now() - start, null);
-      return result;
-    } catch (err) {
-      _recordHistory(name, 'failed', Date.now() - start, err.message);
-      throw err;
-    }
-  }, {
-    connection,
-    prefix: 'bch360:jobs',
-    concurrency: 1,             // one at a time per job type
-    limiter: { max: 1, duration: 10000 },  // max 1 per 10s
-  });
-
-  worker.on('failed', (bullJob, err) => {
-    logger.error(`[JobQueue] ${name} failed`, { error: err.message, attempt: bullJob?.attemptsMade });
-  });
-
-  _workers[name] = worker;
-
-  // Schedule repeatable job if cron pattern specified
-  if (job.cron) {
-    await queue.add(name, {}, {
-      repeat: { pattern: job.cron },
-      jobId: `${name}_repeat`,
-    });
-    logger.info(`[JobQueue] BullMQ scheduled: ${name} (${job.cron})`);
-  }
-
-  // Run immediately on start
-  if (job.runOnStart) {
-    await queue.add(`${name}_init`, {}, { jobId: `${name}_init_${Date.now()}` });
-  }
-}
-
-// ── Cron Fallback ──
+// ── Cron Implementation ──
 function _startCronJob(name, job) {
   if (!job.cron) {
-    // No schedule — just run once if runOnStart
     if (job.runOnStart) {
       setTimeout(() => {
         job.handler({}).catch(err => logger.error(`[JobQueue] ${name} init failed`, { error: err.message }));
@@ -144,7 +66,6 @@ function _startCronJob(name, job) {
   _cronJobs[name] = cronJob;
   logger.info(`[JobQueue] Cron scheduled: ${name} (${job.cron})`);
 
-  // Run immediately if requested
   if (job.runOnStart) {
     setTimeout(() => {
       const start = Date.now();
@@ -175,13 +96,6 @@ export async function triggerJob(name, data = {}) {
   const job = JOB_REGISTRY[name];
   if (!job) throw new Error(`Unknown job: ${name}`);
 
-  if (_queues[name]) {
-    // BullMQ mode
-    await _queues[name].add(`${name}_manual`, data, { jobId: `${name}_manual_${Date.now()}` });
-    return { mode: 'bullmq', queued: true };
-  }
-
-  // Direct execution
   const start = Date.now();
   const result = await job.handler(data);
   _recordHistory(name, 'completed', Date.now() - start, null);
@@ -193,7 +107,7 @@ export async function triggerJob(name, data = {}) {
  */
 export function getJobStatus() {
   return {
-    mode: isRedisConnected() ? 'bullmq' : 'cron',
+    mode: 'cron',
     registered_jobs: Object.keys(JOB_REGISTRY).map(name => ({
       name,
       description: JOB_REGISTRY[name].description || '',
@@ -210,12 +124,6 @@ export function getJobStatus() {
  * Graceful shutdown
  */
 export async function stopAllJobs() {
-  for (const [name, worker] of Object.entries(_workers)) {
-    try { await worker.close(); } catch { /* ignore */ }
-  }
-  for (const [name, queue] of Object.entries(_queues)) {
-    try { await queue.close(); } catch { /* ignore */ }
-  }
   for (const [name, cronJob] of Object.entries(_cronJobs)) {
     try { cronJob.stop(); } catch { /* ignore */ }
   }

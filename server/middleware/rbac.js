@@ -95,10 +95,12 @@ const ROLE_PERMISSIONS = {
 };
 
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET;
-if (!REFRESH_TOKEN_SECRET) {
-  console.error(
-    '❌ WARNING: REFRESH_TOKEN_SECRET not set. Using JWT_SECRET as fallback (less secure)'
-  );
+if (!REFRESH_TOKEN_SECRET && !DISABLE_AUTH) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ FATAL: REFRESH_TOKEN_SECRET is required in production for secure token separation');
+    process.exit(1);
+  }
+  console.warn('⚠️ WARNING: REFRESH_TOKEN_SECRET not set — using JWT_SECRET as fallback (dev only)');
 }
 
 export function generateToken(user, isRefresh = false) {

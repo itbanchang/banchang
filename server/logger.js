@@ -47,11 +47,11 @@ const logger = winston.createLogger({
             zippedArchive: true,  // gzip old logs to save disk
         }),
 
-        // ── COMBINED Log File (10MB rotation, 14 files = 140MB max) ──
+        // ── COMBINED Log File (10MB rotation, 7 files = 70MB max) ──
         new winston.transports.File({
             filename: path.join(logsDir, 'combined.log'),
             maxsize: 10485760,  // 10MB
-            maxFiles: 14,
+            maxFiles: 7,
             tailable: true,
             zippedArchive: true,
         }),
@@ -71,16 +71,28 @@ const logger = winston.createLogger({
             filename: path.join(logsDir, 'security.log'),
             level: 'warn',
             maxsize: 5242880,
-            maxFiles: 30,  // keep 30 files (~150MB) for audit compliance
+            maxFiles: 14,  // keep 14 files (~70MB) for audit compliance
             tailable: true,
             zippedArchive: true,
         }),
     ],
     exceptionHandlers: [
-        new winston.transports.File({ filename: path.join(logsDir, 'exceptions.log') })
+        new winston.transports.File({
+            filename: path.join(logsDir, 'exceptions.log'),
+            maxsize: 5242880,
+            maxFiles: 3,
+            tailable: true,
+            zippedArchive: true,
+        })
     ],
     rejectionHandlers: [
-        new winston.transports.File({ filename: path.join(logsDir, 'rejections.log') })
+        new winston.transports.File({
+            filename: path.join(logsDir, 'rejections.log'),
+            maxsize: 5242880,
+            maxFiles: 3,
+            tailable: true,
+            zippedArchive: true,
+        })
     ]
 });
 

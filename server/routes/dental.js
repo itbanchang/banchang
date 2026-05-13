@@ -50,13 +50,13 @@ router.get('/today', cached('dentalToday_v2', 30000, async () => {
     `).catch(() => []),
 
     dbQuery(`
-      SELECT d.icd10, d.icd10_name as name, COUNT(*) as cnt
+      SELECT od.icd10, d.name as name, COUNT(*) as cnt
       FROM ovstdiag od
       INNER JOIN ovst o ON od.vn = o.vn
-      LEFT JOIN icd101 d ON od.icd10 = d.icd10
+      LEFT JOIN icd101 d ON od.icd10 = d.code
       WHERE o.vstdate = CURDATE()
         AND o.main_dep = '010'
-      GROUP BY od.icd10, d.icd10_name
+      GROUP BY od.icd10, d.name
       ORDER BY cnt DESC LIMIT 10
     `).catch(() => []),
   ]);
@@ -157,11 +157,11 @@ router.get('/analytics', cached('dentalAnalytics_v16', 900000, async () => {
 
     // 6. Top Diagnoses
     dbQuery(`
-      SELECT od.icd10, d.icd10_name as name, COUNT(*) as cnt, ROUND(AVG(v.income), 0) as avg_rev
-      FROM ovstdiag od INNER JOIN ovst o ON od.vn = o.vn LEFT JOIN icd101 d ON od.icd10 = d.icd10
+      SELECT od.icd10, d.name as name, COUNT(*) as cnt, ROUND(AVG(v.income), 0) as avg_rev
+      FROM ovstdiag od INNER JOIN ovst o ON od.vn = o.vn LEFT JOIN icd101 d ON od.icd10 = d.code
       LEFT JOIN vn_stat v ON o.vn = v.vn
       WHERE o.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND o.main_dep = '010'
-      GROUP BY od.icd10, d.icd10_name ORDER BY cnt DESC LIMIT 10
+      GROUP BY od.icd10, d.name ORDER BY cnt DESC LIMIT 10
     `).catch(() => []),
 
     // 7. Age Distribution

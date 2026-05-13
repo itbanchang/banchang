@@ -86,12 +86,23 @@ router.get(
       const fyEnd = `${fiscalStartYear + 1}-09-30`;
 
       // Try materialized view first (instant, refreshed every 15 min)
+      // NOTE: mv_fiscal_revenue columns = { yr, mo, revenue, visit_count, patient_count }
+      //       (previously read `r.month`/`r.visits` which don't exist → all zeros)
+      // Filter MV to current fiscal year only (MV has 12 months rolling).
       const mvData = getMV('mv_fiscal_revenue');
       let rows;
       if (mvData?.length) {
-        rows = mvData.map(r => ({ m: Number(r.month), r: Number(r.revenue || 0), v: Number(r.visits || 0) }));
-      } else {
-        // Fallback: query fiscal year range
+        rows = mvData
+          .filter(r => {
+            const yr = Number(r.yr);
+            const mo = Number(r.mo);
+            // In fiscal year = (yr == fiscalStartYear AND mo >= 10) OR (yr == fiscalStartYear+1 AND mo <= 9)
+            return (yr === fiscalStartYear && mo >= 10) || (yr === fiscalStartYear + 1 && mo <= 9);
+          })
+          .map(r => ({ m: Number(r.mo), r: Number(r.revenue || 0), v: Number(r.visit_count || 0) }));
+      }
+      // Fallback (MV empty OR no matching rows): query fiscal year range directly
+      if (!rows || rows.length === 0) {
         rows = await dbQuery(`
           SELECT MONTH(vstdate) as m, SUM(income) as r, COUNT(DISTINCT vn) as v
           FROM vn_stat
@@ -331,15 +342,15 @@ router.get('/revenue-leakage', cacheMiddleware(300), async (req, res) => {
     const leakages = await dbQuery(`
             SELECT v.vn, v.hn, v.vstdate,
                    v.income as billed_amount,
-                   COALESCE(r.rcpt_money, 0) as collected_amount,
-                   (v.income - COALESCE(r.rcpt_money, 0) - COALESCE(v.paid_money, 0)) as unbilled_gap,
+                   COALESCE(r.total_amount, 0) as collected_amount,
+                   (v.income - COALESCE(r.total_amount, 0) - COALESCE(v.paid_money, 0)) as unbilled_gap,
                    pt.name as payer
             FROM vn_stat v
             LEFT JOIN rcpt_print r ON v.vn = r.vn
             LEFT JOIN pttype pt ON v.pttype = pt.pttype
             WHERE v.vstdate >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
               AND v.income > 0
-              AND (v.income - COALESCE(r.rcpt_money, 0) - COALESCE(v.paid_money, 0)) > 100
+              AND (v.income - COALESCE(r.total_amount, 0) - COALESCE(v.paid_money, 0)) > 100
             ORDER BY unbilled_gap DESC
             LIMIT 50
         `);
@@ -468,8 +479,16 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
     const prevFyStart = `${fyStartCE - 1}-10-01`;
     const prevFyEnd = `${fyStartCE}-09-30`;
 
+    // Payer category classification (Thai public hospital context):
+    //   - FFS     = self-pay / private insurance / พรบ / รัฐวิสาหกิจ / ต่างด้าว / ต่างชาติ (should collect 95%+)
+    //   - Capitation = UC/บัตรทอง/PP/ฟอกไต/ประกันสังคม-in-network (100% outstanding BY DESIGN)
+    //   - Government = เบิกจ่ายตรง/กรมบัญชีกลาง/อปท (slow-pay but billable)
+    const FFS_PTTYPES = "'10','40','41','22','64','AA','27','WT','39','49'";
+    const GOV_PTTYPES = "'23','29','24','25','26','28'";
+
     const [
       collectionRate,
+      ffsCollection,
       prevMonth,
       curMonth,
       denialStats,
@@ -477,7 +496,7 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
       prevYtdRevenue,
       arBalanceResult,
     ] = await Promise.all([
-      // Collection rate: paid_money vs income this month
+      // Overall collection rate (ALL payers — includes Capitation so will be low)
       dbQueryOne(
         `SELECT
             COALESCE(SUM(income), 0) as billed,
@@ -486,6 +505,16 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           FROM vn_stat
           WHERE vstdate >= ? AND vstdate < DATE_ADD(?, INTERVAL 1 MONTH) AND income > 0`,
         [curStart, curStart]
+      ),
+      // FFS-only collection (TRUE collection — excludes Capitation)
+      dbQueryOne(
+        `SELECT
+            COALESCE(SUM(income), 0) as billed,
+            COALESCE(SUM(paid_money), 0) as collected,
+            COUNT(*) as visits
+          FROM vn_stat
+          WHERE vstdate >= ? AND income > 0 AND pttype IN (${FFS_PTTYPES})`,
+        [fyStart]
       ),
       // Previous month revenue
       dbQueryOne(
@@ -532,9 +561,14 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
     const billed = Number(collectionRate?.billed || 0);
     const collected = Number(collectionRate?.collected || 0);
     const outstanding = Number(collectionRate?.outstanding || 0);
-    // Collection rate: for Thai public hospitals, paid_money = co-pay only
-    // True collection needs AR reconciliation data; show paid/billed as "co-pay rate"
+    // Overall collection rate (includes Capitation — low by design)
     const collRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
+
+    // TRUE collection rate — FFS only (self-pay/insurance/พรบ/ต่างด้าว)
+    const ffsBilled = Number(ffsCollection?.billed || 0);
+    const ffsCollected = Number(ffsCollection?.collected || 0);
+    const ffsCollRate = ffsBilled > 0 ? Math.round((ffsCollected / ffsBilled) * 100) : 0;
+    const ffsVisits = Number(ffsCollection?.visits || 0);
 
     const prevRev = Number(prevMonth?.r || 0);
     const curRev = Number(curMonth?.r || 0);
@@ -570,7 +604,11 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
 
     // Score computation from real metrics
     const revenueScore = Math.min(100, Math.max(0, collRate));
-    const riskScore = Math.min(100, Math.max(0, 100 - denialRate * 3));
+    // Risk score penalizes BOTH denial AND slow A/R collection:
+    //   - Every 1% denial costs 3 points
+    //   - Every 30 days beyond 45-day target costs 10 points (cap at -60)
+    const arPenalty = Math.min(60, Math.max(0, Math.round(((daysInAr || 0) - 45) / 30) * 10));
+    const riskScore = Math.min(100, Math.max(0, 100 - denialRate * 3 - arPenalty));
     // Growth score uses YoY (reliable) weighted 60% + MoM pro-rata 40%
     const growthScore = Math.min(
       100,
@@ -591,7 +629,11 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
       data_source: 'HOSxP XE',
       timestamp: new Date().toISOString(),
       metrics: {
-        collection_rate: collRate,
+        collection_rate: collRate,                // Overall (low because Capitation)
+        ffs_collection_rate: ffsCollRate,         // TRUE collection — FFS only
+        ffs_billed: Math.round(ffsBilled),
+        ffs_collected: Math.round(ffsCollected),
+        ffs_visits: ffsVisits,
         growth_pct: growthPct,
         growth_pct_prorata: momProRata,
         yoy_growth_pct: yoyGrowthPct,
@@ -648,11 +690,14 @@ router.get('/analytics', cacheMiddleware(300), async (req, res) => {
           title: 'Risk Index',
           score: riskScore,
           status: riskScore >= 80 ? 'safe' : riskScore >= 60 ? 'moderate' : 'high',
-          analysis: `ค้างชำระ ${denialRate}% (${unpaidVisits} เคส) · A/R Balance ${(arBalance / 1e6).toFixed(2)} ล้าน · Days A/R ${daysInAr} วัน`,
-          recommendation:
-            riskScore < 70
-              ? 'ความเสี่ยงสูง — เร่งติดตามหนี้ค้างชำระ, วิเคราะห์ Aging Bucket'
-              : `ความเสี่ยงต่ำ — ลูกหนี้หมุนเร็ว (${daysInAr} วัน) ไม่มีหนี้ค้างชำระสะสม`,
+          analysis: `A/R ค้างรับ ${(arBalance / 1e6).toFixed(2)} ล้าน · Days in A/R ${daysInAr} วัน · Denial Rate ${denialRate}% (${unpaidVisits} เคส ค้างบันทึก)`,
+          recommendation: (() => {
+            // Use actual A/R days to write truthful recommendation
+            if (daysInAr > 90) return `🔴 A/R ${daysInAr} วัน (เป้า ≤ 45) — วิเคราะห์ Aging Bucket · เร่งเบิกสิทธิ์ค้างรับ · ตาม e-Claim + Reconciliation`;
+            if (daysInAr > 60) return `🟠 A/R ${daysInAr} วัน (เป้า ≤ 45) — ติดตามหนี้ค้าง · วิเคราะห์ payer-type A/R Aging`;
+            if (daysInAr > 45) return `🟡 A/R ${daysInAr} วัน (เป้า ≤ 45) — อยู่ในเกณฑ์เฝ้าระวัง · ทบทวน Billing Cycle`;
+            return `✅ A/R ${daysInAr} วัน — อยู่ในเกณฑ์มาตรฐาน Cash Flow หมุนเวียนปกติ`;
+          })(),
         },
       },
     });
