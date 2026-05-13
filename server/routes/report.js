@@ -858,7 +858,7 @@ router.get('/pt-patients', async (req, res) => {
        LEFT JOIN ipt i ON i.an = o.an
        LEFT JOIN ward w ON w.ward = i.ward
        WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
-         AND o.main_dep IN ('034','140')
+         AND o.main_dep IN ('034','140','143')
        GROUP BY o.vn
        ORDER BY o.vstdate DESC, o.vsttime DESC
        LIMIT 5000`,
@@ -891,10 +891,48 @@ router.get('/pt-patients', async (req, res) => {
     const opdPatients = patients.filter(p => p.visit_type === 'OPD');
     const ipdPatients = patients.filter(p => p.visit_type === 'IPD');
 
+    // ── YoY: same period last year (aggregates only) ──
+    const yoyStart = `${parseInt(start.slice(0, 4)) - 1}-${start.slice(5)}`;
+    const yoyEnd = `${parseInt(end.slice(0, 4)) - 1}-${end.slice(5)}`;
+    let yoy = null;
+    try {
+      const yoyAgg = await dbQueryHeavy(
+        `pt_yoy_${yoyStart}_${yoyEnd}`,
+        300,
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 0 ELSE 1 END) AS opd_count,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 1 ELSE 0 END) AS ipd_count,
+           SUM(COALESCE(v.income, 0)) AS total_income,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 0 ELSE COALESCE(v.income, 0) END) AS opd_income,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN COALESCE(v.income, 0) ELSE 0 END) AS ipd_income
+         FROM ovst o
+         LEFT JOIN vn_stat v ON v.vn = o.vn
+         WHERE o.vstdate BETWEEN ? AND ?
+           AND o.main_dep IN ('034','140','143')`,
+        [yoyStart, yoyEnd],
+        { timeoutMs: 30000 }
+      );
+      if (yoyAgg && yoyAgg[0]) {
+        yoy = {
+          start: yoyStart,
+          end: yoyEnd,
+          total: Number(yoyAgg[0].total) || 0,
+          total_income: Number(yoyAgg[0].total_income) || 0,
+          opd_count: Number(yoyAgg[0].opd_count) || 0,
+          opd_income: Number(yoyAgg[0].opd_income) || 0,
+          ipd_count: Number(yoyAgg[0].ipd_count) || 0,
+          ipd_income: Number(yoyAgg[0].ipd_income) || 0,
+        };
+      }
+    } catch (e) {
+      logger.warn('PT YoY query failed', { error: e.message });
+    }
+
     res.json({
-      data_source: 'HOSxP XE · กายภาพบำบัด (main_dep = 034, 140)',
+      data_source: 'HOSxP XE · กายภาพบำบัด (main_dep = 034, 140, 143)',
       timestamp: new Date().toISOString(),
-      title: `รายงานกายภาพบำบัด และ ศูนย์บริการสิทธิข้าราชการ (ออฟฟิศซินโดรม) (${start} ถึง ${end})`,
+      title: `รายงานกายภาพบำบัด และ PMC (${start} ถึง ${end})`,
       date_range: { start, end },
       total: patients.length,
       total_income: totalIncome,
@@ -902,10 +940,195 @@ router.get('/pt-patients', async (req, res) => {
       opd_income: opdPatients.reduce((s, p) => s + p.income, 0),
       ipd_count: ipdPatients.length,
       ipd_income: ipdPatients.reduce((s, p) => s + p.income, 0),
+      yoy,
       patients,
     });
   } catch (err) {
     logger.error('PT patients report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /staff-patients — รายงานการรับบริการของบุคลากร
+// Filter: ผู้รับบริการที่ cid ตรงกับ doctor.active='Y' หรือ officer.officer_active='Y'
+// Query: ?start=2025-10-01&end=2026-04-07
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/staff-patients', async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
+    }
+
+    const rows = await dbQueryHeavy(
+      `staff_patients_${start}_${end}`,
+      2,
+      `SELECT
+         o.vn,
+         o.hn,
+         CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
+         v.age_y,
+         p.cid,
+         o.vstdate,
+         k.department,
+         pt.name AS pttype_name,
+         CONCAT(
+           IFNULL(p.addrpart,''), ' หมู่ ', IFNULL(p.moopart,''), ' ',
+           IFNULL(t3.full_name, IFNULL(t2.full_name, t1.full_name))
+         ) AS address,
+         p.mobile_phone_number,
+         c.icd10,
+         dt.name AS icd10name,
+         COALESCE(v.income, 0) AS income,
+         op.cc AS chief_complaint,
+         CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 'IPD' ELSE 'OPD' END AS visit_type,
+         o.an,
+         w.name AS ward_name,
+         CASE
+           WHEN EXISTS(SELECT 1 FROM doctor doc WHERE doc.cid = p.cid AND doc.active = 'Y') THEN 'แพทย์'
+           WHEN EXISTS(SELECT 1 FROM officer ofc WHERE ofc.officer_cid = p.cid AND ofc.officer_active = 'Y') THEN 'เจ้าหน้าที่'
+           ELSE 'อื่นๆ'
+         END AS staff_type,
+         (SELECT doc.jobposition FROM doctor doc WHERE doc.cid = p.cid AND doc.active = 'Y' LIMIT 1) AS staff_position
+       FROM ovst o
+       LEFT JOIN patient p ON p.hn = o.hn
+       LEFT JOIN thaiaddress t1
+         ON t1.chwpart = p.chwpart AND t1.amppart = '00' AND t1.tmbpart = '00'
+       LEFT JOIN thaiaddress t2
+         ON t2.chwpart = p.chwpart AND t2.amppart = p.amppart AND t2.tmbpart = '00'
+       LEFT JOIN thaiaddress t3
+         ON t3.chwpart = p.chwpart AND t3.amppart = p.amppart AND t3.tmbpart = p.tmbpart
+       LEFT JOIN pttype pt ON pt.pttype = o.pttype
+       LEFT JOIN vn_stat v ON v.vn = o.vn
+       LEFT JOIN kskdepartment k ON k.depcode = o.main_dep
+       LEFT JOIN ovstdiag c ON c.vn = o.vn AND c.diagtype = '1'
+       LEFT JOIN icd101 dt ON dt.code = c.icd10
+       LEFT JOIN opdscreen op ON op.vn = o.vn
+       LEFT JOIN ipt i ON i.an = o.an
+       LEFT JOIN ward w ON w.ward = i.ward
+       WHERE o.vstdate BETWEEN ? AND LEAST(?, CURDATE())
+         AND p.cid IS NOT NULL AND p.cid != ''
+         AND (
+           EXISTS(SELECT 1 FROM doctor doc WHERE doc.cid = p.cid AND doc.active = 'Y')
+           OR EXISTS(SELECT 1 FROM officer ofc WHERE ofc.officer_cid = p.cid AND ofc.officer_active = 'Y')
+         )
+       GROUP BY o.vn
+       ORDER BY o.vstdate DESC, o.vsttime DESC
+       LIMIT 5000`,
+      [start, end],
+      { timeoutMs: 30000 }
+    );
+
+    const patients = (rows || []).map((r, idx) => ({
+      no: idx + 1,
+      vn: r.vn,
+      hn: r.hn,
+      pt_name: r.pt_name,
+      age_y: Number(r.age_y) || null,
+      cid: r.cid,
+      vstdate: r.vstdate,
+      department: r.department || '-',
+      pttype_name: r.pttype_name || '',
+      address: r.address || '',
+      mobile_phone_number: r.mobile_phone_number || '',
+      icd10: r.icd10 || '',
+      icd10name: r.icd10name || '',
+      income: Number(r.income) || 0,
+      chief_complaint: r.chief_complaint || '',
+      visit_type: r.visit_type || 'OPD',
+      an: r.an || '',
+      ward_name: r.ward_name || '',
+      staff_type: r.staff_type || '',
+      staff_position: r.staff_position || '',
+    }));
+
+    const totalIncome = patients.reduce((s, p) => s + p.income, 0);
+    const opdPatients = patients.filter(p => p.visit_type === 'OPD');
+    const ipdPatients = patients.filter(p => p.visit_type === 'IPD');
+
+    // YoY: same period last year
+    const yoyStart = `${parseInt(start.slice(0, 4)) - 1}-${start.slice(5)}`;
+    const yoyEnd = `${parseInt(end.slice(0, 4)) - 1}-${end.slice(5)}`;
+    let yoy = null;
+    try {
+      const yoyAgg = await dbQueryHeavy(
+        `staff_yoy_${yoyStart}_${yoyEnd}`,
+        5,
+        `SELECT
+           COUNT(*) AS total,
+           COUNT(DISTINCT o.hn) AS unique_hn,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 0 ELSE 1 END) AS opd_count,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 1 ELSE 0 END) AS ipd_count,
+           SUM(COALESCE(v.income, 0)) AS total_income,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN 0 ELSE COALESCE(v.income, 0) END) AS opd_income,
+           SUM(CASE WHEN o.an IS NOT NULL AND o.an != '' THEN COALESCE(v.income, 0) ELSE 0 END) AS ipd_income
+         FROM ovst o
+         LEFT JOIN patient p ON p.hn = o.hn
+         LEFT JOIN vn_stat v ON v.vn = o.vn
+         WHERE o.vstdate BETWEEN ? AND ?
+           AND p.cid IS NOT NULL AND p.cid != ''
+           AND (
+             EXISTS(SELECT 1 FROM doctor doc WHERE doc.cid = p.cid AND doc.active = 'Y')
+             OR EXISTS(SELECT 1 FROM officer ofc WHERE ofc.officer_cid = p.cid AND ofc.officer_active = 'Y')
+           )`,
+        [yoyStart, yoyEnd],
+        { timeoutMs: 30000 }
+      );
+      if (yoyAgg && yoyAgg[0]) {
+        yoy = {
+          start: yoyStart,
+          end: yoyEnd,
+          total: Number(yoyAgg[0].total) || 0,
+          total_income: Number(yoyAgg[0].total_income) || 0,
+          opd_count: Number(yoyAgg[0].opd_count) || 0,
+          opd_income: Number(yoyAgg[0].opd_income) || 0,
+          ipd_count: Number(yoyAgg[0].ipd_count) || 0,
+          ipd_income: Number(yoyAgg[0].ipd_income) || 0,
+          unique_hn: Number(yoyAgg[0].unique_hn) || 0,
+        };
+      }
+    } catch (e) {
+      logger.warn('Staff YoY query failed', { error: e.message });
+    }
+
+    // Total active-staff registry count (denominator for "บุคลากรทั้งหมด" card)
+    // Same definition as the patients filter: doctor.active='Y' UNION officer.officer_active='Y'
+    let staff_registry_count = 0;
+    try {
+      const reg = await dbQueryHeavy(
+        `staff_registry_count_v1`,
+        60,
+        `SELECT COUNT(DISTINCT t.cid) AS n FROM (
+           SELECT cid FROM doctor  WHERE active='Y' AND cid IS NOT NULL AND cid <> ''
+           UNION
+           SELECT officer_cid AS cid FROM officer WHERE officer_active='Y' AND officer_cid IS NOT NULL AND officer_cid <> ''
+         ) t`,
+        [],
+        { timeoutMs: 5000 }
+      );
+      staff_registry_count = Number(reg?.[0]?.n) || 0;
+    } catch (e) {
+      logger.warn('Staff registry count failed', { error: e.message });
+    }
+
+    res.json({
+      data_source: 'HOSxP XE · บุคลากร (cid match doctor.active=Y OR officer.officer_active=Y)',
+      timestamp: new Date().toISOString(),
+      title: `รายงานการรับบริการของบุคลากร (${start} ถึง ${end})`,
+      date_range: { start, end },
+      total: patients.length,
+      total_income: totalIncome,
+      opd_count: opdPatients.length,
+      opd_income: opdPatients.reduce((s, p) => s + p.income, 0),
+      ipd_count: ipdPatients.length,
+      ipd_income: ipdPatients.reduce((s, p) => s + p.income, 0),
+      staff_registry_count,
+      yoy,
+      patients,
+    });
+  } catch (err) {
+    logger.error('Staff patients report error', { error: err.message });
     safeError(res, err, 'Report');
   }
 });
@@ -1676,11 +1899,10 @@ router.get('/ncd-patients', async (req, res) => {
       return res.status(400).json({ error: 'กรุณาระบุ start และ end (YYYY-MM-DD)' });
     }
 
-    const [rows, crRows] = await Promise.all([
-      dbQueryHeavy(
-        `ncd_patients_v3_${start}_${end}`,
-        120,
-        `SELECT
+    const rows = await dbQueryHeavy(
+      `ncd_patients_v3_${start}_${end}`,
+      120,
+      `SELECT
          o.vn,
          o.hn,
          CONCAT(p.pname, ' ', p.fname, ' ', p.lname) AS pt_name,
@@ -1740,24 +1962,29 @@ router.get('/ncd-patients', async (req, res) => {
        GROUP BY o.vn
        ORDER BY o.vstdate DESC, o.vsttime DESC
        LIMIT 100000`,
-        [start, end],
-        { timeoutMs: 60000 }
-      ),
-      // Latest serum Creatinine per patient — look back 365 days from end date
-      // across ALL departments (lab may be ordered from OPD/IPD, not just NCD clinic)
-      // for eGFR-based CKD staging
-      dbQueryHeavy(
-        `ncd_creatinine_${start}_${end}`,
+      [start, end],
+      { timeoutMs: 60000 }
+    );
+
+    // Latest serum Creatinine per patient — look back 365 days from end date
+    // for eGFR-based CKD staging.
+    // Scoped to the HN list returned by the patients query (avoids hospital-wide scan).
+    // Dedupe in JS (HOSxP MariaDB 10.1 has no window functions; ORDER BY DESC + first-seen-wins).
+    const uniqueHns = [...new Set((rows || []).map(r => r.hn).filter(Boolean))];
+    let crRows = [];
+    if (uniqueHns.length > 0) {
+      const placeholders = uniqueHns.map(() => '?').join(',');
+      crRows = await dbQueryHeavy(
+        `ncd_creatinine_v2_${start}_${end}`,
         120,
         `SELECT
            lh.hn,
            CAST(lo.lab_order_result AS DECIMAL(8,3)) AS creatinine,
-           lh.order_date,
-           ROW_NUMBER() OVER (PARTITION BY lh.hn ORDER BY lh.order_date DESC) AS rn
+           lh.order_date
          FROM lab_head lh
          INNER JOIN lab_order lo ON lh.lab_order_number = lo.lab_order_number
          WHERE lh.order_date BETWEEN DATE_SUB(?, INTERVAL 365 DAY) AND LEAST(?, CURDATE())
-           AND lh.hn IS NOT NULL
+           AND lh.hn IN (${placeholders})
            AND (lo.lab_items_name_ref LIKE '%reatinine%'
              OR lo.lab_items_name_ref LIKE 'Cr%'
              OR lo.lab_items_name_ref LIKE '%Cr (S)%'
@@ -1765,16 +1992,17 @@ router.get('/ncd-patients', async (req, res) => {
              OR lo.lab_items_name_ref LIKE '%ครีเอ%')
            AND lo.lab_order_result IS NOT NULL
            AND lo.lab_order_result REGEXP '^[0-9]+(\\\\.[0-9]+)?$'
-           AND CAST(lo.lab_order_result AS DECIMAL(8,3)) BETWEEN 0.1 AND 30`,
-        [end, end],
+           AND CAST(lo.lab_order_result AS DECIMAL(8,3)) BETWEEN 0.1 AND 30
+         ORDER BY lh.hn, lh.order_date DESC`,
+        [end, end, ...uniqueHns],
         { timeoutMs: 30000 }
-      ).catch(() => []),
-    ]);
+      ).catch((e) => { logger.warn('NCD creatinine query failed', { error: e.message }); return []; });
+    }
 
-    // Map: HN -> latest creatinine
+    // Map: HN -> latest creatinine (first row per HN due to ORDER BY DESC)
     const crByHn = {};
     for (const r of (crRows || [])) {
-      if (Number(r.rn) === 1) crByHn[r.hn] = Number(r.creatinine);
+      if (!(r.hn in crByHn)) crByHn[r.hn] = Number(r.creatinine);
     }
 
     const patients = (rows || []).map((r, idx) => {
@@ -2224,6 +2452,303 @@ router.get('/imaging-services', async (req, res) => {
     });
   } catch (err) {
     logger.error('Imaging services report error', { error: err.message });
+    safeError(res, err, 'Report');
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /pttype-services — รายงานการรับบริการแยกกลุ่มสิทธิ์
+// Query: ?from=YYYY-MM-DD&to=YYYY-MM-DD (default: current Thai fiscal year)
+// Returns: per-pttype OPD/IPD/ER visit count + unique HN + monthly trend
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.get('/pttype-services', async (req, res) => {
+  try {
+    const now = new Date();
+    const yy = now.getFullYear();
+    const mo = now.getMonth() + 1;
+    const fyStart = mo >= 10 ? `${yy}-10-01` : `${yy - 1}-10-01`;
+    const today = now.toISOString().slice(0, 10);
+    const from = (req.query.from && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from)) ? req.query.from : fyStart;
+    const to = (req.query.to && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to)) ? req.query.to : today;
+
+    const cacheKey = `report_pttype_services_v1_${from}_${to}`;
+
+    // Age group classifier SQL fragment (consistent across all channels)
+    const AGE_CASE = (dob, refdate) => `
+      CASE
+        WHEN ${dob} IS NULL THEN 'ไม่ระบุ'
+        WHEN TIMESTAMPDIFF(YEAR, ${dob}, ${refdate}) <= 14 THEN 'วัยเด็ก (0-14 ปี)'
+        WHEN TIMESTAMPDIFF(YEAR, ${dob}, ${refdate}) <= 24 THEN 'วัยรุ่น/วัยหนุ่มสาว (15-24 ปี)'
+        WHEN TIMESTAMPDIFF(YEAR, ${dob}, ${refdate}) <= 59 THEN 'วัยแรงงาน (25-59 ปี)'
+        ELSE 'วัยสูงอายุ (60 ปีขึ้นไป)'
+      END
+    `;
+    const AGE_ORDER = ['วัยเด็ก (0-14 ปี)', 'วัยรุ่น/วัยหนุ่มสาว (15-24 ปี)', 'วัยแรงงาน (25-59 ปี)', 'วัยสูงอายุ (60 ปีขึ้นไป)', 'ไม่ระบุ'];
+
+    const [opdSummary, ipdSummary, erSummary, opdTrend, ipdTrend, erTrend, opdAge, ipdAge, erAge] = await Promise.all([
+      // OPD per pttype
+      dbQueryHeavy(`${cacheKey}_opd`, 30, `
+        SELECT
+          o.pttype AS pttype,
+          pt.name AS pttype_name,
+          COUNT(*) AS visits,
+          COUNT(DISTINCT o.hn) AS unique_hn
+        FROM ovst o
+        LEFT JOIN pttype pt ON pt.pttype = o.pttype
+        WHERE o.vstdate BETWEEN ? AND ?
+        GROUP BY o.pttype, pt.name
+        ORDER BY visits DESC
+      `, [from, to], { timeoutMs: 30000 }),
+      // IPD per pttype
+      dbQueryHeavy(`${cacheKey}_ipd`, 30, `
+        SELECT
+          a.pttype AS pttype,
+          pt.name AS pttype_name,
+          COUNT(*) AS admissions,
+          COUNT(DISTINCT a.hn) AS unique_hn
+        FROM an_stat a
+        LEFT JOIN pttype pt ON pt.pttype = a.pttype
+        WHERE a.regdate BETWEEN ? AND ?
+        GROUP BY a.pttype, pt.name
+        ORDER BY admissions DESC
+      `, [from, to], { timeoutMs: 30000 }),
+      // ER per pttype (route through ovst since er_regist has no pttype)
+      dbQueryHeavy(`${cacheKey}_er`, 30, `
+        SELECT
+          o.pttype AS pttype,
+          pt.name AS pttype_name,
+          COUNT(*) AS visits,
+          COUNT(DISTINCT o.hn) AS unique_hn
+        FROM er_regist e
+        JOIN ovst o ON o.vn = e.vn
+        LEFT JOIN pttype pt ON pt.pttype = o.pttype
+        WHERE e.vstdate BETWEEN ? AND ?
+        GROUP BY o.pttype, pt.name
+        ORDER BY visits DESC
+      `, [from, to], { timeoutMs: 30000 }),
+      // Monthly trend — OPD
+      dbQueryHeavy(`${cacheKey}_opd_trend`, 30, `
+        SELECT
+          DATE_FORMAT(o.vstdate, '%Y-%m') AS ym,
+          o.pttype AS pttype,
+          COUNT(*) AS visits
+        FROM ovst o
+        WHERE o.vstdate BETWEEN ? AND ?
+        GROUP BY ym, o.pttype
+        ORDER BY ym
+      `, [from, to], { timeoutMs: 30000 }),
+      // Monthly trend — IPD
+      dbQueryHeavy(`${cacheKey}_ipd_trend`, 30, `
+        SELECT
+          DATE_FORMAT(a.regdate, '%Y-%m') AS ym,
+          a.pttype AS pttype,
+          COUNT(*) AS visits
+        FROM an_stat a
+        WHERE a.regdate BETWEEN ? AND ?
+        GROUP BY ym, a.pttype
+        ORDER BY ym
+      `, [from, to], { timeoutMs: 30000 }),
+      // Monthly trend — ER
+      dbQueryHeavy(`${cacheKey}_er_trend`, 30, `
+        SELECT
+          DATE_FORMAT(e.vstdate, '%Y-%m') AS ym,
+          o.pttype AS pttype,
+          COUNT(*) AS visits
+        FROM er_regist e
+        JOIN ovst o ON o.vn = e.vn
+        WHERE e.vstdate BETWEEN ? AND ?
+        GROUP BY ym, o.pttype
+        ORDER BY ym
+      `, [from, to], { timeoutMs: 30000 }),
+      // Age breakdown — OPD per pttype × age_group
+      dbQueryHeavy(`${cacheKey}_opd_age`, 30, `
+        SELECT
+          o.pttype AS pttype,
+          ${AGE_CASE('p.birthday', 'o.vstdate')} AS age_group,
+          COUNT(*) AS visits,
+          COUNT(DISTINCT o.hn) AS unique_hn
+        FROM ovst o
+        LEFT JOIN patient p ON p.hn = o.hn
+        WHERE o.vstdate BETWEEN ? AND ?
+        GROUP BY o.pttype, age_group
+      `, [from, to], { timeoutMs: 30000 }),
+      // Age breakdown — IPD per pttype × age_group
+      dbQueryHeavy(`${cacheKey}_ipd_age`, 30, `
+        SELECT
+          a.pttype AS pttype,
+          ${AGE_CASE('p.birthday', 'a.regdate')} AS age_group,
+          COUNT(*) AS visits,
+          COUNT(DISTINCT a.hn) AS unique_hn
+        FROM an_stat a
+        LEFT JOIN patient p ON p.hn = a.hn
+        WHERE a.regdate BETWEEN ? AND ?
+        GROUP BY a.pttype, age_group
+      `, [from, to], { timeoutMs: 30000 }),
+      // Age breakdown — ER per pttype × age_group
+      dbQueryHeavy(`${cacheKey}_er_age`, 30, `
+        SELECT
+          o.pttype AS pttype,
+          ${AGE_CASE('p.birthday', 'e.vstdate')} AS age_group,
+          COUNT(*) AS visits,
+          COUNT(DISTINCT o.hn) AS unique_hn
+        FROM er_regist e
+        JOIN ovst o ON o.vn = e.vn
+        LEFT JOIN patient p ON p.hn = o.hn
+        WHERE e.vstdate BETWEEN ? AND ?
+        GROUP BY o.pttype, age_group
+      `, [from, to], { timeoutMs: 30000 }),
+    ]);
+
+    // ── Classify pttype name into 9 standard groups (v2 — expanded UC subtypes) ──
+    const classifyPttype = (name) => {
+      const s = String(name || '').toLowerCase();
+      if (/ประกันสังคม|sss|สปส|ปกส|ทุพพลภาพ|กองทุนเงินทดแทน/i.test(s)) return 'ประกันสังคม';
+      if (/พรบ|พ\.?ร\.?บ|พระราชบัญญัติคุ้มครอง|พรบ\.?​?รถ|พ\.ร\.บ\.?ฯ|ประกันภัยจากรถ/i.test(s)) return 'พรบ';
+      if (/ต่างด้าว|แรงงานต่างด้าว|migrant|alien|fdh/i.test(s)) return 'ต่างด้าว';
+      if (/ต่างชาติ|foreigner|foreign\s*nationals|1\.5 ?เท่า|ชาวต่าง/i.test(s)) return 'ต่างชาติ (1.5 เท่า)';
+      if (/รัฐวิสาหกิจ|state\s*enterprise/i.test(s)) return 'รัฐวิสาหกิจ';
+      if (/ราชการ|อปท|csmbs|local\s*gov|เบิก\s*จ่าย\s*ตรง|อปท\.|กรมบัญชีกลาง|กบข|พนักงาน\s*ราชการ|กทม\.|ครูเอกชน/i.test(s)) return 'ข้าราชการ / อปท';
+      if (/ชำระเงิน|เงินสด|จ่ายตรง|self\s*pay|out\s*of\s*pocket|จ่ายเอง|ประกันสุขภาพเอกชน|contract|contrac/i.test(s)) return 'ชำระเงินเอง';
+      if (/uc|บัตรทอง|30 ?บาท|หลักประกันสุขภาพ|สิทธิ์\s*สปสช|nhso|universal\s*coverage|ucs|ส่งเสริมป้องกัน|ผู้สูงอายุ|ผู้พิการ|ผู้มีรายได้น้อย|ฝากครรภ์|บัตร\s*อสม|อสม|นักเรียน|เด็กอายุ|ทหารผ่านศึก|ทหารเกณฑ์|ภิกษุ|ผู้นำศาสนา|ผู้นำชุมชน|สิทธิว่าง|ว่างมาตรา|ตรวจฟัน|บริจาคโลหิต|ผู้มีปัญหาสถานะ|op walkin|ราชทัณฑ์|ล้างไต|ฟอกไต|hd|capd|ตรวจสุขภาพ|อนุเคราะห์|ตรวจ amphet|ไปรษณีย์|อสม\./i.test(s)) return 'UC';
+      return 'อื่นๆ';
+    };
+
+    // ── Merge per-pttype summary across OPD/IPD/ER ──
+    const merged = {};
+    const upsert = (rows, k1, k2) => {
+      for (const r of (rows || [])) {
+        const key = String(r.pttype || '_unknown');
+        if (!merged[key]) {
+          merged[key] = {
+            pttype: r.pttype || '',
+            pttype_name: r.pttype_name || `รหัส ${r.pttype || '—'}`,
+            opd_visits: 0, opd_hn: 0,
+            ipd_admissions: 0, ipd_hn: 0,
+            er_visits: 0, er_hn: 0,
+          };
+        }
+        if (r.pttype_name && merged[key].pttype_name.startsWith('รหัส')) {
+          merged[key].pttype_name = r.pttype_name;
+        }
+        merged[key][k1] = Number(r[k2] || 0);
+        if (r.unique_hn !== undefined) {
+          const hnKey = k1.replace('visits', 'hn').replace('admissions', 'hn');
+          merged[key][hnKey] = Number(r.unique_hn || 0);
+        }
+      }
+    };
+    upsert(opdSummary, 'opd_visits', 'visits');
+    upsert(ipdSummary, 'ipd_admissions', 'admissions');
+    upsert(erSummary, 'er_visits', 'visits');
+
+    const summary = Object.values(merged).map(r => ({
+      ...r,
+      group_name: classifyPttype(r.pttype_name),
+      total_visits: r.opd_visits + r.ipd_admissions + r.er_visits,
+      total_unique_hn_estimate: Math.max(r.opd_hn, r.ipd_hn, r.er_hn),
+    })).sort((a, b) => b.total_visits - a.total_visits);
+
+    // ── Group-level aggregate (9 standard pttype buckets) ──
+    const GROUP_ORDER = ['UC', 'ข้าราชการ / อปท', 'ชำระเงินเอง', 'ต่างชาติ (1.5 เท่า)', 'ต่างด้าว', 'ประกันสังคม', 'พรบ', 'รัฐวิสาหกิจ', 'อื่นๆ'];
+    const groupAgg = Object.fromEntries(GROUP_ORDER.map(g => [g, {
+      group_name: g,
+      opd_visits: 0, opd_hn: 0,
+      ipd_admissions: 0, ipd_hn: 0,
+      er_visits: 0, er_hn: 0,
+      total_visits: 0,
+      pttype_count: 0,
+    }]));
+    for (const r of summary) {
+      const g = groupAgg[r.group_name] || groupAgg['อื่นๆ'];
+      g.opd_visits += r.opd_visits;
+      g.opd_hn += r.opd_hn;
+      g.ipd_admissions += r.ipd_admissions;
+      g.ipd_hn += r.ipd_hn;
+      g.er_visits += r.er_visits;
+      g.er_hn += r.er_hn;
+      g.total_visits += r.total_visits;
+      g.pttype_count += 1;
+    }
+    const groups = GROUP_ORDER.map(g => groupAgg[g]).filter(g => g.total_visits > 0 || g.pttype_count > 0);
+
+    // ── Monthly trend — combine OPD + IPD + ER by ym × pttype ──
+    const trendMap = {};
+    const accumTrend = (rows, channel) => {
+      for (const r of (rows || [])) {
+        const k = `${r.ym}__${r.pttype}`;
+        if (!trendMap[k]) {
+          trendMap[k] = { ym: r.ym, pttype: r.pttype || '', opd: 0, ipd: 0, er: 0, total: 0 };
+        }
+        trendMap[k][channel] = Number(r.visits || 0);
+        trendMap[k].total = trendMap[k].opd + trendMap[k].ipd + trendMap[k].er;
+      }
+    };
+    accumTrend(opdTrend, 'opd');
+    accumTrend(ipdTrend, 'ipd');
+    accumTrend(erTrend, 'er');
+    const trend = Object.values(trendMap).sort((a, b) =>
+      a.ym === b.ym ? String(a.pttype).localeCompare(String(b.pttype)) : a.ym.localeCompare(b.ym)
+    );
+
+    // ── Monthly trend per group_name (aggregated) ──
+    const pttypeToGroup = {};
+    for (const r of summary) pttypeToGroup[String(r.pttype)] = r.group_name;
+    const groupTrendMap = {};
+    for (const t of trend) {
+      const g = pttypeToGroup[String(t.pttype)] || 'อื่นๆ';
+      const k = `${t.ym}__${g}`;
+      if (!groupTrendMap[k]) {
+        groupTrendMap[k] = { ym: t.ym, group_name: g, opd: 0, ipd: 0, er: 0, total: 0 };
+      }
+      groupTrendMap[k].opd += t.opd;
+      groupTrendMap[k].ipd += t.ipd;
+      groupTrendMap[k].er += t.er;
+      groupTrendMap[k].total += t.total;
+    }
+    const groupTrend = Object.values(groupTrendMap).sort((a, b) =>
+      a.ym === b.ym ? GROUP_ORDER.indexOf(a.group_name) - GROUP_ORDER.indexOf(b.group_name) : a.ym.localeCompare(b.ym)
+    );
+
+    // ── Age breakdown: pivot per group × age_group ──
+    const ageMap = {};   // key: group_name__age_group
+    const upsertAge = (rows, channel) => {
+      for (const r of (rows || [])) {
+        const grp = pttypeToGroup[String(r.pttype)] || 'อื่นๆ';
+        const ag = r.age_group || 'ไม่ระบุ';
+        const k = `${grp}__${ag}`;
+        if (!ageMap[k]) {
+          ageMap[k] = { group_name: grp, age_group: ag, opd: 0, ipd: 0, er: 0, total: 0, unique_hn_max: 0 };
+        }
+        ageMap[k][channel] += Number(r.visits || 0);
+        ageMap[k].total = ageMap[k].opd + ageMap[k].ipd + ageMap[k].er;
+        if (Number(r.unique_hn || 0) > ageMap[k].unique_hn_max) {
+          ageMap[k].unique_hn_max = Number(r.unique_hn || 0);
+        }
+      }
+    };
+    upsertAge(opdAge, 'opd');
+    upsertAge(ipdAge, 'ipd');
+    upsertAge(erAge, 'er');
+    const ageBreakdown = Object.values(ageMap).sort((a, b) => {
+      const gi = GROUP_ORDER.indexOf(a.group_name) - GROUP_ORDER.indexOf(b.group_name);
+      if (gi !== 0) return gi;
+      return AGE_ORDER.indexOf(a.age_group) - AGE_ORDER.indexOf(b.age_group);
+    });
+
+    res.json({
+      data_source: 'HOSxP XE · ovst + an_stat + er_regist + pttype + patient',
+      from, to,
+      summary,           // per-pttype (with group_name)
+      groups,            // 9 standard buckets aggregated
+      trend,             // monthly per-pttype
+      group_trend: groupTrend,  // monthly per-group
+      age_breakdown: ageBreakdown,  // per-group × age_group
+      group_order: GROUP_ORDER,
+      age_order: AGE_ORDER,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    logger.error('pttype-services report failed', { error: err.message });
     safeError(res, err, 'Report');
   }
 });
