@@ -4,6 +4,7 @@
 // ============================================================
 import Anthropic from '@anthropic-ai/sdk';
 import logger from '../logger.js';
+import { recordCall } from './claudeMetrics.js';
 
 const client = process.env.ANTHROPIC_API_KEY
     ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -13,29 +14,52 @@ const MODEL = 'claude-sonnet-4-6';
 const TIMEOUT_MS = 15000;
 
 /**
- * เรียก Claude API พร้อม timeout และ fallback
+ * เรียก Claude API พร้อม timeout, prompt caching, fallback, และ token telemetry
+ * Phase H Sprint 1 Task 2.1: prompt caching (ephemeral 5-min TTL) cuts input tokens ~80%.
+ * Phase H Sprint 1 Task 2.2: token usage recorded via recordCall() for cost monitoring.
  */
-async function callClaude(systemPrompt, userPrompt, maxTokens = 800) {
+async function callClaude(systemPrompt, userPrompt, maxTokens = 800, fnName = 'unknown') {
     if (!client) {
         logger.warn('[claudeNarrative] ANTHROPIC_API_KEY not set — using rule-based fallback');
+        recordCall({ functionName: fnName, status: 'fallback', durationMs: 0 });
         return null;
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const startedAt = Date.now();
     try {
         const msg = await client.messages.create({
             model: MODEL,
             max_tokens: maxTokens,
-            system: systemPrompt,
+            // Structured system block with prompt caching — system prompts reused
+            // for every Revenue Forecast / DRG Leakage call, so caching cuts
+            // input tokens on the system portion by ~80% within 5-min TTL.
+            system: [{
+                type: 'text',
+                text: systemPrompt,
+                cache_control: { type: 'ephemeral' },
+            }],
             messages: [{ role: 'user', content: userPrompt }],
         }, { signal: controller.signal });
+        recordCall({
+            functionName: fnName,
+            usage: msg.usage || {},
+            durationMs: Date.now() - startedAt,
+            status: 'success',
+        });
         return msg.content?.[0]?.text ?? null;
     } catch (err) {
-        if (err.name === 'AbortError') {
+        const isTimeout = err.name === 'AbortError';
+        if (isTimeout) {
             logger.warn('[claudeNarrative] Claude API timeout after 15s');
         } else {
             logger.error('[claudeNarrative] Claude API error', { message: err.message });
         }
+        recordCall({
+            functionName: fnName,
+            durationMs: Date.now() - startedAt,
+            status: isTimeout ? 'timeout' : 'error',
+        });
         return null;
     } finally {
         clearTimeout(timer);
@@ -95,7 +119,7 @@ ${months}
   "model_note": "หมายเหตุเกี่ยวกับโมเดล 1 ประโยค"
 }`;
 
-    const raw = await callClaude(systemPrompt, userPrompt, 1000);
+    const raw = await callClaude(systemPrompt, userPrompt, 1000, 'generateRevenueForecastNarrative');
     if (!raw) return fallback;
 
     try {
@@ -146,7 +170,7 @@ ${wardList || 'ไม่มีข้อมูล'}
   "priority_wards": "Ward ที่ต้องดำเนินการก่อน"
 }`;
 
-    const raw = await callClaude(systemPrompt, userPrompt, 900);
+    const raw = await callClaude(systemPrompt, userPrompt, 900, 'generateDRGLeakageNarrative');
     if (!raw) return fallback;
 
     try {

@@ -1462,6 +1462,122 @@ html.dark footer {
     }
 }
 
+/* ================================================================
+   Sprint 1 Task 2.4 — Tablet Responsive Emergency (768px breakpoint)
+   ----
+   Target: nurse stations using tablets in portrait mode (per about-me.md).
+   Affects: ERTab Live view, IPDTab Ward grid, OverviewTab Hub.
+   ================================================================ */
+
+/* Tablet portrait — 768px to 1023px — re-flow grid + reduce density */
+@media (min-width: 768px) and (max-width: 1023px) {
+    /* Force single-column for KPI card rows that were >2 wide on desktop */
+    .bch-kpi-grid,
+    [data-bch-grid="kpi"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 0.625rem !important;
+    }
+
+    /* Live ER quick metrics — was 8 cols, force 4 on tablet portrait */
+    .bch-er-metrics,
+    [data-bch-grid="er-metrics"] {
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    }
+
+    /* IPD ward grid — 6 cols → 3 on tablet portrait */
+    .bch-ward-grid,
+    [data-bch-grid="wards"] {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    }
+
+    /* Overview hub — 12-col layout → 6-col */
+    .bch-overview-hub,
+    [data-bch-grid="overview"] {
+        grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+    }
+
+    /* Chart containers — reduce padding + ensure min-height */
+    .recharts-responsive-container {
+        min-height: 220px;
+    }
+
+    /* Tighten chart legend on tablet */
+    .recharts-legend-wrapper {
+        font-size: 11px !important;
+    }
+
+    /* Triage Distribution legend wrap */
+    .bch-triage-legend {
+        flex-wrap: wrap !important;
+        gap: 0.25rem !important;
+    }
+
+    /* AI Narrative card — reduce padding */
+    .bch-ai-narrative-card {
+        padding: 0.875rem 1rem !important;
+    }
+
+    /* Patient list table — make horizontally scrollable */
+    .bch-patient-table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Hide non-critical decorative elements on tablet */
+    .bch-decoration-only {
+        display: none !important;
+    }
+
+    /* Larger touch targets — minimum 44×44px (WCAG AA + Apple HIG) */
+    button,
+    [role="button"],
+    a.bch-clickable {
+        min-height: 44px;
+        min-width: 44px;
+    }
+}
+
+/* Mobile portrait — <768px — emergency fallback (nurses occasionally on phone) */
+@media (max-width: 767px) {
+    .bch-kpi-grid,
+    [data-bch-grid="kpi"] {
+        grid-template-columns: 1fr !important;
+        gap: 0.5rem !important;
+    }
+    .bch-er-metrics,
+    [data-bch-grid="er-metrics"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+    .bch-ward-grid,
+    [data-bch-grid="wards"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+    .bch-overview-hub,
+    [data-bch-grid="overview"] {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/* Reduced motion — respect OS-level accessibility preference (WCAG 2.3.3) */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* High contrast mode — Windows High Contrast + forced colors */
+@media (forced-colors: active) {
+    .glass-card,
+    .recharts-tooltip-wrapper {
+        border: 1px solid CanvasText !important;
+    }
+}
+
 @keyframes spin {
     0% {
         transform: rotate(0deg);

@@ -12,13 +12,16 @@ import { getCalibrated, getCalibrationMeta } from '../ai/calibration.js';
 import { getAlertStatus } from '../monitoring/alerts.js';
 import { getMetricsJSON } from '../monitoring/metrics.js';
 import logger from '../logger.js';
+import { validateQuery, validateParams } from '../middleware/validate.js';
+import { exportDatasetParams, exportMonthsQuery } from '../middleware/schemas.js';
+import { safeError } from '../lib/safeError.js';
 
 const router = Router();
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 1. CSV EXPORT — Download any KPI dataset as CSV
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/export/:dataset', async (req, res) => {
+router.get('/export/:dataset', validateParams(exportDatasetParams), validateQuery(exportMonthsQuery), async (req, res) => {
   try {
     const { dataset } = req.params;
     const { months = 6 } = req.query;
@@ -115,7 +118,7 @@ router.get('/export/:dataset', async (req, res) => {
     res.send(csv);
   } catch (err) {
     logger.error('Export failed', { error: err.message, dataset: req.params.dataset });
-    res.status(500).json({ error: err.message });
+    safeError(res, err, 'Executive');
   }
 });
 
@@ -141,7 +144,7 @@ router.get('/export', (req, res) => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 2. BENCHMARK — Compare KPIs vs HA Thailand National Standards
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/benchmark', cached('exec_benchmark_v2', 3600000, async () => {
+router.get('/benchmark', cached('exec_benchmark_v6_lwbs_clinical', 3600000, async () => {
   // Fetch real data from MVs and warehouse
   const [ipdData, mortalityData, erLWBS, revData] = await Promise.all([
     dbQueryOne(`
@@ -163,15 +166,22 @@ router.get('/benchmark', cached('exec_benchmark_v2', 3600000, async () => {
         AND ipt.ward != '06'
     `, [], { timeoutMs: 20000 }),
 
-    // ER LWBS
+    // ER LWBS via outcome-based proxy (er_dch_type NULL 100% at BCH).
     dbQueryOne(`
       SELECT
         COUNT(*) AS total_visits,
-        ROUND(AVG(CASE WHEN door_to_doctor_second > 0 THEN door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
-        ROUND(SUM(CASE WHEN er_dch_type IN ('4','5') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS lwbs_pct,
-        ROUND(SUM(CASE WHEN er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS critical_pct
-      FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
-    `, [], { timeoutMs: 10000 }),
+        ROUND(AVG(CASE WHEN e.door_to_doctor_second > 0 THEN e.door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
+        ROUND(SUM(CASE
+          WHEN e.door_to_doctor_second IS NULL
+           AND e.finish_time IS NOT NULL
+           AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 10
+           AND NOT EXISTS (SELECT 1 FROM ovst o JOIN an_stat a ON a.hn = o.hn WHERE o.vn = e.vn AND a.regdate = e.vstdate)
+           AND NOT EXISTS (SELECT 1 FROM referout r WHERE r.vn = e.vn AND r.refer_date BETWEEN e.vstdate AND DATE_ADD(e.vstdate, INTERVAL 1 DAY))
+           AND NOT EXISTS (SELECT 1 FROM opitemrece p WHERE p.vn = e.vn)
+          THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS lwbs_pct,
+        ROUND(SUM(CASE WHEN e.er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS critical_pct
+      FROM er_regist e WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    `, [], { timeoutMs: 15000 }),
 
     // (bed count removed — uses KPI.ipd.total_beds = 120)
     Promise.resolve(null),
@@ -367,7 +377,7 @@ router.get('/report', cached('exec_report_v2', 1800000, async () => {
     // ── Top Diagnoses ──
     top_diseases: (topDiseases || []).slice(0, 10).map(d => ({
       icd10: d.icd10 || d.code,
-      name: d.name || d.tname || d.icd10_name,
+      name: d.name || d.tname || d.name,
       count: Number(d.visit_count || d.count || d.cnt || 0),
     })),
 
@@ -418,7 +428,7 @@ function _generateActionItems({ occupancy, avgLOS, criticalAlerts, monthlyRevTot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 4. ENHANCED BSC — Full Balanced Scorecard with Trends
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-router.get('/bsc', cached('exec_bsc_v3', 1800000, async () => {
+router.get('/bsc', cached('exec_bsc_v7_lwbs_clinical', 1800000, async () => {
   const [financial, ipdStats, erStats, staffStats, revTrend] = await Promise.all([
     dbQueryOne(`
       SELECT ROUND(SUM(income)) AS revenue, ROUND(SUM(paid_money)) AS collected,
@@ -427,22 +437,41 @@ router.get('/bsc', cached('exec_bsc_v3', 1800000, async () => {
       FROM vn_stat WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND income > 0
     `, [], { timeoutMs: 10000 }),
 
+    // Mortality split: overall + unexpected (exclude Z51.5 palliative as best-available DNR proxy).
+    // CMI renamed to avg_rw (since SQL is AVG(rw) — not weighted true CMI).
     dbQueryOne(`
       SELECT COUNT(*) AS discharges,
         ROUND(AVG(DATEDIFF(ipt.dchdate, ipt.regdate)), 1) AS alos,
-        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 3) AS cmi,
+        ROUND(AVG(CASE WHEN a.rw > 0 THEN a.rw END), 3) AS avg_rw,
+        ROUND(STDDEV(CASE WHEN a.rw > 0 THEN a.rw END), 3) AS rw_stddev,
         ROUND(SUM(CASE WHEN ipt.dchtype IN ('09','9') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS mortality_pct,
+        ROUND(SUM(CASE
+          WHEN ipt.dchtype IN ('09','9')
+           AND NOT EXISTS (
+             SELECT 1 FROM iptdiag d WHERE d.an = ipt.an
+             AND (d.icd10 LIKE 'Z51.5%' OR d.icd10 = 'Z515')
+           )
+          THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS mortality_unexpected_pct,
         ROUND(SUM(CASE WHEN TIME(ipt.dchtime) < '12:00:00' AND ipt.dchtime IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 1) AS dch_before_noon_pct
       FROM ipt LEFT JOIN an_stat a ON ipt.an = a.an
       WHERE ipt.dchdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND ipt.dchdate IS NOT NULL AND ipt.ward != '06'
-    `, [], { timeoutMs: 15000 }),
+    `, [], { timeoutMs: 20000 }),
 
+    // LWBS via outcome-based proxy — er_dch_type is NULL 100% at BCH, so direct field unusable.
+    // Definition: finished visit < 15 min with no doctor contact AND no admit AND no refer.
     dbQueryOne(`
       SELECT COUNT(*) AS visits,
-        ROUND(AVG(CASE WHEN door_to_doctor_second > 0 THEN door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
-        ROUND(SUM(CASE WHEN er_dch_type IN ('4','5') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS lwbs_pct
-      FROM er_regist WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-    `, [], { timeoutMs: 10000 }),
+        ROUND(AVG(CASE WHEN e.door_to_doctor_second > 0 THEN e.door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
+        ROUND(SUM(CASE
+          WHEN e.door_to_doctor_second IS NULL
+           AND e.finish_time IS NOT NULL
+           AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 10
+           AND NOT EXISTS (SELECT 1 FROM ovst o JOIN an_stat a ON a.hn = o.hn WHERE o.vn = e.vn AND a.regdate = e.vstdate)
+           AND NOT EXISTS (SELECT 1 FROM referout r WHERE r.vn = e.vn AND r.refer_date BETWEEN e.vstdate AND DATE_ADD(e.vstdate, INTERVAL 1 DAY))
+           AND NOT EXISTS (SELECT 1 FROM opitemrece p WHERE p.vn = e.vn)
+          THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS lwbs_pct
+      FROM er_regist e WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    `, [], { timeoutMs: 15000 }),
 
     dbQueryOne(`
       SELECT COUNT(DISTINCT doctor) AS doctors, COUNT(DISTINCT staff) AS staff
@@ -455,9 +484,11 @@ router.get('/bsc', cached('exec_bsc_v3', 1800000, async () => {
   ]);
 
   // Score calculations (0-100)
+  // clinScore now uses mortality_unexpected_pct (excludes Z51.5 palliative) — fairer for ward case-mix.
   const finScore = Math.min(100, Math.round(Number(financial?.collection_rate || 0)));
+  const mortalityForScore = Number(ipdStats?.mortality_unexpected_pct ?? ipdStats?.mortality_pct ?? 0);
   const clinScore = Math.min(100, Math.max(0, Math.round(
-    100 - (Number(ipdStats?.mortality_pct || 0)) * 15 - Math.max(0, (Number(ipdStats?.alos || 4) - KPI.ipd.alos_target_days)) * 10
+    100 - mortalityForScore * 15 - Math.max(0, (Number(ipdStats?.alos || 4) - KPI.ipd.alos_target_days)) * 10
   )));
   const opsScore = Math.min(100, Math.max(0, Math.round(
     (Number(ipdStats?.dch_before_noon_pct || 50)) * 0.5 + (100 - Math.min(100, Number(erStats?.avg_ttd_min || 15) * 3)) * 0.5
@@ -477,8 +508,10 @@ router.get('/bsc', cached('exec_bsc_v3', 1800000, async () => {
         id: 'financial', name: 'Financial (การเงิน)', icon: '💰', score: finScore,
         grade: finScore >= 85 ? 'A' : finScore >= 70 ? 'B' : finScore >= 55 ? 'C' : 'D',
         kpis: [
-          { name: 'รายได้ 30 วัน', value: Number(financial?.revenue || 0), format: 'currency' },
-          { name: 'อัตราจัดเก็บ', value: Number(financial?.collection_rate || 0), format: 'pct', target: KPI.finance.collection_rate_good_pct },
+          { name: 'รายได้ตามบิล (Billed)', value: Number(financial?.revenue || 0), format: 'currency', note: 'SUM(vn_stat.income) — ยอดเรียกเก็บ ไม่ใช่ยอดได้รับจริง' },
+          { name: 'เก็บได้จริง (Collected)', value: Number(financial?.collected || 0), format: 'currency', note: 'SUM(vn_stat.paid_money) — ยอดที่ได้รับจริงในช่วง' },
+          { name: 'ส่วนต่าง (Outstanding)', value: Math.max(0, Number(financial?.revenue || 0) - Number(financial?.collected || 0)), format: 'currency', note: 'รายได้ค้างเก็บ — ส่งเบิกแต่ยังไม่ได้รับ' },
+          { name: 'อัตราจัดเก็บ', value: Number(financial?.collection_rate || 0), format: 'pct', target: KPI.finance.collection_rate_good_pct, lower_better: false },
           { name: 'จำนวน Visit', value: Number(financial?.visits || 0), format: 'number' },
           { name: 'ผู้ป่วยไม่ซ้ำ', value: Number(financial?.patients || 0), format: 'number' },
         ],
@@ -487,9 +520,11 @@ router.get('/bsc', cached('exec_bsc_v3', 1800000, async () => {
         id: 'clinical', name: 'Clinical Quality (คุณภาพ)', icon: '🏥', score: clinScore,
         grade: clinScore >= 85 ? 'A' : clinScore >= 70 ? 'B' : clinScore >= 55 ? 'C' : 'D',
         kpis: [
-          { name: 'อัตราตาย', value: Number(ipdStats?.mortality_pct || 0), format: 'pct', target: 2.0, lower_better: true },
+          { name: 'อัตราตาย (รวม)', value: Number(ipdStats?.mortality_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'รวมทุก discharge รหัส 09/9' },
+          { name: 'อัตราตาย (ไม่นับ Palliative)', value: Number(ipdStats?.mortality_unexpected_pct || 0), format: 'pct', target: 2.0, lower_better: true, note: 'ตัด Z51.5 (palliative care) ออก' },
           { name: 'ALOS', value: Number(ipdStats?.alos || 0), format: 'decimal', unit: 'วัน', target: KPI.ipd.alos_target_days, lower_better: true },
-          { name: 'CMI', value: Number(ipdStats?.cmi || 0), format: 'decimal', target: 0.8 },
+          { name: 'Avg RW (CMI proxy)', value: Number(ipdStats?.avg_rw || 0), format: 'decimal', target: 0.8, note: 'AVG(rw) — ไม่ใช่ true CMI; ดู rw_stddev ประกอบ' },
+          { name: 'RW Stddev', value: Number(ipdStats?.rw_stddev || 0), format: 'decimal', note: 'ความแปรปรวนของ case-mix' },
           { name: 'Discharge จำนวน', value: Number(ipdStats?.discharges || 0), format: 'number' },
         ],
       },

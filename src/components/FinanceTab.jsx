@@ -239,8 +239,31 @@ function FinanceTab() {
                 const todayShort = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
                 const yearLabel = `ปีงบ ${new Date().getFullYear() + 543}`;
 
+                // Task 1.7 — Revenue: Billed vs Collected breakdown (Phase G policy: full baht).
+                const billedBaht = rev;
+                const collectedBaht = Math.round(rev * (collectionRate / 100));
+                const outstandingBaht = Math.max(0, billedBaht - collectedBaht);
+                const fmtBaht = (n) => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+
                 return (
                     <KPIDescriptionCards kpis={[
+                        {
+                            label: 'รายได้ตามบิล vs เก็บได้จริง', thLabel: 'Revenue Billed vs Collected',
+                            value: `${fmtBaht(collectedBaht)} / ${fmtBaht(billedBaht)} บาท`,
+                            color: collectionRate >= 90 ? '#059669' : collectionRate >= 75 ? '#f59e0b' : '#e11d48',
+                            icon: '💵',
+                            sub: `ค้างเก็บ ${fmtBaht(outstandingBaht)} บาท · เก็บได้ ${collectionRate}%`,
+                            desc: 'เปรียบเทียบยอดเรียกเก็บ (Billed) กับยอดที่ได้รับจริง (Collected)',
+                            meaning: 'Billed = SUM(vn_stat.income) ส่งเบิก. Collected = SUM(vn_stat.paid_money) รับจริง. ส่วนต่างคือลูกหนี้ค้างรับ — โดยเฉพาะสปสช./SSO ที่มี denial หรือ pending claim',
+                            calc: 'Billed - Collected = Outstanding receivable. Collection % = Collected ÷ Billed × 100',
+                            dataSource: 'vn_stat.income + vn_stat.paid_money (HOSxP XE)',
+                            period: `📅 ${yearLabel}`,
+                            target: 'Collection ≥ 95%',
+                            benchmark: 'MGMA ≥95% · รพช.รัฐ ≥85% (สธ.)',
+                            aiTip: outstandingBaht > rev * 0.2
+                                ? `⚠️ ลูกหนี้ค้างรับสูง (${fmtBaht(outstandingBaht)} บาท) — เร่งติดตามสิทธิ UC/SSO ที่ pending`
+                                : 'อัตราจัดเก็บอยู่ในเกณฑ์ — ติดตาม Claim Denial pattern',
+                        },
                         {
                             label: 'Revenue Growth', thLabel: 'อัตราการเติบโตรายได้',
                             value: growthRate != null ? `${growthRate}%` : '—', color: growthRate >= 5 ? '#059669' : growthRate >= 0 ? '#f59e0b' : '#e11d48', icon: '📈',

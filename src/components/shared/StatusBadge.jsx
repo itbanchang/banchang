@@ -1,5 +1,6 @@
 // ============================================================
 // StatusBadge — Priority/Severity Badge Component
+// Sprint 1 Task 2.3 — WCAG triple-cue (emoji + text + color) + ARIA.
 // ============================================================
 import React from 'react';
 
@@ -10,11 +11,11 @@ const StatusBadge = ({
   size = 'sm', // sm, md, lg
 }) => {
   const config = {
-    HIGH: { bg: 'rgba(244,63,94,.15)', text: '#f43f5e', icon: '🔴', label: 'HIGH' },
-    MEDIUM: { bg: 'rgba(245,158,11,.15)', text: '#f59e0b', icon: '🟡', label: 'MEDIUM' },
-    LOW: { bg: 'rgba(16,185,129,.15)', text: '#10b981', icon: '🟢', label: 'LOW' },
-    INFO: { bg: 'rgba(59,130,246,.15)', text: '#3b82f6', icon: '🔵', label: 'INFO' },
-    SUCCESS: { bg: 'rgba(16,185,129,.15)', text: '#10b981', icon: '✅', label: 'SUCCESS' },
+    HIGH:    { bg: 'rgba(244,63,94,.15)',  text: '#f43f5e', icon: '🔴', label: 'HIGH',    aria: 'ระดับสูง / วิกฤต' },
+    MEDIUM:  { bg: 'rgba(245,158,11,.15)', text: '#f59e0b', icon: '🟡', label: 'MEDIUM',  aria: 'ระดับปานกลาง / เฝ้าระวัง' },
+    LOW:     { bg: 'rgba(16,185,129,.15)', text: '#10b981', icon: '🟢', label: 'LOW',     aria: 'ระดับต่ำ / ปกติ' },
+    INFO:    { bg: 'rgba(59,130,246,.15)', text: '#3b82f6', icon: '🔵', label: 'INFO',    aria: 'ข้อมูล' },
+    SUCCESS: { bg: 'rgba(16,185,129,.15)', text: '#10b981', icon: '✅', label: 'SUCCESS', aria: 'สำเร็จ / ผ่าน' },
   };
 
   const c = config[level] || config.MEDIUM;
@@ -22,6 +23,8 @@ const StatusBadge = ({
 
   return (
     <span
+      role="status"
+      aria-label={`${c.aria}: ${text || c.label}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -37,7 +40,7 @@ const StatusBadge = ({
         whiteSpace: 'nowrap',
       }}
     >
-      {icon && <span>{c.icon}</span>}
+      {icon && <span aria-hidden="true">{c.icon}</span>}
       <span>{text || c.label}</span>
     </span>
   );

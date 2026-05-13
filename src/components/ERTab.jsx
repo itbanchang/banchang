@@ -36,6 +36,9 @@ function ERTab() {
     const erAnalytics = state.erAnalytics;
     const erResusAlert = state.erResusAlert;
     const erDiversionStatus = state.erDiversionStatus;
+    const erDataQuality = state.erDataQuality;
+    const erPatientSat = state.erPatientSat;
+    const erTrends = state.erTrends;
     const loading = state.loading;
 
     // Resus banner auto-dismiss after 5 minutes
@@ -51,10 +54,14 @@ function ERTab() {
     useEffect(() => {
         fetchData('erSurge', '/api/ai/er-surge');
         fetchData('erTodayPatients', '/api/er/today-patients');
+        fetchData('erTriageStats', '/api/er/triage-stats');
         fetchData('erBottlenecks', '/api/er/flow-bottlenecks');
         fetchData('erAnalytics', '/api/er/analytics');
         fetchData('erRevenueFiscal', '/api/er/revenue-fiscal');
         fetchData('erDiversionStatus', '/api/er/diversion-status');
+        fetchData('erDataQuality', '/api/er/data-quality');
+        fetchData('erPatientSat', '/api/satisfaction/summary?department=ER&days=30');
+        fetchData('erTrends', '/api/er/trends?months=12');
     }, [fetchData]);
 
     const hourlyChart = useMemo(() => {
@@ -575,35 +582,91 @@ function ERTab() {
                 const epi = a.epi ?? 0;
                 const todayShort = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
 
+                // ━━ Phase B — Tier-1 KPIs per MoPH ECS ━━
+                const ret48 = a.return_48h_rate ?? 0;
+                const overTri  = a.triage_accuracy?.over_triage_pct  ?? 0;
+                const underTri = a.triage_accuracy?.under_triage_pct ?? 0;
+                const refL12     = a.time_to_refer?.l12_within_30m_pct ?? 0;
+                const ref12Total = a.time_to_refer?.l12_total ?? 0;
+                const ref12Within = a.time_to_refer?.l12_within_30m ?? 0;
+                const losWithin4hrPct = a.ed_los?.within_4hr_pct ?? 0;
+                const avgLos = a.ed_los?.avg_los_min ?? 0;
+                const ctTotal = a.door_to_ct?.total ?? 0;
+                const ctAvgMin = a.door_to_ct?.avg_min ?? 0;
+                const ctWithin25 = a.door_to_ct?.within_25m ?? 0;
+                const ctWithin25Pct = a.door_to_ct?.within_25m_pct ?? 0;
+
+                // ━━ Phase H3 — backup TTD (excludes shadow-copied timestamps) ━━
+                const avgTTDValid = a.avg_time_to_doctor_valid_only ?? 0;
+                const validTTDCount = a.valid_ttd_count ?? 0;
+                // TTD Validity % — % of visits where door-to-doctor was time-stamped separately.
+                // At BCH this is currently ~1.5% (shadow-copy issue). If <50%, the TTD/SLA/LWBS
+                // numbers are not clinically meaningful → show disclaimer on those cards.
+                const ttdValidityField = (erDataQuality?.fields || []).find(f => f.id === 'ttd_validity');
+                const ttdValidPct = ttdValidityField?.compliance_pct ?? null;
+                const dqSuspect = ttdValidPct !== null && ttdValidPct < 50;
+                const dqDisclaimer = dqSuspect
+                    ? `⚠️ Data Quality ต่ำ (TTD บันทึกแยกขั้นตอนเพียง ${ttdValidPct}%) — ตัวเลขนี้ยังตัดสินใจไม่ได้ ดู Data Quality Monitor`
+                    : null;
+
+                // ━━ Phase D — Tier 2/3 KPIs per MoPH ECS ━━
+                const edMortPct = a.ed_mortality?.rate_pct ?? 0;             // within 24h (broader)
+                const edMortEdOnlyPct = a.ed_mortality?.ed_only_rate_pct ?? 0; // ตายใน ED (ACEP strict)
+                const edMortCount24h = a.ed_mortality?.within_24h_count ?? 0;
+                const edMortCountEdOnly = a.ed_mortality?.same_day_count ?? 0;
+                const stemiTotal = a.stemi_bundle?.total_cases_365d ?? 0;
+                const stemiBundlePct = a.stemi_bundle?.overall_bundle_pct ?? 0;
+                const stemiAsa = a.stemi_bundle?.asa_pct ?? 0;
+                const stemiClop = a.stemi_bundle?.clopidogrel_pct ?? 0;
+                const stemiStatin = a.stemi_bundle?.statin_pct ?? 0;
+                const referBreakdown = a.refer_breakdown || { total: 0, time_critical_pct: 0, time_critical_count: 0, by_level: [] };
+                const repeat28Pct = a.repeat_er_28d?.rate_pct ?? 0;
+                const repeat28Count = a.repeat_er_28d?.same_dx_count ?? 0;
+
+                // ━━ Phase E Tier 3 — Patient Satisfaction ━━
+                const ps = erPatientSat || {};
+                const psCount = Number(ps.response_count || 0);
+                const psAvg = Number(ps.avg_overall || 0);
+                const psSatisfiedPct = Number(ps.satisfied_pct || 0);
+
                 return (
                     <KPIDescriptionCards kpis={[
                         {
                             label: 'Door-to-Doctor', thLabel: 'เวลารอพบแพทย์เฉลี่ย',
-                            value: `${avgTTD} min`, color: avgTTD <= 10 ? '#059669' : avgTTD <= 20 ? '#f59e0b' : '#e11d48', icon: '⏱️',
+                            value: `${avgTTD} min`,
+                            color: dqSuspect ? '#94a3b8' : avgTTD <= 10 ? '#059669' : avgTTD <= 20 ? '#f59e0b' : '#e11d48',
+                            icon: '⏱️',
+                            sub: validTTDCount > 0
+                                ? `เฉพาะเคสบันทึกแยก: ${avgTTDValid} min (${validTTDCount} เคส)`
+                                : null,
                             desc: `P90: ${p90TTD} min | เฉลี่ย: ${avgTTD} min`,
                             meaning: 'เวลาเฉลี่ยตั้งแต่ผู้ป่วยเข้าประตู ER จนถึงได้พบแพทย์ ยิ่งน้อยยิ่งดี ลดความเสี่ยง Deterioration',
-                            calc: 'AVG(doctor_seen_time − enter_er_time) [minutes]',
-                            dataSource: 'er_regist + er_nursing_detail (HOSxP XE)',
+                            calc: 'AVG( COALESCE(door_to_doctor_second, TIMESTAMPDIFF(SECOND, enter_er_time, doctor_tx_time)) ) / 60',
+                            dataSource: 'er_regist (HOSxP XE)',
                             period: `📅 ข้อมูลวันนี้ ${todayShort}`,
                             target: '≤ 10 min (L1-2) / ≤ 30 min (L3)',
                             benchmark: 'JCI: ≤10m (Resus) | สปสช.: ≤30m',
-                            aiTip: avgTTD <= 15 ? 'ดีเยี่ยม — ผู้ป่วยพบแพทย์เร็ว' : 'ช้ากว่าเป้า — ตรวจสอบ Boarding และ Fast-track',
+                            aiTip: dqDisclaimer || (avgTTD <= 15 ? 'ดีเยี่ยม — ผู้ป่วยพบแพทย์เร็ว' : 'ช้ากว่าเป้า — ตรวจสอบ Boarding และ Fast-track'),
                         },
                         {
                             label: 'LWBS Rate', thLabel: 'อัตราออกก่อนพบแพทย์',
-                            value: `${lwbs}%`, color: lwbs <= 2 ? '#059669' : lwbs <= 5 ? '#f59e0b' : '#e11d48', icon: '🚶',
+                            value: `${lwbs}%`,
+                            color: dqSuspect ? '#94a3b8' : lwbs <= 2 ? '#059669' : lwbs <= 5 ? '#f59e0b' : '#e11d48',
+                            icon: '🚶',
                             desc: `ผู้ป่วยที่ออกก่อนได้รับการตรวจ (LWBS)`,
                             meaning: 'Left Without Being Seen — ผู้ป่วยออกก่อนตรวจ สะท้อนความเสี่ยงและความพึงพอใจของผู้ป่วย',
-                            calc: '(LWBS Patients ÷ Total ER Visits) × 100',
-                            dataSource: 'er_regist + ovst (HOSxP XE)',
+                            calc: 'doctor_tx_time IS NULL + finish_time IS NOT NULL + stay<15m + ไม่ admit + ไม่ refer (outcome-based proxy)',
+                            dataSource: 'er_regist + ovst + an_stat + referout (HOSxP XE)',
                             period: `📅 30 วันย้อนหลัง`,
                             target: '≤ 2%',
                             benchmark: 'ACEP: ≤2% | สปสช.: ≤5%',
-                            aiTip: lwbs <= 2 ? 'LWBS ต่ำ ผู้ป่วยพึงพอใจ' : 'สูงเกิน — จัด Re-assessment ทุก 20 นาที',
+                            aiTip: dqDisclaimer || (lwbs <= 2 ? 'LWBS ต่ำ ผู้ป่วยพึงพอใจ' : 'สูงเกิน — จัด Re-assessment ทุก 20 นาที'),
                         },
                         {
                             label: 'Triage SLA', thLabel: 'ความตรงเวลา Triage',
-                            value: `${sla}%`, color: sla >= 85 ? '#059669' : sla >= 70 ? '#f59e0b' : '#e11d48', icon: '✅',
+                            value: `${sla}%`,
+                            color: dqSuspect ? '#94a3b8' : sla >= 85 ? '#059669' : sla >= 70 ? '#f59e0b' : '#e11d48',
+                            icon: '✅',
                             desc: `ผู้ป่วยได้รับการตรวจตามระดับ Triage ตรงเวลา`,
                             meaning: 'สัดส่วนผู้ป่วยที่ได้รับการตรวจภายในเวลาที่กำหนดตามระดับ Triage (L1: ทันที, L2: ≤15m, L3: ≤30m)',
                             calc: '(Cases within SLA ÷ Total Cases) × 100 [แยกตาม Triage Level]',
@@ -611,15 +674,15 @@ function ERTab() {
                             period: `📅 ข้อมูลวันนี้ ${todayShort}`,
                             target: '≥ 85%',
                             benchmark: 'JCI: ≥90% | HA: ≥85%',
-                            aiTip: sla >= 85 ? 'SLA ดี — รักษาคุณภาพ' : 'ต่ำ — ตรวจสอบกำลังคนช่วงพีค',
+                            aiTip: dqDisclaimer || (sla >= 85 ? 'SLA ดี — รักษาคุณภาพ' : 'ต่ำ — ตรวจสอบกำลังคนช่วงพีค'),
                         },
                         {
                             label: 'Return Visit 72h', thLabel: 'กลับมาซ้ำภายใน 72 ชั่วโมง',
                             value: `${retVisit}%`, color: retVisit <= 3 ? '#059669' : retVisit <= 5 ? '#f59e0b' : '#e11d48', icon: '🔄',
                             desc: `กลับมาซ้ำ ${retVisit}% จาก ER ทั้งหมด`,
                             meaning: 'อัตราผู้ป่วยที่กลับมา ER ภายใน 72 ชั่วโมง สะท้อนคุณภาพการรักษาเบื้องต้น',
-                            calc: '(Return Visits 72h ÷ Total Discharges) × 100',
-                            dataSource: 'er_regist (HOSxP XE)',
+                            calc: '(Return Visits 72h ÷ Total ER Visits 30d) × 100',
+                            dataSource: 'er_regist + ovst (HOSxP XE — ผ่าน ovst.hn)',
                             period: `📅 30 วันย้อนหลัง`,
                             target: '≤ 3%',
                             benchmark: 'ACEP: ≤3% | HA: ≤5%',
@@ -627,7 +690,9 @@ function ERTab() {
                         },
                         {
                             label: 'EPI Score', thLabel: 'ดัชนีประสิทธิภาพ ER',
-                            value: `${epi}/100`, color: epi >= 80 ? '#059669' : epi >= 60 ? '#f59e0b' : '#e11d48', icon: '🧠',
+                            value: `${epi}/100`,
+                            color: dqSuspect ? '#94a3b8' : epi >= 80 ? '#059669' : epi >= 60 ? '#f59e0b' : '#e11d48',
+                            icon: '🧠',
                             sub: epi >= 80 ? 'ดีเยี่ยม' : epi >= 60 ? 'ปานกลาง' : 'ต้องปรับปรุง',
                             desc: `ER Performance Index — คะแนน AI รวม`,
                             meaning: 'คะแนนรวมประสิทธิภาพ ER จาก AI ถ่วงน้ำหนัก Time-to-Doc, SLA, LWBS, Return Visit',
@@ -636,11 +701,313 @@ function ERTab() {
                             period: `📅 ประมวลผล ${todayShort}`,
                             target: '≥ 80',
                             benchmark: 'BCH Internal: ≥80 = ดีเยี่ยม',
-                            aiTip: epi >= 80 ? 'ภาพรวมดีเยี่ยม' : 'ต้องปรับปรุง — ดู KPI ที่ต่ำสุด',
+                            aiTip: dqDisclaimer || (epi >= 80 ? 'ภาพรวมดีเยี่ยม' : 'ต้องปรับปรุง — ดู KPI ที่ต่ำสุด'),
+                        },
+                        // ━━ Phase B — MoPH ECS Tier-1 KPIs ━━
+                        {
+                            label: 'Re-visit 48h', thLabel: 'กลับมาซ้ำ 48 ชั่วโมง',
+                            value: `${ret48}%`,
+                            color: ret48 <= 3 ? '#059669' : ret48 <= 5 ? '#f59e0b' : '#e11d48',
+                            icon: '⏰',
+                            desc: `กลับมา ER ภายใน 48 ชม. ${ret48}%`,
+                            meaning: 'อัตราผู้ป่วยที่กลับมา ER ภายใน 48 ชั่วโมง — เกณฑ์หลักของ สธ. สำหรับคุณภาพการรักษาเบื้องต้น',
+                            calc: '(Return ≤48h ÷ Total ER Visits) × 100',
+                            dataSource: 'er_regist + ovst (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≤ 3%',
+                            benchmark: 'MoPH ECS: ≤3% | HA: ≤5%',
+                            aiTip: ret48 <= 3 ? 'ผ่านเกณฑ์ สธ.' : 'สูงเกิน — ทบทวน Discharge Criteria และ Follow-up Plan',
+                        },
+                        {
+                            label: 'Triage Accuracy', thLabel: 'ความแม่นยำคัดกรอง',
+                            value: `${overTri}% / ${underTri}%`,
+                            color: (overTri <= 15 && underTri <= 5) ? '#059669' : underTri > 5 ? '#e11d48' : '#f59e0b',
+                            icon: '🎯',
+                            sub: 'Over / Under',
+                            desc: `Over: ${overTri}% (L1-2 ไม่วิกฤต) · Under: ${underTri}% (L4-5 กลับวิกฤต)`,
+                            meaning: 'Over-triage = L1-2 ที่ไม่ได้ admit/refer (คัดเข้มเกินไป) · Under-triage = L4-5 ที่ลงเอย admit/refer (พลาดเคสรุนแรง)',
+                            calc: 'Over: % L1-2 ไม่มี critical outcome · Under: % L4-5 มี critical outcome',
+                            dataSource: 'er_regist + an_stat + referout (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: 'Over ≤ 15% · Under ≤ 5%',
+                            benchmark: 'MoPH ECS Service Plan',
+                            aiTip: underTri > 5
+                                ? '⚠️ Under-triage สูง — ผู้ป่วย L4-5 อาจ deteriorate, ทบทวน Triage Protocol'
+                                : overTri > 15
+                                    ? 'Over-triage สูง — สิ้นเปลืองทรัพยากร Resus'
+                                    : 'การ Triage แม่นยำตามมาตรฐาน',
+                        },
+                        {
+                            label: 'L1-2 Refer ≤30m', thLabel: 'ส่งต่อผู้ป่วยวิกฤตภายใน 30 นาที',
+                            value: `${refL12}%`,
+                            color: ref12Total < 3 ? '#94a3b8'
+                                : refL12 >= 90 ? '#059669'
+                                : refL12 >= 70 ? '#f59e0b' : '#e11d48',
+                            icon: '🚨',
+                            sub: ref12Total < 3 ? 'ข้อมูลน้อย' : `${ref12Within}/${ref12Total} ราย`,
+                            desc: `L1-2 (Resus/Emergency) ที่ refer call ภายใน 30 นาที`,
+                            meaning: 'เวลาที่ใช้ตั้งแต่ผู้ป่วยเข้า ER ถึงโทรประสาน Refer (สำหรับ Time-critical patient) — เกณฑ์ รพช. F2',
+                            calc: '(L1-2 Refers ≤30m ÷ Total L1-2 Refers) × 100',
+                            dataSource: 'er_regist + referout (HOSxP XE)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≥ 90%',
+                            benchmark: 'MoPH ECS F2: ≥90%',
+                            aiTip: ref12Total < 3
+                                ? `${ref12Total} ราย — ข้อมูลน้อย ดูแนวโน้มได้เท่านั้น`
+                                : refL12 >= 90 ? 'ระบบ Refer Time-Critical ได้มาตรฐาน'
+                                : 'ช้ากว่าเป้า — ทบทวน STEMI/Stroke Pathway และความพร้อมทีม Refer',
+                        },
+                        {
+                            label: 'ED LOS ≤4hr', thLabel: 'เวลารวมใน ER ≤ 4 ชั่วโมง',
+                            value: `${losWithin4hrPct}%`,
+                            color: losWithin4hrPct >= 90 ? '#059669' : losWithin4hrPct >= 75 ? '#f59e0b' : '#e11d48',
+                            icon: '⏳',
+                            sub: `เฉลี่ย ${avgLos} นาที`,
+                            desc: `ผู้ป่วย ER ที่อยู่ไม่เกิน 4 ชั่วโมง`,
+                            meaning: 'ED Length of Stay — เวลารวมตั้งแต่เข้าถึงจำหน่าย/Admit/Refer (เฉพาะเคสที่พบแพทย์)',
+                            calc: '(Visits ≤240m ÷ Total visits with doctor) × 100',
+                            dataSource: 'er_regist (doctor_tx_time IS NOT NULL)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≥ 90%',
+                            benchmark: 'MoPH ECS: ≥90%',
+                            aiTip: losWithin4hrPct >= 90 ? 'Throughput ผ่านเป้า' : 'มี Patient Boarding — ตรวจสอบ IPD bed availability',
+                        },
+                        {
+                            label: 'Door-to-CT ≤25m', thLabel: 'Stroke FT — CT ภายใน 25 นาที',
+                            value: ctTotal < 3 ? 'N too low' : `${ctWithin25Pct}%`,
+                            color: ctTotal < 3 ? '#94a3b8'
+                                : ctWithin25Pct >= 80 ? '#059669'
+                                : ctWithin25Pct >= 60 ? '#f59e0b' : '#e11d48',
+                            icon: '🧠',
+                            sub: ctTotal < 3 ? `${ctTotal} เคส` : `${ctWithin25}/${ctTotal} · avg ${ctAvgMin}m`,
+                            desc: `CT Brain Request ภายใน 25 นาที (Stroke Fast Track)`,
+                            meaning: 'เวลาตั้งแต่ผู้ป่วยถึง ER → ขอ CT Brain — มาตรฐาน Stroke Service Plan',
+                            calc: '(CT Brain orders ≤25m from arrival ÷ Total) × 100',
+                            dataSource: 'er_regist + xray_report (codes 234, 235)',
+                            period: `📅 30 วันย้อนหลัง`,
+                            target: '≤ 25 นาที, ≥ 80% pass',
+                            benchmark: 'MoPH Stroke FT: ≤25 นาที',
+                            aiTip: ctTotal < 3
+                                ? `${ctTotal} เคส — ข้อมูลน้อยเกินไปสำหรับ benchmark`
+                                : ctWithin25Pct >= 80 ? 'Pathway ทำงานได้ตามเป้า'
+                                : 'ปรับลำดับงานทีม X-ray + ความพร้อม Radiologist',
+                        },
+                        // ━━ Phase D — Tier 2 Clinical Quality ━━
+                        {
+                            label: 'ED Mortality', thLabel: 'อัตราเสียชีวิตใน ER',
+                            value: `${edMortEdOnlyPct}% / ${edMortPct}%`,
+                            color: edMortPct <= 0.5 ? '#10b981' : edMortPct <= 1 ? '#f59e0b' : '#ef4444',
+                            icon: '⚰️',
+                            sub: `ตายใน ED ${edMortCountEdOnly} ราย · ตายใน 24h ${edMortCount24h} ราย (90 วัน)`,
+                            desc: '2 มุมมอง: ตายใน ED (ACEP strict) | ตายใน 24 ชม. (BCH default)',
+                            meaning: 'ตัวซ้าย = เสียชีวิตขณะอยู่ ER (vstdate เดียวกับ deathday). ตัวขวา = เสียชีวิตภายใน 24 ชม. หลัง visit ใช้สำหรับ Patient Safety + STEMI/Stroke/Sepsis pathway review',
+                            calc: 'ed_only = (deathday = vstdate / total) ; 24h = (deathday BETWEEN vstdate AND +1d / total)',
+                            dataSource: 'er_regist + patient.deathday (HOSxP XE)',
+                            period: '📅 90 วันย้อนหลัง',
+                            target: '≤ 0.5%',
+                            benchmark: 'MoPH ECS: ≤ 0.5% (รพช.) · ACEP: track ED-only',
+                            aiTip: edMortPct <= 0.5
+                                ? 'ผ่านเกณฑ์ Patient Safety'
+                                : 'ทบทวน Critical Care Pathway + ระบบ Resuscitation',
+                        },
+                        {
+                            label: 'STEMI Pre-Refer Bundle', thLabel: 'มาตรการก่อน Refer ผู้ป่วย STEMI',
+                            value: stemiTotal > 0 ? `${stemiBundlePct}%` : 'N too low',
+                            color: stemiTotal < 5 ? '#94a3b8'
+                                : stemiBundlePct >= 95 ? '#10b981'
+                                : stemiBundlePct >= 75 ? '#f59e0b' : '#ef4444',
+                            icon: '🫀',
+                            sub: `STEMI ${stemiTotal} เคส (365วัน)`,
+                            desc: 'Bundle ASA + Clopidogrel + Statin ก่อน refer (Cardiac Pathway)',
+                            meaning: 'ผู้ป่วย STEMI (ICD-10 I21.x) ที่ได้รับครบ ASA + Clopidogrel + Statin ก่อนส่งต่อ — มาตรฐาน Cardiac Pathway',
+                            calc: `ASA ${stemiAsa}% · Clopidogrel ${stemiClop}% · Statin ${stemiStatin}% — เฉลี่ย 3 ตัว`,
+                            dataSource: 'er_regist + ovstdiag (I21) + opitemrece (HOSxP XE)',
+                            period: '📅 365 วันย้อนหลัง',
+                            target: '≥ 95% ทุกองค์ประกอบ',
+                            benchmark: 'MoPH Cardiac Service Plan',
+                            aiTip: stemiTotal < 5
+                                ? `${stemiTotal} เคส STEMI — ข้อมูลน้อยเกินสำหรับ benchmark`
+                                : stemiStatin < 50
+                                    ? `⚠️ Statin ต่ำ ${stemiStatin}% — ทบทวน STEMI checklist ก่อน refer`
+                                    : stemiBundlePct >= 95
+                                        ? 'Bundle ครบมาตรฐาน'
+                                        : 'ปรับปรุง Bundle compliance — ทบทวน Pathway',
+                        },
+                        // ━━ Phase D — Tier 3 Operational ━━
+                        {
+                            label: 'Refer-out by ระดับ', thLabel: 'การส่งต่อแยกตามระดับ ECS',
+                            value: `${referBreakdown.time_critical_pct}%`,
+                            color: '#8b5cf6',
+                            icon: '📤',
+                            sub: `รวม ${referBreakdown.total} ราย · TC ${referBreakdown.time_critical_count}`,
+                            desc: 'การ Refer แยกตาม MoPH ECS 5 ระดับ (Life-threatening → Non-acute)',
+                            meaning: 'สัดส่วนการ Refer ผู้ป่วยตามระดับความฉุกเฉิน MoPH ECS — ติดตามภาพรวมขีดความสามารถ รพ.',
+                            calc: '% Time-critical (L1+L2) จาก Total Refer · '
+                                + (referBreakdown.by_level || []).map(e => `L${e.type_id}: ${e.count}`).join(' · '),
+                            dataSource: 'er_regist + referout + referout_emergency_type (HOSxP XE)',
+                            period: '📅 30 วันย้อนหลัง',
+                            target: 'ติดตามแนวโน้ม',
+                            benchmark: 'MoPH ECS 5 ระดับ',
+                            aiTip: referBreakdown.time_critical_pct > 40
+                                ? `Time-critical ${referBreakdown.time_critical_pct}% — สัดส่วนสูง ตรวจสอบขีดความสามารถ`
+                                : 'ภาพรวมการ Refer เป็นไปตามที่คาด',
+                        },
+                        {
+                            label: 'Repeat ER 28d', thLabel: 'กลับมา ER ภายใน 28 วัน โรคเดียวกัน',
+                            value: `${repeat28Pct}%`,
+                            color: repeat28Pct <= 5 ? '#10b981' : repeat28Pct <= 10 ? '#f59e0b' : '#ef4444',
+                            icon: '🔁',
+                            sub: `${repeat28Count} ราย`,
+                            desc: `กลับมาด้วย ICD-10 หมวดเดียวกันภายใน 28 วัน ${repeat28Pct}%`,
+                            meaning: 'อัตราผู้ป่วยที่กลับมา ER ภายใน 28 วันด้วยกลุ่มโรคเดิม — สะท้อนคุณภาพการรักษา + Discharge planning',
+                            calc: '(Repeat ER ภายใน 28 วัน + ICD-10 chapter เดียวกัน ÷ Total ER Visits) × 100',
+                            dataSource: 'er_regist + ovstdiag (HOSxP XE)',
+                            period: '📅 30 วันย้อนหลัง',
+                            target: '≤ 5% (ติดตาม)',
+                            benchmark: 'MoPH Quality (Chronic disease management)',
+                            aiTip: repeat28Pct > 10
+                                ? '🔴 สูงผิดปกติ — ทบทวน Discharge plan, Follow-up clinic, Chronic disease pathway'
+                                : repeat28Pct > 5
+                                    ? 'สูงกว่าเป้า — ดูกลุ่มโรคที่กลับซ้ำบ่อย'
+                                    : 'ผ่านเกณฑ์',
+                        },
+                        // ━━ Phase E Tier 3 — Patient Satisfaction ━━
+                        {
+                            label: 'Patient Satisfaction', thLabel: 'ความพึงพอใจของผู้ป่วย',
+                            value: psCount > 0 ? `${psAvg.toFixed(1)}/5` : 'ยังไม่มีผล',
+                            color: psCount === 0 ? '#94a3b8'
+                                : psSatisfiedPct >= 85 ? '#10b981'
+                                : psSatisfiedPct >= 70 ? '#f59e0b' : '#ef4444',
+                            icon: '⭐',
+                            sub: psCount > 0 ? `${psSatisfiedPct}% พอใจ · ${psCount} ผล` : 'รอแสกน QR ที่จุดบริการ',
+                            desc: psCount > 0
+                                ? `ผู้ป่วยพึงพอใจ ${psSatisfiedPct}% (${ps.satisfied_count || 0}/${psCount})`
+                                : 'ยังไม่มีผลตอบรับ — พิมพ์ QR "/survey.html?dept=ER" ติดจุดบริการ ER',
+                            meaning: 'คะแนนเฉลี่ยจากแบบสอบถามแสกน QR หลังออกจาก ER (1-5 ดาว) — มาตรฐาน HA ติดตามคุณภาพในมุมมองผู้ป่วย',
+                            calc: 'AVG(overall_score) · % ที่ให้ ≥ 4 ดาว = พอใจ',
+                            dataSource: 'dw_patient_satisfaction (warehouse SQLite)',
+                            period: '📅 30 วันย้อนหลัง',
+                            target: '≥ 85% พอใจ',
+                            benchmark: 'HA: ≥ 85% | สรพ.: ≥ 80%',
+                            aiTip: psCount === 0
+                                ? 'พิมพ์ QR code → /survey.html?dept=ER ติดที่จุดบริการ เพื่อเก็บข้อมูล real-time'
+                                : psSatisfiedPct >= 85
+                                    ? 'คะแนนดีเยี่ยม — รักษามาตรฐานต่อไป'
+                                    : 'ทบทวนคำติชม + ปัจจัยที่ทำให้คะแนนลด',
                         },
                     ]} />
                 );
             })()}
+
+            {/* ━━━━━━ 🔍 Data Quality Monitor — ติดตามการกรอกข้อมูล HOSxP ━━━━━━ */}
+            {erDataQuality && Array.isArray(erDataQuality.fields) && (
+                <div style={{ marginTop: '8px' }}>
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: '12px',
+                        margin: '20px 0 12px', paddingBottom: '10px',
+                        borderBottom: '1px solid rgba(124,58,237,.20)',
+                    }}>
+                        <div style={{ width: '4px', height: '32px', background: '#8b5cf6', borderRadius: '99px' }} />
+                        <span style={{ fontSize: '22px' }}>🔍</span>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: '14px', fontWeight: 900, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                                Data Quality Monitor — ติดตามการกรอกข้อมูล
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, marginTop: '2px' }}>
+                                ฟิลด์ HOSxP ที่มีอยู่แต่ยังไม่ถูกกรอก — เป็น KPI ที่ unlock ได้เมื่อทีมเริ่มกรอก
+                            </div>
+                        </div>
+                        <span style={{
+                            fontSize: '11px', fontWeight: 600, color: '#8b5cf6',
+                            background: 'rgba(124,58,237,.15)',
+                            padding: '5px 12px', borderRadius: '99px', whiteSpace: 'nowrap',
+                        }}>
+                            ค่าเฉลี่ย {erDataQuality.overall_compliance_pct || 0}%
+                        </span>
+                    </div>
+
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
+                        gap: '12px',
+                    }}>
+                        {erDataQuality.fields.map((field, i) => {
+                            const passed = field.compliance_pct >= field.target_pct;
+                            const color = field.total === 0 ? '#94a3b8'
+                                : passed ? '#10b981'
+                                : field.compliance_pct >= field.target_pct * 0.5 ? '#f59e0b'
+                                : '#ef4444';
+                            return (
+                                <div key={i} className="glass-card" style={{
+                                    padding: '16px', borderLeft: `4px solid ${color}`,
+                                    borderRadius: '12px',
+                                    display: 'flex', flexDirection: 'column', gap: '10px',
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                                                {field.name_th}
+                                            </div>
+                                            <div style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 600, marginTop: '2px', fontFamily: "'JetBrains Mono', monospace" }}>
+                                                {field.table}
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <div style={{ fontSize: '24px', fontWeight: 900, color, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                                                {field.compliance_pct}%
+                                            </div>
+                                            <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--md-text-tertiary)', marginTop: '2px' }}>
+                                                {field.filled}/{field.total}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style={{ height: '6px', borderRadius: '99px', background: `${color}15`, overflow: 'hidden' }}>
+                                        <div style={{
+                                            height: '100%', width: `${Math.min(100, field.compliance_pct)}%`,
+                                            background: color, borderRadius: '99px', transition: 'width 0.6s',
+                                        }} />
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--md-text-secondary)', lineHeight: 1.5 }}>
+                                        <div style={{ fontWeight: 600 }}>
+                                            <span style={{ color: '#8b5cf6', fontWeight: 600 }}>👥 </span>
+                                            ผู้กรอก: {field.who_fills}
+                                        </div>
+                                        <div style={{ fontWeight: 600, marginTop: '2px' }}>
+                                            <span style={{ color: '#0ea5e9', fontWeight: 600 }}>📺 </span>
+                                            {field.hosxp_screen}
+                                        </div>
+                                        <div style={{ fontWeight: 600, marginTop: '2px' }}>
+                                            <span style={{ color: '#10b981', fontWeight: 600 }}>🔑 </span>
+                                            Unlock: {field.unlocks_kpi}
+                                        </div>
+                                    </div>
+                                    <div style={{
+                                        fontSize: '11px', fontWeight: 700, color,
+                                        background: `${color}08`, padding: '8px 10px',
+                                        borderRadius: '8px', borderLeft: `2px solid ${color}`,
+                                    }}>
+                                        <span>💡 Action: </span>{field.action}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {erDataQuality.note && (
+                        <div style={{
+                            fontSize: '11px', color: 'var(--md-text-tertiary)',
+                            fontStyle: 'italic', marginTop: '8px', textAlign: 'center',
+                        }}>
+                            {erDataQuality.note}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ━━━━━━ 📈 แนวโน้ม 12 เดือน (KPI Trends) ━━━━━━ */}
+            {erTrends && Array.isArray(erTrends.series) && erTrends.series.length > 0 && (
+                <ERTrendsSection trends={erTrends} />
+            )}
 
             {/* ━━━━━━ 📋 Live Patients & Performance Analytics — Consolidated View ━━━━━━ */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -648,7 +1015,7 @@ function ERTab() {
                 <div className="glass-card flex flex-col" style={{ height: '400px' }}>
                     <div className="px-5 py-4 border-b border-[var(--md-divider)] flex justify-between items-center">
                         <div className="flex items-center gap-2">
-                            <h3 className="text-[13px] font-bold text-[var(--md-text-primary)] uppercase tracking-tight">Active ER Patients</h3>
+                            <h3 className="text-[13px] font-bold text-[var(--md-text-primary)] uppercase tracking-tight">ผู้ป่วยใน ER ขณะนี้</h3>
                             <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full text-[10px] font-bold">{erTodayPatients.length}</span>
                         </div>
                     </div>
@@ -672,11 +1039,11 @@ function ERTab() {
 
                 {/* 2. ER Flow & Capacity Analysis */}
                 <div className="glass-card flex flex-col" style={{ height: '400px', padding: '1.25rem' }}>
-                    <h3 className="text-[11px] font-bold text-[var(--md-text-tertiary)] uppercase tracking-wider mb-4">Volume & Efficiency Trends</h3>
+                    <h3 className="text-[11px] font-bold text-[var(--md-text-tertiary)] uppercase tracking-wider mb-4">ปริมาณงาน · ประสิทธิภาพ</h3>
 
                     {/* Hourly Heatmap Small */}
                     <div className="flex-1">
-                        <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>🕐 Hourly Load (30 Day Average)</p>
+                        <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>🕐 ปริมาณผู้ป่วยรายชั่วโมง (เฉลี่ย 30 วัน)</p>
                         <ResponsiveContainer width="100%" height={120}>
                             <BarChart data={erAnalytics?.hourly_heatmap || []}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.2)" vertical={false} />
@@ -692,7 +1059,7 @@ function ERTab() {
                         </ResponsiveContainer>
 
                         <div className="mt-6">
-                            <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>📈 Monthly Trend (Visits & Criticality)</p>
+                            <p style={{ fontSize: '11px', fontWeight: 800, color: 'var(--md-text-tertiary)', textTransform: 'uppercase', marginBottom: '8px' }}>📈 แนวโน้มรายเดือน (จำนวนเคส · เคสวิกฤต)</p>
                             <ResponsiveContainer width="100%" height={120}>
                                 <ComposedChart data={erAnalytics?.monthly_trend || []}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,213,225,.2)" vertical={false} />
@@ -892,6 +1259,132 @@ const DIVERSION_CONFIG = {
     caution:  { color: '#f59e0b', bg: 'rgba(245,158,11,.08)',  icon: '⚠️', label: 'ระวัง — อาจล่าช้า', labelEn: 'CAUTION' },
     diverted: { color: '#f43f5e', bg: 'rgba(244,63,94,.08)',   icon: '🚫', label: 'ปิดรับชั่วคราว',   labelEn: 'DIVERTED' },
 };
+
+// ── 12-Month KPI Trends Section (Phase F) ─────────────────────────────────
+// Renders a responsive grid of mini Area charts, one per KPI definition.
+// Each card shows: KPI Thai name, latest value, target, MoM trend chip,
+// and a 90px sparkline visualizing the 12-month series.
+function ERTrendsSection({ trends }) {
+    const kpiDefs = trends.kpi_defs || [];
+    const series = trends.series || [];
+
+    return (
+        <div style={{ marginTop: '20px' }}>
+            <div style={{
+                display: 'flex', alignItems: 'center', gap: '12px',
+                margin: '20px 0 12px', paddingBottom: '10px',
+                borderBottom: '1px solid rgba(14,165,233,.20)',
+            }}>
+                <div style={{ width: '4px', height: '32px', background: '#0ea5e9', borderRadius: '99px' }} />
+                <span style={{ fontSize: '22px' }}>📈</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '14px', fontWeight: 900, color: 'var(--md-text-primary)', letterSpacing: '-0.01em' }}>
+                        แนวโน้ม 12 เดือน (KPI Trends)
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--md-text-tertiary)', fontWeight: 600, marginTop: '2px' }}>
+                        ค่ารายเดือนของ KPI ER 12 เดือนย้อนหลัง · ใช้วิเคราะห์แนวโน้มก่อน/หลัง intervention
+                    </div>
+                </div>
+                <span style={{
+                    fontSize: '11px', fontWeight: 600, color: '#0ea5e9',
+                    background: 'rgba(14,165,233,.12)',
+                    padding: '5px 12px', borderRadius: '99px', whiteSpace: 'nowrap',
+                }}>
+                    {kpiDefs.length || 14} KPI
+                </span>
+            </div>
+
+            <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))',
+                gap: '12px',
+            }}>
+                {kpiDefs.map((kpi, i) => {
+                    const data = series.map(m => ({
+                        month: (m.month || '').slice(5),
+                        value: Number(m[kpi.id] ?? 0),
+                    }));
+                    const latest = data[data.length - 1]?.value || 0;
+                    const prev = data[data.length - 2]?.value || 0;
+                    const momPct = prev > 0
+                        ? Math.round(((latest - prev) / prev) * 100)
+                        : (prev === 0 && latest > 0 ? 100 : 0);
+                    const arrow = momPct > 5 ? '↗' : momPct < -5 ? '↘' : '→';
+                    const trendGood = kpi.higher_better === null ? null
+                        : kpi.higher_better ? momPct > 0 : momPct < 0;
+                    const trendColor = kpi.higher_better === null ? '#8b5cf6'
+                        : trendGood === true ? '#10b981'
+                        : trendGood === false ? '#ef4444' : '#94a3b8';
+                    const targetMet = kpi.target == null ? null
+                        : kpi.higher_better ? latest >= kpi.target : latest <= kpi.target;
+                    const accentColor = targetMet == null ? '#0ea5e9' : targetMet ? '#10b981' : '#ef4444';
+                    const valueStr = kpi.unit === '%' ? `${latest}%`
+                        : kpi.unit === 'min' ? `${latest}m`
+                        : latest.toLocaleString();
+
+                    return (
+                        <div key={kpi.id || i} className="glass-card" style={{
+                            padding: '12px 14px', borderRadius: '12px',
+                            borderLeft: `3px solid ${accentColor}`,
+                            display: 'flex', flexDirection: 'column', gap: '8px',
+                        }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{
+                                        fontSize: '11px', fontWeight: 700,
+                                        color: 'var(--md-text-tertiary)',
+                                        textTransform: 'uppercase', letterSpacing: '0.04em',
+                                    }}>
+                                        {kpi.name_th}
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px' }}>
+                                        <span style={{
+                                            fontSize: '18px', fontWeight: 900, color: accentColor,
+                                            lineHeight: 1, fontVariantNumeric: 'tabular-nums',
+                                        }}>
+                                            {valueStr}
+                                        </span>
+                                        {kpi.target != null && (
+                                            <span style={{ fontSize: '10px', color: 'var(--md-text-tertiary)', fontWeight: 700 }}>
+                                                เป้า {kpi.higher_better ? '≥' : '≤'} {kpi.target}{kpi.unit === '%' ? '%' : ''}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <span style={{
+                                    fontSize: '11px', fontWeight: 600, color: trendColor,
+                                    background: `${trendColor}15`,
+                                    padding: '3px 8px', borderRadius: '99px', whiteSpace: 'nowrap',
+                                }}>
+                                    {arrow} {momPct >= 0 ? '+' : ''}{momPct}%
+                                </span>
+                            </div>
+                            <div style={{ height: '90px', marginLeft: '-8px' }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <ComposedChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: -8 }}>
+                                        <CartesianGrid strokeDasharray="2 2" vertical={false} stroke="rgba(0,0,0,.05)" />
+                                        <XAxis dataKey="month" tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} interval={1} />
+                                        <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={28} />
+                                        <Tooltip contentStyle={{ fontSize: '10px', borderRadius: '8px', border: '1px solid rgba(0,0,0,.08)' }} />
+                                        <Area
+                                            type="monotone"
+                                            dataKey="value"
+                                            fill={`${accentColor}1a`}
+                                            stroke={accentColor}
+                                            strokeWidth={2}
+                                            dot={{ r: 2, fill: accentColor }}
+                                            activeDot={{ r: 4 }}
+                                        />
+                                    </ComposedChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
 
 function DiversionStatusPanel({ data, loading }) {
     if (loading) return (
