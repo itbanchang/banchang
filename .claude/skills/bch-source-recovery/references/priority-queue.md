@@ -154,7 +154,7 @@ Maintain this section, update each session.
 
 | Item | Status | Restored in commit/PR | Notes |
 |---|---|---|---|
-| PT/Staff report | ⏸️ Pending | — | Next session (decompile required) |
+| **PT/Staff report** | **✅ DONE 2026-05-13** | `5b26a08` (partial) + `f078441` (complete) | src/components/reports/PTStaffReport.jsx — KPI grid (8 cards) + DeptBreakdown + AgeGroups + Icd10Top10 + DailyTrend + PatientTable (14 cols). Wired into ReportTab dispatcher. Side-by-side parity UAT deferred to Tier 1.5. |
 | Hamburger drawer | ⏸️ Pending | — | Next session (decompile required) |
 | KPI card system | ⏸️ Pending | — | Next session (decompile required) |
 | Fluoride | ⏸️ Pending | — | After PT/Staff template established |
