@@ -4,6 +4,12 @@
 // ============================================================
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import PTStaffReport, { usePTStaffData } from './reports/PTStaffReport';
+import FluorideReport, { useFluorideData } from './reports/FluorideReport';
+import ElderlyCxrReport, { useElderlyCxrData } from './reports/ElderlyCxrReport';
+import FraxReport, { useFraxData } from './reports/FraxReport';
+import NcdDiseaseReport, { useNcdData } from './reports/NcdDiseaseReport';
+import ImagingServicesReport, { useImagingData } from './reports/ImagingServicesReport';
+import MortalityReport, { useMortalityData } from './reports/MortalityReport';
 
 const FISCAL_MONTHS = [
   'ต.ค.',
@@ -23,6 +29,28 @@ const FISCAL_MONTHS = [
 function fmt(v, d = 0) {
   if (v == null || v === '' || isNaN(v)) return '—';
   return Number(v).toLocaleString('th-TH', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+// ============================================================
+// Helper: loading / error states for restored reports (Tier 1.1 + 2.x)
+// ============================================================
+function ReportLoading() {
+  return (
+    <div style={{ padding: '32px', textAlign: 'center',
+      color: 'var(--md-text-tertiary)' }}>
+      กำลังโหลดข้อมูล...
+    </div>
+  );
+}
+
+function ReportError({ msg }) {
+  return (
+    <div style={{ padding: '16px', borderRadius: '12px',
+      background: 'rgba(239,68,68,.08)', color: '#dc2626',
+      border: '1px solid rgba(239,68,68,.2)' }}>
+      {'❌ '}{msg}
+    </div>
+  );
 }
 
 export default function ReportTab() {
@@ -124,17 +152,27 @@ export default function ReportTab() {
 
   const ptMode = reportType === 'staff-services' ? 'staff-services' : 'pt';
   const ptStaffHook = usePTStaffData(ptMode, ptStaffRange.start, ptStaffRange.end);
+  const fluorideHook = useFluorideData(ptStaffRange.start, ptStaffRange.end);
+  const elderlyHook = useElderlyCxrData(ptStaffRange.start, ptStaffRange.end);
+  const fraxHook = useFraxData(ptStaffRange.start, ptStaffRange.end);
+  const ncdHook = useNcdData(ptStaffRange.start, ptStaffRange.end);
+  const imagingHook = useImagingData(ptStaffRange.start, ptStaffRange.end);
+  const mortalityHook = useMortalityData(fy1, fy2);
 
   useEffect(() => {
     if (reportType === 'ipd-compare') fetchIPDCompare();
     else if (reportType === 'opd-compare') fetchOPDCompare();
     else if (reportType === 'resource-opd') fetchResOpdMonthly();
     else if (reportType === 'resource-ipd') fetchResourceUsage();
-    else if (reportType === 'pt' || reportType === 'staff-services') {
-      // PT/Staff data fetch — uses usePTStaffData hook with date range
-      ptStaffHook.load();
-    }
-  }, [reportType, fetchIPDCompare, fetchOPDCompare, fetchResourceUsage, fetchResOpdMonthly, ptStaffHook]);
+    else if (reportType === 'pt' || reportType === 'staff-services') ptStaffHook.load();
+    else if (reportType === 'fluoride') fluorideHook.load();
+    else if (reportType === 'elderly-cxr') elderlyHook.load();
+    else if (reportType === 'frax') fraxHook.load();
+    else if (reportType === 'ncd-disease') ncdHook.load();
+    else if (reportType === 'imaging-services') imagingHook.load();
+    else if (reportType === 'mortality') mortalityHook.load();
+  }, [reportType, fetchIPDCompare, fetchOPDCompare, fetchResourceUsage, fetchResOpdMonthly,
+      ptStaffHook, fluorideHook, elderlyHook, fraxHook, ncdHook, imagingHook, mortalityHook]);
 
   // Determine which months of fy2 have data for the subtitle
   const fy2DataMonths = useMemo(() => {
@@ -426,6 +464,12 @@ export default function ReportTab() {
           <option value="resource-ipd">ทรัพยากร ผู้ป่วยใน (Lab/Drug/CT-Xray)</option>
           <option value="pt">รายงานกายภาพบำบัด และ PMC</option>
           <option value="staff-services">รายงานการรับบริการของบุคลากร</option>
+          <option value="fluoride">รายงานการเคลือบฟลูออไรด์ 25-59 ปี</option>
+          <option value="elderly-cxr">รายงานผู้สูงอายุ 60+ ที่มี CXR</option>
+          <option value="frax">FRAX Calculator (ประเมินความเสี่ยงกระดูกหัก)</option>
+          <option value="ncd-disease">ผู้รับบริการ NCD แยกโรค</option>
+          <option value="imaging-services">บริการ XRAY / CT / Portable / BMD</option>
+          <option value="mortality">รายงานการตาย (OPD / IPD)</option>
         </select>
 
         <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--md-text-secondary)' }}>
@@ -611,30 +655,68 @@ export default function ReportTab() {
         })}
       </div>
 
-      {/* ── PT/Staff Reports — patient-level, no FY-comparison sheets ──
-          Bypasses One Page / Overview / Data sheets — renders own structure
-          (KPI grid + breakdowns + daily trend + patient table). */}
+      {/* ── Tier 1.1 + 2.x Reports — restored from bundle (Phase H) ──
+          Bypass One Page / Overview / Data sheets — render own structure. */}
       {(reportType === 'pt' || reportType === 'staff-services') && (
         <div style={{ marginTop: '12px' }}>
-          {ptStaffHook.loading && (
-            <div style={{ padding: '32px', textAlign: 'center',
-              color: 'var(--md-text-tertiary)' }}>
-              กำลังโหลดข้อมูล...
-            </div>
-          )}
-          {ptStaffHook.error && (
-            <div style={{ padding: '16px', borderRadius: '12px',
-              background: 'rgba(239,68,68,.08)', color: '#dc2626',
-              border: '1px solid rgba(239,68,68,.2)' }}>
-              ❌ {ptStaffHook.error}
-            </div>
-          )}
+          {ptStaffHook.loading && <ReportLoading />}
+          {ptStaffHook.error && <ReportError msg={ptStaffHook.error} />}
           {!ptStaffHook.loading && !ptStaffHook.error && (
-            <PTStaffReport
-              data={ptStaffHook.data}
-              mode={reportType}
-              displayLimit={100}
-            />
+            <PTStaffReport data={ptStaffHook.data} mode={reportType} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'fluoride' && (
+        <div style={{ marginTop: '12px' }}>
+          {fluorideHook.loading && <ReportLoading />}
+          {fluorideHook.error && <ReportError msg={fluorideHook.error} />}
+          {!fluorideHook.loading && !fluorideHook.error && (
+            <FluorideReport data={fluorideHook.data} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'elderly-cxr' && (
+        <div style={{ marginTop: '12px' }}>
+          {elderlyHook.loading && <ReportLoading />}
+          {elderlyHook.error && <ReportError msg={elderlyHook.error} />}
+          {!elderlyHook.loading && !elderlyHook.error && (
+            <ElderlyCxrReport data={elderlyHook.data} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'frax' && (
+        <div style={{ marginTop: '12px' }}>
+          {fraxHook.loading && <ReportLoading />}
+          {fraxHook.error && <ReportError msg={fraxHook.error} />}
+          {!fraxHook.loading && !fraxHook.error && (
+            <FraxReport data={fraxHook.data} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'ncd-disease' && (
+        <div style={{ marginTop: '12px' }}>
+          {ncdHook.loading && <ReportLoading />}
+          {ncdHook.error && <ReportError msg={ncdHook.error} />}
+          {!ncdHook.loading && !ncdHook.error && (
+            <NcdDiseaseReport data={ncdHook.data} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'imaging-services' && (
+        <div style={{ marginTop: '12px' }}>
+          {imagingHook.loading && <ReportLoading />}
+          {imagingHook.error && <ReportError msg={imagingHook.error} />}
+          {!imagingHook.loading && !imagingHook.error && (
+            <ImagingServicesReport data={imagingHook.data} displayLimit={100} />
+          )}
+        </div>
+      )}
+      {reportType === 'mortality' && (
+        <div style={{ marginTop: '12px' }}>
+          {mortalityHook.loading && <ReportLoading />}
+          {mortalityHook.error && <ReportError msg={mortalityHook.error} />}
+          {!mortalityHook.loading && !mortalityHook.error && (
+            <MortalityReport data={mortalityHook.data} />
           )}
         </div>
       )}
