@@ -230,8 +230,12 @@ const VIEW_DEFINITIONS = [
                 SUM(CASE WHEN e.er_emergency_type = '4' THEN 1 ELSE 0 END) as triage_4,
                 SUM(CASE WHEN e.er_emergency_type = '5' THEN 1 ELSE 0 END) as triage_5,
                 ROUND(AVG(GREATEST(0, TIMESTAMPDIFF(MINUTE, e.enter_er_time, COALESCE(e.finish_time, NOW())))), 0) as avg_stay_minutes,
-                SUM(CASE WHEN e.er_dch_type = '1' THEN 1 ELSE 0 END) as admit_count
+                -- Phase H.6: outcome-based admit count via ovst+an_stat
+                -- (er_dch_type NULL 100% at BCH so the old check was always 0).
+                SUM(CASE WHEN an.an IS NOT NULL THEN 1 ELSE 0 END) as admit_count
             FROM er_regist e
+            LEFT JOIN ovst o ON o.vn = e.vn
+            LEFT JOIN an_stat an ON an.hn = o.hn AND an.regdate = e.vstdate
             WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             GROUP BY e.vstdate
             ORDER BY e.vstdate DESC

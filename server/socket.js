@@ -47,12 +47,14 @@ async function detectAlerts() {
         INNER JOIN patient p ON a.hn = p.hn
         WHERE a.dchdate IS NULL AND a.rw > 0
       `),
+      // Phase H.6: still-in-ER filter uses finish_time IS NULL
+      // (er_dch_type was NULL 100% at BCH so the old check was a no-op).
       dbQueryOne(`
         SELECT COUNT(*) as cnt FROM er_regist e
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_dch_type IS NULL AND st.service7 IS NULL
+        AND e.finish_time IS NULL AND st.service7 IS NULL
       `),
       dbQueryOne(`
         SELECT
@@ -60,12 +62,13 @@ async function detectAlerts() {
           (SELECT SUM(bedcount) FROM ward WHERE ward_active = 'Y') as total
         FROM an_stat a WHERE a.dchdate IS NULL
       `),
+      // Phase H.6: still-in-ER filter via finish_time IS NULL.
       dbQueryOne(`
         SELECT COUNT(*) as cnt FROM er_regist e
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_dch_type IS NULL AND st.service1 IS NULL
+        AND e.finish_time IS NULL AND st.service1 IS NULL
         AND o.vsttime IS NOT NULL
         AND TIME_TO_SEC(TIMEDIFF(CURTIME(), o.vsttime)) > 7200
       `),
@@ -75,7 +78,7 @@ async function detectAlerts() {
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
         AND e.er_emergency_type = '1'
-        AND e.er_dch_type IS NULL AND st.service1 IS NULL
+        AND e.finish_time IS NULL AND st.service1 IS NULL
       `),
     ]);
     const [ewsHigh, erOvercrowd, bedCrisis, erLongWait, criticalTriage] =

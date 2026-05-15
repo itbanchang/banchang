@@ -247,7 +247,9 @@ async function getMonitoringGaps() {
 async function getOperationalEfficiency() {
     const [opd, er, ipd, rev] = await Promise.allSettled([
         dbQueryOne(`SELECT COUNT(*) AS visits, AVG(TIMESTAMPDIFF(MINUTE,STR_TO_DATE(CONCAT(o.vstdate,' ',o.vsttime),'%Y-%m-%d %H:%i:%s'),STR_TO_DATE(CONCAT(o.vstdate,' ',st.service2),'%Y-%m-%d %H:%i:%s'))) AS wait FROM ovst o LEFT JOIN service_time st ON o.vn=st.vn WHERE o.vstdate=CURDATE()`),
-        dbQueryOne(`SELECT COUNT(*) AS total, SUM(er_dch_type='1') AS admits, AVG(TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.doctor_tx_time)) AS d2d FROM er_regist e WHERE e.vstdate=CURDATE() AND e.enter_er_time IS NOT NULL AND e.doctor_tx_time IS NOT NULL`),
+        // Phase H.6: admit count via ovst+an_stat outcome-based JOIN
+        // (er_dch_type was NULL 100% at BCH so SUM(er_dch_type='1') was always 0).
+        dbQueryOne(`SELECT COUNT(*) AS total, SUM(CASE WHEN an.an IS NOT NULL THEN 1 ELSE 0 END) AS admits, AVG(TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.doctor_tx_time)) AS d2d FROM er_regist e LEFT JOIN ovst o ON o.vn = e.vn LEFT JOIN an_stat an ON an.hn = o.hn AND an.regdate = e.vstdate WHERE e.vstdate=CURDATE() AND e.enter_er_time IS NOT NULL AND e.doctor_tx_time IS NOT NULL`),
         dbQueryOne(`SELECT (SELECT COUNT(*) FROM ipt WHERE dchdate IS NULL) AS census, (SELECT COUNT(*) FROM ipt WHERE regdate=CURDATE()) AS admits, (SELECT COUNT(*) FROM ipt WHERE dchdate=CURDATE()) AS dc`),
         dbQueryOne(`SELECT COALESCE(SUM(income),0) AS revenue, COUNT(DISTINCT vn) AS visits FROM vn_stat WHERE vstdate=CURDATE()`)
     ]);

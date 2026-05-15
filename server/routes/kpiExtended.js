@@ -88,20 +88,56 @@ router.get('/operations', cached('kpi_operations_v1', 600000, async () => {
       ORDER BY exams DESC
     `, [], { timeoutMs: 10000 }),
 
-    // 5. ER operational metrics
-    dbQueryHeavy('kpi_er_ops', 30, `
+    // 5. ER operational metrics — Phase H.6 outcome-based fixes:
+    //    - admitted: ovst+an_stat JOIN (er_dch_type='2' was always 0 at BCH)
+    //    - lwbs   : Phase A 5-condition proxy (finish<15m + no doctor + no admit + no refer)
+    //    - deaths : patient.deathday during/post-ER (er_dch_type IN ('09','9') always 0)
+    //    Cache key bumped: kpi_er_ops -> kpi_er_ops_v2_outcome
+    dbQueryHeavy('kpi_er_ops_v2_outcome', 30, `
       SELECT
         COUNT(*) AS total_visits,
-        ROUND(AVG(CASE WHEN door_to_doctor_second > 0 THEN door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
-        ROUND(AVG(CASE WHEN finish_time IS NOT NULL AND enter_er_time IS NOT NULL
-          THEN TIMESTAMPDIFF(MINUTE, enter_er_time, finish_time) END)) AS avg_los_min,
-        SUM(CASE WHEN er_dch_type IN ('4','5') THEN 1 ELSE 0 END) AS lwbs,
-        SUM(CASE WHEN er_dch_type = '2' THEN 1 ELSE 0 END) AS admitted,
-        SUM(CASE WHEN er_dch_type IN ('09','9') THEN 1 ELSE 0 END) AS deaths,
-        ROUND(SUM(CASE WHEN er_dch_type IN ('4','5') THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) * 100, 2) AS lwbs_pct
-      FROM er_regist
-      WHERE vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-    `, [], { timeoutMs: 10000 }),
+        ROUND(AVG(CASE WHEN e.door_to_doctor_second > 0 THEN e.door_to_doctor_second / 60 END), 1) AS avg_ttd_min,
+        ROUND(AVG(CASE WHEN e.finish_time IS NOT NULL AND e.enter_er_time IS NOT NULL
+          THEN TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) END)) AS avg_los_min,
+        SUM(CASE
+          WHEN e.door_to_doctor_second IS NULL
+            AND e.doctor_tx_time IS NULL
+            AND e.finish_time IS NOT NULL
+            AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 15
+            AND NOT EXISTS (
+              SELECT 1 FROM ovst o2 JOIN an_stat an2 ON an2.hn = o2.hn
+              WHERE o2.vn = e.vn AND an2.regdate = e.vstdate
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM referout ro WHERE ro.vn = e.vn
+                AND ro.refer_date BETWEEN e.vstdate AND DATE_ADD(e.vstdate, INTERVAL 1 DAY)
+            )
+          THEN 1 ELSE 0 END) AS lwbs,
+        SUM(CASE WHEN an.an IS NOT NULL THEN 1 ELSE 0 END) AS admitted,
+        SUM(CASE
+          WHEN p.deathday IS NOT NULL
+           AND p.deathday BETWEEN e.vstdate AND DATE_ADD(e.vstdate, INTERVAL 1 DAY)
+          THEN 1 ELSE 0 END) AS deaths,
+        ROUND(100.0 * SUM(CASE
+          WHEN e.door_to_doctor_second IS NULL
+            AND e.doctor_tx_time IS NULL
+            AND e.finish_time IS NOT NULL
+            AND TIMESTAMPDIFF(MINUTE, e.enter_er_time, e.finish_time) < 15
+            AND NOT EXISTS (
+              SELECT 1 FROM ovst o2 JOIN an_stat an2 ON an2.hn = o2.hn
+              WHERE o2.vn = e.vn AND an2.regdate = e.vstdate
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM referout ro WHERE ro.vn = e.vn
+                AND ro.refer_date BETWEEN e.vstdate AND DATE_ADD(e.vstdate, INTERVAL 1 DAY)
+            )
+          THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 2) AS lwbs_pct
+      FROM er_regist e
+      LEFT JOIN ovst o ON o.vn = e.vn
+      LEFT JOIN an_stat an ON an.hn = o.hn AND an.regdate = e.vstdate
+      LEFT JOIN patient p ON p.hn = o.hn
+      WHERE e.vstdate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    `, [], { timeoutMs: 15000 }),
 
     // 6. OPD clinic throughput
     dbQueryHeavy('kpi_opd_throughput', 60, `

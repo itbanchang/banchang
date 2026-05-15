@@ -11,7 +11,10 @@ const router = Router();
 // ============================================================
 
 // ER Today Summary — triage + patients + bottlenecks in one call
-router.get('/today', cached('erToday_v2', 30000, async () => {
+// Phase H.2 (2026-05-15): admission count is now outcome-based via ovst→an_stat
+// JOIN, since er_regist.er_dch_type is NULL 100% at BCH (verified
+// scripts/verify-phase-h2-er-admit.mjs — old=0 vs new=4 matches HOSxP raw).
+router.get('/today', cached('erToday_v3_admit_outcome', 30000, async () => {
   const TRIAGE_NAMES = { '1': 'Resuscitation', '2': 'Emergency', '3': 'Urgent', '4': 'Semi-urgent', '5': 'Non-urgent' };
   const TRIAGE_COLORS = { '1': '#f43f5e', '2': '#f59e0b', '3': '#eab308', '4': '#10b981', '5': '#94a3b8' };
 
@@ -23,8 +26,11 @@ router.get('/today', cached('erToday_v2', 30000, async () => {
         SUM(CASE WHEN e.finish_time IS NULL THEN 1 ELSE 0 END) as waiting,
         SUM(CASE WHEN e.er_emergency_type IN ('1','2') THEN 1 ELSE 0 END) as critical,
         ROUND(AVG(NULLIF(GREATEST(0, COALESCE(e.door_to_doctor_second, TIMESTAMPDIFF(SECOND, e.enter_er_time, e.doctor_tx_time))), 0)) / 60, 1) as avg_ttd,
-        SUM(CASE WHEN e.er_dch_type = '2' THEN 1 ELSE 0 END) as admitted
-      FROM er_regist e WHERE e.vstdate = CURDATE()
+        SUM(CASE WHEN an.an IS NOT NULL THEN 1 ELSE 0 END) as admitted
+      FROM er_regist e
+      LEFT JOIN ovst o ON o.vn = e.vn
+      LEFT JOIN an_stat an ON an.hn = o.hn AND an.regdate = e.vstdate
+      WHERE e.vstdate = CURDATE()
     `).catch(() => null),
 
     // 2. Triage breakdown

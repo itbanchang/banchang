@@ -6,11 +6,43 @@ import { safeError } from '../lib/safeError.js';
 const cache = {};
 const inflight = new Map();
 
+// Per-key TTL registry — populated by cached() at wrapper construction time so
+// the audit endpoint can report ttl_remaining (cache itself doesn't store ttl).
+const ttlRegistry = new Map();
+
+// Phase H.4 — Introspection for /api/system/cache-audit (admin only).
+export function getStaleCacheStats() {
+  const now = Date.now();
+  const entries = Object.keys(cache).map(k => {
+    const entry = cache[k];
+    const baseKey = k.split('?')[0];
+    const ttl = ttlRegistry.get(baseKey) ?? null;
+    return {
+      key: k,
+      base_key: baseKey,
+      age_ms: now - entry.t,
+      age_min: Math.round((now - entry.t) / 6000) / 10,
+      ttl_ms: ttl,
+      ttl_min: ttl !== null ? Math.round(ttl / 6000) / 10 : null,
+      stale: ttl !== null ? (now - entry.t) > ttl : null,
+      json_bytes: entry.json ? entry.json.length : 0,
+      inflight: inflight.has(k),
+    };
+  });
+  return {
+    store: 'cached() (staleCache.js)',
+    entry_count: entries.length,
+    inflight_count: inflight.size,
+    entries: entries.sort((a, b) => b.age_ms - a.age_ms),
+  };
+}
+
 /**
  * Custom caching wrapper for data fetching functions
  * Uses Stale-While-Revalidate pattern and Request Deduplication
  */
 export function cached(key, ttl, fn) {
+    ttlRegistry.set(key, ttl);
     return async (req, res) => {
         const k = key + (req.originalUrl.includes('?') ? req.originalUrl.split('?')[1] : '');
         const entry = cache[k];

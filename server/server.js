@@ -19,7 +19,8 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { exec } from 'child_process';
 
-import { getPool, isMySQLConnected, dbQuery, dbQueryOne, getQueryMetrics, getSemaphoreStats, getServerProfiles, getActiveServer, switchServer } from './db/mysql.js';
+import { getPool, isMySQLConnected, dbQuery, dbQueryOne, getQueryMetrics, getSemaphoreStats, getServerProfiles, getActiveServer, switchServer, getDbCacheStats } from './db/mysql.js';
+import { getStaleCacheStats } from './cache/staleCache.js';
 import hosxp from './db/hosxpIntegration.js';
 import { getEWSSummary, getIPDPatientsEWS, calculateNEWS2 } from './ai/ewsEngine.js';
 import { forecastRevenue, forecastByPayer } from './ai/forecastEngine.js';
@@ -35,6 +36,8 @@ import dentalRoutes from './routes/dental.js';
 import thaimedRoutes from './routes/thaimedicine.js';
 import ptRoutes from './routes/physicaltherapy.js';
 import ncdRoutes from './routes/ncd.js';
+import diseaseSurveillanceRoutes from './routes/diseaseSurveillance.js';
+import smokeRoutes from './routes/smoke.js';
 import medrecRoutes from './routes/medrec.js';
 import debugRoutes from './routes/debug.js';
 import xrayRoutes from './routes/xray.js';
@@ -255,6 +258,7 @@ app.use('/api', apiLimiter);
 
 // ---- Public Routes (before authenticate middleware) ----
 app.use('/api/auth', authRoutes);
+app.use('/api/smoke', smokeRoutes); // public: promote.sh checks this after deploy
 
 // ---- AI-1: Enable Authentication on all /api/* routes ----
 // All routes below this line require a valid JWT token.
@@ -271,6 +275,7 @@ app.use('/api/dental', auditMiddleware('patient_info'), authorize('dental'), den
 app.use('/api/thaimedicine', auditMiddleware('patient_info'), authorize('thaimed'), thaimedRoutes);
 app.use('/api/physicaltherapy', auditMiddleware('patient_info'), authorize('phystherapy'), ptRoutes);
 app.use('/api/ncd', auditMiddleware('patient_info'), authorize('ncd'), ncdRoutes);
+app.use('/api/disease-surveillance', auditMiddleware('patient_safety'), authorize('clinical'), diseaseSurveillanceRoutes);
 app.use('/api/medrec', auditMiddleware('patient_info'), authorize('medrec'), medrecRoutes);
 app.use('/api/xray', auditMiddleware('patient_info'), authorize('xray'), xrayRoutes);
 app.use('/api/pharmacy', auditMiddleware('patient_info'), authorize('pharmacy'), pharmacyRoutes);
@@ -290,6 +295,9 @@ app.use('/api/debug', authorize('admin'), debugRoutes);
 const cache = {};
 const inflight = new Map(); // dedup: prevent thundering herd on cache miss
 const MAX_CACHE_ENTRIES = 200;
+// Phase H.4 — per-key TTL registry so /api/system/cache-audit can report
+// ttl_remaining (the cache object itself doesn't persist the TTL).
+const cacheTtlRegistry = new Map();
 function evictCache() {
   const keys = Object.keys(cache);
   if (keys.length <= MAX_CACHE_ENTRIES) return;
@@ -299,6 +307,7 @@ function evictCache() {
       .forEach(k => delete cache[k]);
 }
 function cached(key, ttl, fn) {
+  cacheTtlRegistry.set(key, ttl);
   return async (req, res) => {
     const k = key + (req.originalUrl.includes('?') ? req.originalUrl.split('?')[1] : '');
     const entry = cache[k];
@@ -706,6 +715,64 @@ app.get('/api/system/health', async (req, res) => {
   });
 });
 
+// ---- Cache Audit (Phase H.4 — admin only) ----
+// Lists every cached key across the 3 cache stores with TTL, age, and a
+// flag for anything stuck >60min on a patient-safety route. Admin scope —
+// audit logs every call via auditMiddleware('admin').
+app.get('/api/system/cache-audit', authorize('admin'), (req, res) => {
+  const now = new Date().toISOString();
+  // Local server.js cache (used by /api/dashboard/*, some inline routes)
+  const localEntries = Object.keys(cache).map(k => {
+    const entry = cache[k];
+    const baseKey = k.split('?')[0];
+    const ttl = cacheTtlRegistry.get(baseKey) ?? null;
+    const ageMs = Date.now() - entry.t;
+    return {
+      key: k,
+      base_key: baseKey,
+      age_min: Math.round(ageMs / 6000) / 10,
+      ttl_ms: ttl,
+      ttl_min: ttl !== null ? Math.round(ttl / 6000) / 10 : null,
+      stale: ttl !== null ? ageMs > ttl : null,
+      json_bytes: entry.json ? entry.json.length : 0,
+      inflight: inflight.has(k),
+    };
+  });
+  const local = {
+    store: 'cached() inline in server.js',
+    entry_count: localEntries.length,
+    inflight_count: inflight.size,
+    max_entries: MAX_CACHE_ENTRIES,
+    entries: localEntries.sort((a, b) => b.age_min - a.age_min),
+  };
+
+  // Patient-safety route prefixes — flag long TTL on these.
+  const SAFETY_PREFIXES = ['er', 'ipd', 'medrec', 'mrAudit', 'quality', 'clinical', 'safety'];
+  const isSafetyKey = (k) => SAFETY_PREFIXES.some(p => k.toLowerCase().startsWith(p.toLowerCase()));
+  const heavy = getDbCacheStats();
+  const stale = getStaleCacheStats();
+
+  // Flag dangerous TTLs — heavy queries with ttl_remaining > 60min on
+  // safety prefixes, or any entry >120min stale, are surfaced separately.
+  const flags = [];
+  for (const e of heavy.entries) {
+    if (isSafetyKey(e.key) && e.ttl_remaining_min > 60) {
+      flags.push({ severity: 'warn', store: 'heavy', key: e.key, reason: `TTL ${e.ttl_remaining_min}m on patient-safety route` });
+    }
+  }
+  for (const e of stale.entries) {
+    if (e.ttl_min !== null && e.ttl_min > 60 && isSafetyKey(e.base_key)) {
+      flags.push({ severity: 'warn', store: 'stale', key: e.base_key, reason: `TTL ${e.ttl_min}m on patient-safety route` });
+    }
+  }
+
+  res.json({
+    timestamp: now,
+    stores: { local, heavy, stale },
+    flags,
+  });
+});
+
 // ---- Dashboard Summary (45s cache) ---- ULTRA-FAST: EWS is non-blocking with timeout
 app.get('/api/dashboard/summary', cached('summary', 45000, async () => {
   const start = Date.now();
@@ -897,12 +964,14 @@ async function detectAlerts() {
     `),
 
       // 2. ER Overcrowding (>30 patients currently waiting)
+      // Phase H.6: still-in-ER filter uses finish_time IS NULL.
+      // er_dch_type was NULL 100% at BCH so the old check was a no-op.
       dbQueryOne(`
         SELECT COUNT(*) as cnt FROM er_regist e
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_dch_type IS NULL
+        AND e.finish_time IS NULL
         AND st.service7 IS NULL
     `),
 
@@ -916,12 +985,13 @@ async function detectAlerts() {
     `),
 
       // 4. ER patients waiting > 2 hours with no service
+      // Phase H.6: still-in-ER filter via finish_time IS NULL (er_dch_type no-op at BCH).
       dbQueryOne(`
         SELECT COUNT(*) as cnt FROM er_regist e
         INNER JOIN ovst o ON e.vn = o.vn
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
-        AND e.er_dch_type IS NULL
+        AND e.finish_time IS NULL
         AND st.service1 IS NULL
         AND o.vsttime IS NOT NULL
         AND TIME_TO_SEC(TIMEDIFF(CURTIME(), o.vsttime)) > 7200
@@ -934,7 +1004,7 @@ async function detectAlerts() {
         LEFT JOIN service_time st ON o.vn = st.vn
         WHERE o.vstdate = CURDATE()
         AND e.er_emergency_type = '1'
-        AND e.er_dch_type IS NULL
+        AND e.finish_time IS NULL
         AND st.service1 IS NULL
       `),
     ]);

@@ -278,6 +278,34 @@ export function getSemaphoreStats() {
   return { running: _running, queued: _queue.length, max: MAX_CONCURRENT };
 }
 
+// ── Heavy-query cache introspection (Phase H.4 — admin audit endpoint) ──
+// Returns one row per cached key. ttl_remaining_min < 0 means the entry is
+// stale but still serveable via stale-while-revalidate.
+export function getDbCacheStats() {
+  const now = Date.now();
+  const entries = [];
+  for (const key of Object.keys(DB_CACHE)) {
+    const meta = CACHE_METADATA.get(key);
+    const expiry = DB_CACHE[key].expiry;
+    entries.push({
+      key,
+      inserted_at: meta ? new Date(meta.insertedAt).toISOString() : null,
+      age_min: meta ? Math.round((now - meta.insertedAt) / 6000) / 10 : null,
+      ttl_remaining_min: Math.round((expiry - now) / 6000) / 10,
+      expiry_at: new Date(expiry).toISOString(),
+      revalidating: _revalidating.has(key),
+      row_count: Array.isArray(DB_CACHE[key].data) ? DB_CACHE[key].data.length : null,
+    });
+  }
+  return {
+    store: 'dbQueryHeavy (mysql.js)',
+    entry_count: _cacheEntryCount,
+    max_size: MAX_CACHE_SIZE,
+    revalidating_count: _revalidating.size,
+    entries: entries.sort((a, b) => a.ttl_remaining_min - b.ttl_remaining_min),
+  };
+}
+
 // ============================================================
 // Local Memory Cache for Heavy Queries (Reduces Replica Load)
 // ✅ OPTIMIZED: Non-blocking cleanup using LRU pattern
