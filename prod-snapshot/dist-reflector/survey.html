@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>แบบสอบถามความพึงพอใจ · BCH 360°</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Sukhumvit Set', 'Sarabun', Tahoma, sans-serif; background: linear-gradient(180deg, #f43f5e 0%, #fb7185 100%); min-height: 100vh; color: #1e293b; }
+  .container { max-width: 480px; margin: 0 auto; padding: 16px; }
+  .hero { text-align: center; padding: 24px 16px 16px; color: #fff; }
+  .hero h1 { margin: 0 0 8px; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+  .hero p { margin: 0; font-size: 14px; opacity: .9; }
+  .card { background: #fff; border-radius: 20px; padding: 24px 20px; margin: 16px 0; box-shadow: 0 12px 40px -8px rgba(244,63,94,.25); }
+  .field-label { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 12px; }
+  .field-sub { font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 12px; margin-top: -8px; }
+  .stars { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .star { flex: 1; aspect-ratio: 1; border: 2px solid #e2e8f0; background: #fff; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 26px; cursor: pointer; transition: all .15s; user-select: none; }
+  .star.active { background: linear-gradient(180deg, #fbbf24, #f59e0b); border-color: #f59e0b; color: #fff; transform: scale(1.08); box-shadow: 0 6px 16px rgba(245,158,11,.35); }
+  .star:active { transform: scale(0.95); }
+  .label-row { display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; font-weight: 600; margin-top: -4px; padding: 0 4px; }
+  textarea { width: 100%; min-height: 90px; padding: 12px; border: 1.5px solid #e2e8f0; border-radius: 12px; font-family: inherit; font-size: 14px; resize: vertical; outline: none; }
+  textarea:focus { border-color: #f43f5e; }
+  .submit { width: 100%; padding: 16px; background: linear-gradient(135deg, #f43f5e, #e11d48); color: #fff; font-size: 16px; font-weight: 800; border: none; border-radius: 16px; cursor: pointer; box-shadow: 0 8px 20px -4px rgba(244,63,94,.4); transition: all .2s; margin-top: 8px; }
+  .submit:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 28px -6px rgba(244,63,94,.5); }
+  .submit:disabled { background: #cbd5e1; cursor: not-allowed; box-shadow: none; }
+  .thanks { text-align: center; padding: 60px 20px; }
+  .thanks-icon { font-size: 64px; margin-bottom: 16px; }
+  .thanks h2 { font-size: 24px; font-weight: 800; color: #059669; margin: 0 0 8px; }
+  .thanks p { color: #475569; margin: 0; }
+  .error { background: #fef2f2; color: #991b1b; padding: 12px 16px; border-radius: 12px; border-left: 3px solid #ef4444; font-size: 13px; font-weight: 600; margin-top: 12px; }
+  .dept-badge { display: inline-block; background: rgba(255,255,255,.2); color: #fff; padding: 4px 12px; border-radius: 99px; font-size: 12px; font-weight: 700; margin-top: 8px; }
+  .footer { text-align: center; color: rgba(255,255,255,.7); font-size: 11px; padding: 16px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="hero">
+    <h1>📋 แบบสอบถามความพึงพอใจ</h1>
+    <p>โรงพยาบาลบ้านฉาง</p>
+    <span class="dept-badge" id="deptBadge">🚑 ห้องฉุกเฉิน (ER)</span>
+  </div>
+
+  <div id="formCard" class="card">
+    <div id="errBox"></div>
+
+    <div class="field-label">
+      ⭐ ความพึงพอใจโดยรวม <span style="color:#e11d48">*</span>
+    </div>
+    <div class="stars" data-field="overall_score">
+      <button class="star" data-v="1">😞</button>
+      <button class="star" data-v="2">😐</button>
+      <button class="star" data-v="3">🙂</button>
+      <button class="star" data-v="4">😊</button>
+      <button class="star" data-v="5">🤩</button>
+    </div>
+    <div class="label-row"><span>แย่มาก</span><span>ดีมาก</span></div>
+
+    <div style="height:20px"></div>
+    <div class="field-label">⚡ ความรวดเร็ว</div>
+    <div class="stars" data-field="speed_score">
+      <button class="star" data-v="1">1</button>
+      <button class="star" data-v="2">2</button>
+      <button class="star" data-v="3">3</button>
+      <button class="star" data-v="4">4</button>
+      <button class="star" data-v="5">5</button>
+    </div>
+
+    <div style="height:16px"></div>
+    <div class="field-label">🤝 ความสุภาพของเจ้าหน้าที่</div>
+    <div class="stars" data-field="staff_score">
+      <button class="star" data-v="1">1</button>
+      <button class="star" data-v="2">2</button>
+      <button class="star" data-v="3">3</button>
+      <button class="star" data-v="4">4</button>
+      <button class="star" data-v="5">5</button>
+    </div>
+
+    <div style="height:16px"></div>
+    <div class="field-label">🏥 ความสะอาดของสถานที่</div>
+    <div class="stars" data-field="facility_score">
+      <button class="star" data-v="1">1</button>
+      <button class="star" data-v="2">2</button>
+      <button class="star" data-v="3">3</button>
+      <button class="star" data-v="4">4</button>
+      <button class="star" data-v="5">5</button>
+    </div>
+
+    <div style="height:24px"></div>
+    <div class="field-label">💬 ความคิดเห็นเพิ่มเติม (ไม่บังคับ)</div>
+    <textarea id="comment" maxlength="500" placeholder="ข้อเสนอแนะที่จะช่วยให้เราพัฒนาบริการได้ดีขึ้น..."></textarea>
+
+    <button id="submitBtn" class="submit" disabled>ส่งแบบสอบถาม</button>
+  </div>
+
+  <div id="thanksCard" class="card thanks" style="display:none">
+    <div class="thanks-icon">🙏</div>
+    <h2>ขอบคุณค่ะ</h2>
+    <p>ความคิดเห็นของคุณช่วยให้เราพัฒนาบริการได้ดียิ่งขึ้น</p>
+  </div>
+
+  <div class="footer">BCH 360° Intelligence · Patient Voice</div>
+</div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const dept = (params.get('dept') || 'ER').toUpperCase();
+  const vn = params.get('vn') || null;
+  const hn = params.get('hn') || null;
+  const source = params.get('src') || 'qr';
+
+  const DEPT_LABELS = {
+    ER: '🚑 ห้องฉุกเฉิน (ER)',
+    OPD: '⏱️ ผู้ป่วยนอก (OPD)',
+    IPD: '🏥 ผู้ป่วยใน (IPD)',
+    DENTAL: '🦷 ทันตกรรม',
+    PHARMACY: '💊 เภสัชกรรม',
+    LAB: '🔬 ห้องปฏิบัติการ',
+    XRAY: '☢️ รังสีวิทยา',
+    NCD: '🫀 NCD Clinic',
+    THAIMED: '🌿 แพทย์แผนไทย',
+    PT: '🏋️ กายภาพบำบัด',
+  };
+  document.getElementById('deptBadge').textContent = DEPT_LABELS[dept] || dept;
+
+  const state = { overall_score: null, speed_score: null, staff_score: null, facility_score: null };
+
+  document.querySelectorAll('.stars').forEach(group => {
+    const field = group.dataset.field;
+    group.querySelectorAll('.star').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const v = parseInt(btn.dataset.v, 10);
+        state[field] = v;
+        group.querySelectorAll('.star').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('submitBtn').disabled = !state.overall_score;
+      });
+    });
+  });
+
+  document.getElementById('submitBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('submitBtn');
+    const errBox = document.getElementById('errBox');
+    errBox.innerHTML = '';
+    btn.disabled = true;
+    btn.textContent = 'กำลังส่ง...';
+
+    const payload = {
+      department: dept,
+      overall_score: state.overall_score,
+      speed_score: state.speed_score,
+      staff_score: state.staff_score,
+      facility_score: state.facility_score,
+      comment: document.getElementById('comment').value.trim() || null,
+      hn, vn, source,
+    };
+
+    try {
+      const r = await fetch('/api/satisfaction/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.message || err.error || ('HTTP ' + r.status));
+      }
+      document.getElementById('formCard').style.display = 'none';
+      document.getElementById('thanksCard').style.display = 'block';
+    } catch (e) {
+      errBox.innerHTML = '<div class="error">⚠️ ส่งไม่สำเร็จ: ' + (e.message || 'unknown error') + '</div>';
+      btn.disabled = false;
+      btn.textContent = 'ส่งแบบสอบถาม';
+    }
+  });
+</script>
+</body>
+</html>

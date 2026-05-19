@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BCH 360° Health Monitor</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0f172a;
+      --bg-card: #1e293b;
+      --bg-card-hover: #273548;
+      --border: #334155;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --green: #22c55e;
+      --green-glow: rgba(34, 197, 94, 0.3);
+      --red: #ef4444;
+      --red-glow: rgba(239, 68, 68, 0.3);
+      --yellow: #eab308;
+      --blue: #3b82f6;
+      --purple: #8b5cf6;
+      --cyan: #06b6d4;
+      --orange: #f97316;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Background animated gradient */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: radial-gradient(ellipse at 20% 50%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+                  radial-gradient(ellipse at 80% 20%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
+                  radial-gradient(ellipse at 50% 80%, rgba(6, 182, 212, 0.05) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container { max-width: 1400px; margin: 0 auto; padding: 24px; position: relative; z-index: 1; }
+
+    /* Header */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 32px; padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header-logo {
+      width: 48px; height: 48px; border-radius: 14px;
+      background: linear-gradient(135deg, var(--blue), var(--purple));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; font-weight: 800; color: white;
+      box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+    }
+    .header h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    .header h1 span { color: var(--text-muted); font-weight: 400; font-size: 14px; display: block; margin-top: 2px; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .refresh-badge {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-muted);
+      background: rgba(255,255,255,0.05); padding: 6px 12px; border-radius: 20px;
+    }
+    .refresh-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+
+    /* Status Banner */
+    .status-banner {
+      display: flex; align-items: center; gap: 16px;
+      padding: 20px 28px; border-radius: 16px;
+      margin-bottom: 24px; transition: all 0.5s;
+    }
+    .status-banner.healthy {
+      background: linear-gradient(135deg, rgba(34,197,94,0.12), rgba(6,182,212,0.08));
+      border: 1px solid rgba(34,197,94,0.25);
+    }
+    .status-banner.degraded {
+      background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(249,115,22,0.08));
+      border: 1px solid rgba(239,68,68,0.25);
+    }
+    .status-icon {
+      width: 56px; height: 56px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+    }
+    .status-banner.healthy .status-icon {
+      background: rgba(34,197,94,0.15); box-shadow: 0 0 30px var(--green-glow);
+    }
+    .status-banner.degraded .status-icon {
+      background: rgba(239,68,68,0.15); box-shadow: 0 0 30px var(--red-glow);
+    }
+    .status-text h2 { font-size: 22px; font-weight: 700; }
+    .status-text p { color: var(--text-secondary); font-size: 14px; margin-top: 2px; }
+    .status-meta { margin-left: auto; text-align: right; }
+    .status-meta .uptime { font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+    .status-meta .uptime-label { font-size: 12px; color: var(--text-muted); }
+
+    /* Grid */
+    .grid { display: grid; gap: 20px; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+
+    @media (max-width: 1024px) {
+      .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .grid-3, .grid-4, .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      transition: all 0.3s;
+    }
+    .card:hover { background: var(--bg-card-hover); transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+    .card-icon {
+      width: 36px; height: 36px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); }
+
+    /* Metric display */
+    .metric { font-size: 32px; font-weight: 800; font-family: 'JetBrains Mono', monospace; letter-spacing: -1px; }
+    .metric-unit { font-size: 14px; font-weight: 400; color: var(--text-muted); margin-left: 4px; }
+    .metric-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    /* Progress bar */
+    .progress-bar { height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; transition: width 1s ease, background 0.5s; }
+
+    /* Info rows */
+    .info-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { font-size: 13px; color: var(--text-muted); }
+    .info-value { font-size: 13px; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
+
+    /* AI module tags */
+    .module-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+    .module-tag {
+      font-size: 11px; padding: 5px 12px; border-radius: 20px;
+      background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.2);
+      color: #c4b5fd; font-weight: 500; transition: all 0.3s;
+    }
+    .module-tag:hover { background: rgba(139,92,246,0.2); transform: scale(1.05); }
+
+    /* Pulse animation */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .card { animation: fadeIn 0.5s ease both; }
+    .card:nth-child(1) { animation-delay: 0.05s; }
+    .card:nth-child(2) { animation-delay: 0.1s; }
+    .card:nth-child(3) { animation-delay: 0.15s; }
+    .card:nth-child(4) { animation-delay: 0.2s; }
+
+    /* Status dot */
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+    .dot.green { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+    .dot.red { background: var(--red); box-shadow: 0 0 8px var(--red-glow); }
+    .dot.yellow { background: var(--yellow); }
+
+    /* Buttons */
+    .btn { background: var(--blue); color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: #2563eb; transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-green { background: var(--green); }
+    .btn-green:hover { background: #16a34a; }
+
+    /* Footer */
+    .footer { text-align: center; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
+    .footer a { color: var(--blue); text-decoration: none; }
+
+    /* Loading skeleton */
+    .skeleton { background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+      background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; }
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="header-logo">H</div>
+        <h1>BCH 360° Health Monitor <span>System Diagnostics Dashboard</span></h1>
+      </div>
+      <div class="header-right">
+        <div class="refresh-badge"><div class="refresh-dot"></div> Auto-refresh 10s</div>
+        <span id="clock" style="font-family:'JetBrains Mono',monospace; font-size:14px; color:var(--text-muted)"></span>
+      </div>
+    </div>
+
+    <!-- Status Banner -->
+    <div class="status-banner healthy" id="statusBanner">
+      <div class="status-icon" id="statusIcon">✅</div>
+      <div class="status-text">
+        <h2 id="statusTitle">Loading...</h2>
+        <p id="statusDesc">Checking system health...</p>
+      </div>
+      <div class="status-meta">
+        <div class="uptime" id="uptimeDisplay">--</div>
+        <div class="uptime-label">Uptime</div>
+      </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="grid grid-4" style="margin-bottom: 20px;">
+      <div class="card" id="cardMySQL">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(34,197,94,0.12);">🗄️</div>
+          <div class="card-title">MySQL Status</div>
+        </div>
+        <div class="metric" id="mysqlStatus" style="color:var(--green)">--</div>
+        <div class="metric-sub" id="mysqlLatency">Latency: --</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(59,130,246,0.12);">💾</div>
+          <div class="card-title">Memory (RSS)</div>
+        </div>
+        <div class="metric" id="memoryRSS">--<span class="metric-unit">MB</span></div>
+        <div class="metric-sub" id="memorySub">Heap: --</div>
+        <div class="progress-bar"><div class="progress-fill" id="memoryBar" style="width:0%; background:var(--blue)"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(139,92,246,0.12);">⚡</div>
+          <div class="card-title">System RAM</div>
+        </div>
+        <div class="metric" id="ramUsage">--<span class="metric-unit">%</span></div>
+        <div class="metric-sub" id="ramSub">Free: --</div>
+        <div class="progress-bar"><div class="progress-fill" id="ramBar" style="width:0%; background:var(--purple)"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(6,182,212,0.12);">🧠</div>
+          <div class="card-title">AI Modules</div>
+        </div>
+        <div class="metric" id="aiCount">--<span class="metric-unit">Active</span></div>
+        <div class="metric-sub">All engines operational</div>
+      </div>
+    </div>
+
+    <!-- Detail Grid -->
+    <div class="grid grid-2" style="margin-bottom: 20px;">
+      <!-- MySQL Detail -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(34,197,94,0.12);">🗃️</div>
+          <div class="card-title">MySQL / MariaDB</div>
+        </div>
+        <div id="mysqlDetail">
+          <div class="info-row"><span class="info-label">Host</span><span class="info-value" id="dbHost">--</span></div>
+          <div class="info-row"><span class="info-label">Database</span><span class="info-value" id="dbName">--</span></div>
+          <div class="info-row"><span class="info-label">Version</span><span class="info-value" id="dbVersion">--</span></div>
+          <div class="info-row"><span class="info-label">Server Time</span><span class="info-value" id="dbTime">--</span></div>
+          <div class="info-row"><span class="info-label">Latency</span><span class="info-value" id="dbLatency" style="color:var(--green)">--</span></div>
+        </div>
+      </div>
+
+      <!-- System Info -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(59,130,246,0.12);">🖥️</div>
+          <div class="card-title">System Info</div>
+        </div>
+        <div id="sysDetail">
+          <div class="info-row"><span class="info-label">Hostname</span><span class="info-value" id="sysHost">--</span></div>
+          <div class="info-row"><span class="info-label">CPU</span><span class="info-value" id="sysCPU">--</span></div>
+          <div class="info-row"><span class="info-label">Cores</span><span class="info-value" id="sysCores">--</span></div>
+          <div class="info-row"><span class="info-label">Platform</span><span class="info-value" id="sysPlatform">--</span></div>
+          <div class="info-row"><span class="info-label">Node.js</span><span class="info-value" id="sysNode">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deploy + AI Modules -->
+    <div class="grid grid-2">
+      <!-- Deploy Info -->
+      <div class="card">
+        <div class="card-header" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="card-icon" style="background:rgba(249,115,22,0.12);">🚀</div>
+            <div class="card-title">Deploy Info</div>
+          </div>
+          <button class="btn" id="btnUpdateCode" onclick="updateSystemCode()">
+            <span id="btnIcon">⚡</span> Update Code
+          </button>
+        </div>
+        <div id="deployDetail">
+          <div class="info-row"><span class="info-label">Version</span><span class="info-value" id="deployVersion">--</span></div>
+          <div class="info-row"><span class="info-label">Environment</span><span class="info-value" id="deployEnv">--</span></div>
+          <div class="info-row"><span class="info-label">Port</span><span class="info-value" id="deployPort">--</span></div>
+          <div class="info-row"><span class="info-label">Deploy Count</span><span class="info-value" id="deployCount">--</span></div>
+          <div class="info-row"><span class="info-label">Last Deploy</span><span class="info-value" id="deployLast">--</span></div>
+          <div class="info-row"><span class="info-label">Started At</span><span class="info-value" id="deployStarted">--</span></div>
+        </div>
+      </div>
+
+      <!-- AI Modules -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(139,92,246,0.12);">🤖</div>
+          <div class="card-title">AI Modules (<span id="aiModuleCount">0</span>)</div>
+        </div>
+        <div class="module-tags" id="aiModules"></div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      BCH 360° Intelligence V.10 — Health Monitor &nbsp;•&nbsp;
+      <a href="/">← Back to Dashboard</a> &nbsp;•&nbsp;
+      <a href="/api/health">/api/health</a> &nbsp;•&nbsp;
+      <a href="/api/system/health">/api/system/health</a>
+    </div>
+  </div>
+
+  <script>
+    // System Update
+    async function updateSystemCode() {
+      const btn = document.getElementById('btnUpdateCode');
+      const icon = document.getElementById('btnIcon');
+      if (!confirm('ยืนยันประมวลผล Update Code และ Rebuild ระบบใหม่ทั้งหมดหรือไม่?')) return;
+      
+      btn.disabled = true;
+      icon.textContent = '⏳';
+      try {
+        const res = await fetch('/api/system/update', { method: 'POST' });
+        const data = await res.json();
+        if(res.ok) {
+          btn.className = 'btn btn-green';
+          icon.textContent = '✅';
+          alert('อัปเดตระบบสำเร็จ! Server จะทำการ Restart ภายในไม่กี่วินาที โปรดรอสักครู่...');
+        } else {
+          alert('อัปเดตล้มเหลว: ' + data.message);
+          icon.textContent = '❌';
+        }
+      } catch (e) {
+        alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+        icon.textContent = '❌';
+      }
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.className = 'btn';
+        icon.textContent = '⚡';
+      }, 5000);
+    }
+
+    // Clock
+    function updateClock() {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Format time ago
+    function timeAgo(isoStr) {
+      if (!isoStr) return '--';
+      const d = new Date(isoStr);
+      const now = new Date();
+      const diffSec = Math.floor((now - d) / 1000);
+      if (diffSec < 60) return `${diffSec}s ago`;
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+      return `${Math.floor(diffSec / 86400)}d ago`;
+    }
+
+    function formatDateTime(isoStr) {
+      if (!isoStr) return '--';
+      try {
+        return new Date(isoStr).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'medium' });
+      } catch { return isoStr; }
+    }
+
+    // Fetch and update
+    async function fetchHealth() {
+      try {
+        const resp = await fetch('/api/system/health');
+        const d = await resp.json();
+
+        // Status Banner
+        const banner = document.getElementById('statusBanner');
+        const isHealthy = d.status === 'healthy';
+        banner.className = 'status-banner ' + (isHealthy ? 'healthy' : 'degraded');
+        document.getElementById('statusIcon').textContent = isHealthy ? '✅' : '❌';
+        document.getElementById('statusTitle').textContent = isHealthy ? 'All Systems Operational' : 'System Degraded';
+        document.getElementById('statusDesc').textContent = isHealthy
+          ? `MySQL connected · ${d.ai_modules?.count || 0} AI modules · Port ${d.port}`
+          : 'One or more critical services are down';
+
+        // Uptime
+        document.getElementById('uptimeDisplay').textContent = d.uptime?.formatted || '--';
+
+        // MySQL Quick
+        document.getElementById('mysqlStatus').textContent = d.mysql?.connected ? 'Connected' : 'Down';
+        document.getElementById('mysqlStatus').style.color = d.mysql?.connected ? 'var(--green)' : 'var(--red)';
+        document.getElementById('mysqlLatency').textContent = `Latency: ${d.mysql?.latency_ms ?? '--'}ms`;
+
+        // Memory
+        document.getElementById('memoryRSS').innerHTML = `${d.memory?.rss_mb || 0}<span class="metric-unit">MB</span>`;
+        document.getElementById('memorySub').textContent = `Heap: ${d.memory?.heap_used_mb || 0} / ${d.memory?.heap_total_mb || 0} MB`;
+        const heapPct = d.memory?.heap_total_mb ? Math.round((d.memory.heap_used_mb / d.memory.heap_total_mb) * 100) : 0;
+        document.getElementById('memoryBar').style.width = heapPct + '%';
+        document.getElementById('memoryBar').style.background = heapPct > 85 ? 'var(--red)' : heapPct > 60 ? 'var(--yellow)' : 'var(--blue)';
+
+        // RAM
+        const ramPct = d.system?.memory_usage_pct || 0;
+        document.getElementById('ramUsage').innerHTML = `${ramPct}<span class="metric-unit">%</span>`;
+        document.getElementById('ramSub').textContent = `Free: ${d.system?.free_memory_mb || 0} MB / ${d.system?.total_memory_mb || 0} MB`;
+        document.getElementById('ramBar').style.width = ramPct + '%';
+        document.getElementById('ramBar').style.background = ramPct > 90 ? 'var(--red)' : ramPct > 70 ? 'var(--yellow)' : 'var(--purple)';
+
+        // AI Count
+        document.getElementById('aiCount').innerHTML = `${d.ai_modules?.count || 0}<span class="metric-unit">Active</span>`;
+
+        // MySQL Detail
+        document.getElementById('dbHost').textContent = d.mysql?.host || '--';
+        document.getElementById('dbName').textContent = d.mysql?.database || '--';
+        document.getElementById('dbVersion').textContent = d.mysql?.version || '--';
+        document.getElementById('dbTime').textContent = d.mysql?.server_time || '--';
+        document.getElementById('dbLatency').textContent = d.mysql?.latency_ms != null ? `${d.mysql.latency_ms}ms` : '--';
+        document.getElementById('dbLatency').style.color = (d.mysql?.latency_ms ?? 999) < 50 ? 'var(--green)' : 'var(--yellow)';
+
+        // System Detail
+        document.getElementById('sysHost').textContent = d.system?.hostname || '--';
+        document.getElementById('sysCPU').textContent = (d.system?.cpu_model || '--').replace(/\(R\)|\(TM\)/g, '').trim();
+        document.getElementById('sysCores').textContent = `${d.system?.cpu_cores || '--'} cores`;
+        document.getElementById('sysPlatform').textContent = `${d.system?.platform || '--'} / ${d.system?.arch || '--'}`;
+        document.getElementById('sysNode').textContent = d.system?.node_version || '--';
+
+        // Deploy Detail
+        document.getElementById('deployVersion').textContent = d.version || '--';
+        document.getElementById('deployEnv').textContent = d.environment || '--';
+        document.getElementById('deployPort').textContent = d.port || '--';
+        document.getElementById('deployCount').textContent = d.deploy?.deploy_count ?? '--';
+        document.getElementById('deployLast').textContent = d.deploy?.last_deploy ? timeAgo(d.deploy.last_deploy) : '--';
+        document.getElementById('deployStarted').textContent = formatDateTime(d.uptime?.started_at);
+
+        // AI Modules
+        const mods = d.ai_modules?.list || [];
+        document.getElementById('aiModuleCount').textContent = mods.length;
+        const colors = ['#22c55e','#3b82f6','#8b5cf6','#f97316','#06b6d4','#ec4899','#eab308','#14b8a6','#f43f5e','#6366f1','#84cc16'];
+        document.getElementById('aiModules').innerHTML = mods.map((m, i) => {
+          const c = colors[i % colors.length];
+          return `<span class="module-tag" style="background:${c}15; border-color:${c}35; color:${c}">✦ ${m}</span>`;
+        }).join('');
+
+      } catch (err) {
+        document.getElementById('statusBanner').className = 'status-banner degraded';
+        document.getElementById('statusIcon').textContent = '❌';
+        document.getElementById('statusTitle').textContent = 'Connection Failed';
+        document.getElementById('statusDesc').textContent = err.message;
+      }
+    }
+
+    // Initial fetch + auto-refresh
+    fetchHealth();
+    setInterval(fetchHealth, 10000);
+  </script>
+</body>
+</html>

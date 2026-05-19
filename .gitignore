@@ -31,3 +31,10 @@ test_*.js
 *.sw?
 .DS_Store
 *.local
+
+# Prod SSL keys must never be committed
+prod-snapshot/**/ssl/
+prod-snapshot/**/*.key
+prod-snapshot/**/*.pem
+prod-snapshot/**/.env*
+
