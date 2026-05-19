@@ -38,3 +38,6 @@ prod-snapshot/**/*.key
 prod-snapshot/**/*.pem
 prod-snapshot/**/.env*
 
+# Local sync state written by scripts/sync-to-dev.mjs (consumed by promote-bundle.mjs)
+.sync-state.json
+
