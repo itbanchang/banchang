@@ -11,6 +11,7 @@ import { useShallowDashboardSelector, useDashboardActions } from './context/Dash
 import { useWebSocket } from './hooks/useWebSocket.js';
 import KPICardV2 from './components/KPICardV2.jsx';
 import AlertBanner from './components/AlertBanner.jsx';
+import DiseaseSurveillanceBanner from './components/DiseaseSurveillanceBanner.jsx';
 import DataFreshnessBar from './components/shared/DataFreshnessBar.jsx';
 import Sidebar from './components/Sidebar.jsx';
 const AIAssistant = React.lazy(() => import('./components/AIAssistant.jsx'));
@@ -43,13 +44,16 @@ const LaboratoryTab = React.lazy(() => import('./components/LaboratoryTab.jsx'))
 const QualityTab = React.lazy(() => import('./components/QualityTab.jsx'));
 const CompareTab = React.lazy(() => import('./components/CompareTab.jsx'));
 const ReportTab = React.lazy(() => import('./components/ReportTab.jsx'));
+const STATReportsTab = React.lazy(() => import('./components/STATReportsTab.jsx'));
 const EvolutionTab = React.lazy(() => import('./components/EvolutionTab.jsx'));
 const CustomerInsightTab = React.lazy(() => import('./components/CustomerInsightTab.jsx'));
 const ITTab = React.lazy(() => import('./components/ITTab.jsx'));
 const StrategicTab = React.lazy(() => import('./components/StrategicTab.jsx'));
+const DoctorActivityTab = React.lazy(() => import('./components/DoctorActivityTab.jsx'));
 
 const TABS = [
   { id: 'report', label: 'Report', icon: '📋', desc: 'REPORT Online โรงพยาบาลบ้านฉาง' },
+  { id: 'stat-reports', label: 'รายงานสถิติ (สนย./สสจ.)', icon: '📑', desc: 'รายงานประจำเดือน · ไตรมาส · ปีงบ' },
   { id: 'compare', label: 'เปรียบเทียบปีงบ', icon: '📊', desc: 'YoY · 3 ปีงบ · ทุกแผนก' },
   {
     id: 'finance',
@@ -73,6 +77,12 @@ const TABS = [
     label: 'Medical Record Audit',
     icon: '📇',
     desc: 'Audit · Coding Quality Analytics',
+  },
+  {
+    id: 'doctor-activity',
+    label: 'กิจกรรมแพทย์',
+    icon: '👨‍⚕️',
+    desc: 'ผลผลิต · OPD/IPD · คำสั่งตรวจ · รายได้',
   },
   { id: 'quality', label: 'คุณภาพ HA', icon: '⭐', desc: 'HA Thailand · QPI Analytics' },
   {
@@ -238,7 +248,7 @@ export default function App() {
 
   const apiFetch = useCallback(
     (url, opts) => createBoundFetch(tokens, refreshAccessToken)(url, opts),
-    [tokens?.accessToken, refreshAccessToken]
+    [tokens, refreshAccessToken]
   );
 
   const refreshAllData = useCallback(() => {
@@ -499,6 +509,9 @@ export default function App() {
                 MAIN CONTENT
             =================================================== */}
       <main className="max-w-[1700px] xl:max-w-[2100px] 2xl:max-w-[2800px] mx-auto px-4 sm:px-5 py-4">
+        {/* Disease surveillance banner (พรบ. โรคติดต่อ พ.ศ. 2558 — ม.3 + ม.5) */}
+        <DiseaseSurveillanceBanner />
+
         {/* Alert banner */}
         <AlertBanner />
 
@@ -599,10 +612,12 @@ export default function App() {
               {activeTab === 'phystherapy' && <PhysTherapyTab />}
               {activeTab === 'ncd' && <NCDTab />}
               {activeTab === 'medrec' && <MedRecTab />}
+              {activeTab === 'doctor-activity' && <DoctorActivityTab />}
               {activeTab === 'pharmacy' && <PharmacyTab />}
               {activeTab === 'lab' && <LaboratoryTab />}
               {activeTab === 'quality' && <QualityTab />}
               {activeTab === 'report' && <ReportTab />}
+              {activeTab === 'stat-reports' && <STATReportsTab />}
               {activeTab === 'compare' && <CompareTab />}
               {activeTab === 'customer-insight' && <CustomerInsightTab />}
               {activeTab === 'evolution' && <EvolutionTab />}
