@@ -3,11 +3,16 @@
   "version": "10.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.20.0 <21",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "concurrently -n \"DEV-NODE,DEV-VITE\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
     "dev:server": "node --watch server/server.js",
     "clean:dist": "node -e \"import('fs').then(({rmSync,mkdirSync})=>{rmSync('./dist/assets',{recursive:true,force:true});mkdirSync('./dist/assets',{recursive:true});console.log('✅ dist/assets cleaned')})\"",
+    "prebuild": "node scripts/check-build-safety.mjs",
     "build": "npm run clean:dist && vite build",
     "build:clean": "npm run clean:dist && vite build",
     "preview": "vite preview",
