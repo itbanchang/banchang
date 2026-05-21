@@ -2,7 +2,7 @@ name: Lint
 
 on:
   pull_request:
-    branches: [master, main, "ux-iteration-*"]
+    branches: [master, main, "ux-iteration-*", "prod-mirror-*"]
   push:
     branches: [master, main]
 
@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version-file: ".nvmrc"
           cache: "npm"
 
       - name: Install dependencies
@@ -48,8 +48,59 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version-file: ".nvmrc"
           cache: "npm"
       - run: npm ci --prefer-offline --no-audit
       - name: Prettier check
         run: npx prettier --check "src/**/*.{js,jsx,css}" "server/**/*.js" || echo "::warning::Prettier formatting suggestions available (non-blocking)"
+
+  unit-tests:
+    name: Unit Tests (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+      - name: Run vitest
+        # Pure-function unit tests under src/**/*.test.{js,jsx}
+        # See vitest.config.js — currently 4 test files / 67 tests
+        run: npm run test
+      - name: Report results
+        if: always()
+        run: |
+          echo "::notice title=Unit Tests::Vitest run complete."
+
+  drift-check:
+    name: Source Drift Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # Phase 0/1 of drift recovery — gradually goes from informational to required.
+    # Currently informational (continue-on-error) while we work through BUILD_BLOCK.md.
+    # Tighten to required once all bundles have matching src/components/*.jsx.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+      - name: Check for new source drift
+        run: |
+          set +e
+          node scripts/check-build-safety.mjs
+          EXIT=$?
+          set -e
+          if [ $EXIT -ne 0 ]; then
+            echo "::warning title=Drift Check::Source drift detected. See BUILD_BLOCK.md for recovery plan."
+            echo "Drift detection: $EXIT (non-zero = drift). This is currently informational."
+            # exit $EXIT  ← uncomment when drift = 0 to make this a required gate
+          else
+            echo "::notice title=Drift Check::No drift detected — src/ matches prod bundles."
+          fi
