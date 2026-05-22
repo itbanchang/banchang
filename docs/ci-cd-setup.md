@@ -148,9 +148,10 @@ After all 6 checked: Tier 0 Sprint 0.2 = DONE. Edit-on-prod becomes the exceptio
 
 ## 📅 Change log
 
+- **2026-05-22 (CI verify)** — First end-to-end PR-based CI verification on branch `ci-verify-20260522` against base `prod-mirror-20260519`.
 - **2026-05-21 (Phase 4 partial)** — Added `unit-tests` (vitest, 67 tests) + `drift-check` (check-build-safety.mjs) jobs to lint.yml. Switched all workflows from hardcoded `node-version: "20.x"` to `node-version-file: ".nvmrc"` (Phase 0 pin). Added `prod-mirror-*` to trigger branches. Drift check is informational until BUILD_BLOCK.md drift = 0.
 - **2026-05-13 (Phase H Sprint 0.2)** — Initial CI scaffold via bch-ci-cd skill.
 
 ---
 
-_Created: 2026-05-13 · Updated: 2026-05-21_
+_Created: 2026-05-13 · Updated: 2026-05-22_
