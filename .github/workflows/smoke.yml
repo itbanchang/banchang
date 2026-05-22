@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Skip husky prepare in CI (no dev hooks needed, exits non-zero on some runners)
+env:
+  HUSKY: "0"
+
 jobs:
   build-and-boot:
     name: Build + Server Boot Smoke
