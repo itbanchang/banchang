@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Skip husky's `prepare` script — CI has no developer hooks to install,
+# and on some runners husky install exits non-zero before `|| true` catches it.
+env:
+  HUSKY: "0"
+
 jobs:
   eslint:
     name: ESLint

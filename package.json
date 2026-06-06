@@ -3,10 +3,6 @@
   "version": "10.0.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=20.20.0 <21",
-    "npm": ">=10.0.0"
-  },
   "scripts": {
     "dev": "concurrently -n \"DEV-NODE,DEV-VITE\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
